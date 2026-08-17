@@ -1,0 +1,56 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test-api:
+    name: API Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: api/package-lock.json
+
+      - name: Install API Dependencies
+        run: npm ci
+        working-directory: api
+
+      - name: Typecheck API
+        run: npm run typecheck
+        working-directory: api
+
+      - name: Build API Output
+        run: npm run build
+        working-directory: api
+
+  test-web:
+    name: Web Frontend Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install Web Dependencies
+        run: npm ci
+        working-directory: web
+
+      - name: Typecheck & Build Web
+        run: npm run build
+        working-directory: web

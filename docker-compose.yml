@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: orviohub-api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - HOST=0.0.0.0
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: orviohub-web
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - api
