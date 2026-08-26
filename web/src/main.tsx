@@ -25,7 +25,7 @@ const FallbackComponent = () => (
       <p className="text-sm text-slate-400">An unexpected exception occurred. The error has been captured and reported.</p>
       <button 
         onClick={() => window.location.reload()} 
-        className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-xl text-white font-medium text-sm transition-all cursor-pointer"
+        className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-sm text-white font-medium text-sm transition-all cursor-pointer"
       >
         Reload Application
       </button>

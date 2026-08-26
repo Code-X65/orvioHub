@@ -2,66 +2,165 @@
 
 @layer base {
   :root {
-    --background: 224 71% 4%;
-    --foreground: 213 31% 91%;
-
-    --card: 224 71% 6%;
-    --card-foreground: 213 31% 96%;
-
-    --popover: 224 71% 6%;
-    --popover-foreground: 213 31% 96%;
-
-    --primary: 250 89% 65%;
+    /* Orivo Plum Brand Theme (#714b67) */
+    --primary: 312 20% 37%; /* #714b67 */
     --primary-foreground: 0 0% 100%;
+    --primary-hover: 312 22% 43%;
+    --primary-soft: 312 30% 95%;
+    
+    --accent: 312 30% 60%;
+    --accent-foreground: 0 0% 100%;
+    
+    --background: 0 0% 0%; /* Deep black */
+    --foreground: 0 0% 98%;
+    
+    --surface: 312 15% 7%;
+    --surface-foreground: 0 0% 98%;
+    --surface-muted: 312 15% 12%;
+    
+    --card: 312 15% 7%;
+    --card-foreground: 0 0% 98%;
 
-    --secondary: 215 27.9% 16.9%;
-    --secondary-foreground: 210 20% 98%;
+    --popover: 312 15% 8%;
+    --popover-foreground: 0 0% 98%;
 
-    --muted: 215 27.9% 16.9%;
-    --muted-foreground: 217.9 10.6% 64.9%;
+    --secondary: 312 15% 12%;
+    --secondary-foreground: 0 0% 98%;
 
-    --accent: 250 89% 65%;
-    --accent-foreground: 210 20% 98%;
+    --muted: 312 15% 14%;
+    --muted-foreground: 312 10% 65%;
 
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 20% 98%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --success: 142 71% 45%;
 
-    --border: 215 27.9% 16.9%;
-    --input: 215 27.9% 16.9%;
-    --ring: 250 89% 65%;
+    --border: 312 15% 18%;
+    --input: 312 15% 18%;
+    --ring: 312 20% 37%;
 
-    --radius: 0.75rem;
+    --radius: 1rem;
   }
 }
 
 body {
-  font-family: 'Inter', sans-serif;
-  background-color: hsl(var(--background));
-  color: hsl(var(--foreground));
+  font-family: 'Inter', 'Odoo Unicode Support Noto', sans-serif;
+  background-color: #000000;
+  color: #F8FAFC;
   min-height: 100vh;
+  overflow-x: hidden;
+}
+
+.font-handwritten {
+  font-family: 'Caveat', cursive, sans-serif;
 }
 
 h1, h2, h3, h4, h5, h6 {
-  font-family: 'Outfit', sans-serif;
+  font-family: 'Caveat', cursive, sans-serif;
+  letter-spacing: normal;
 }
 
-/* Glassmorphism utility */
-.glass-panel {
-  background: rgba(15, 23, 42, 0.65);
+/* Glassmorphism & Light Theme Styling */
+.orvio-glass-card {
+  background: rgba(255, 255, 255, 0.88);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  box-shadow: 0 20px 50px -15px rgba(0, 102, 255, 0.08), 0 0 1px 1px rgba(255, 255, 255, 0.8) inset;
 }
 
-.glass-card {
-  background: linear-gradient(135deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.8) 100%);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.5);
+.orvio-dashboard-card {
+  background: #FFFFFF;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  box-shadow: 0 25px 60px -20px rgba(15, 23, 42, 0.12), 0 0 0 1px rgba(0, 102, 255, 0.05);
 }
 
-.gradient-text {
-  background: linear-gradient(135deg, #a855f7 0%, #6366f1 50%, #3b82f6 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+.orvio-floating-panel {
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(219, 234, 254, 0.9);
+  box-shadow: 0 30px 60px -15px rgba(0, 102, 255, 0.18), 0 10px 25px -5px rgba(15, 23, 42, 0.1);
+}
+
+.orvio-blue-gradient {
+  background: linear-gradient(135deg, #0066FF 0%, #0052CC 100%);
+}
+
+.orvio-hero-radial {
+  background: radial-gradient(circle at 50% -10%, rgba(0, 102, 255, 0.08) 0%, rgba(0, 102, 255, 0.02) 45%, transparent 75%);
+}
+
+.orvio-mesh-glow {
+  background-image: 
+    radial-gradient(at 20% 15%, rgba(0, 102, 255, 0.06) 0px, transparent 50%),
+    radial-gradient(at 80% 20%, rgba(56, 189, 248, 0.06) 0px, transparent 50%),
+    radial-gradient(at 50% 60%, rgba(37, 99, 235, 0.04) 0px, transparent 60%);
+}
+
+/* Animations */
+@keyframes float-slow {
+  0%, 100% {
+    transform: translateY(0px) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-12px) rotate(1.5deg);
+  }
+}
+
+@keyframes float-reverse {
+  0%, 100% {
+    transform: translateY(0px) rotate(0deg);
+  }
+  50% {
+    transform: translateY(12px) rotate(-1.5deg);
+  }
+}
+
+@keyframes pulse-subtle {
+  0%, 100% {
+    opacity: 0.85;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    opacity: 0.4;
+    filter: drop-shadow(0 0 8px rgba(0, 102, 255, 0.3));
+  }
+  50% {
+    opacity: 0.8;
+    filter: drop-shadow(0 0 16px rgba(0, 102, 255, 0.6));
+  }
+}
+
+@keyframes dash-move {
+  to {
+    stroke-dashoffset: -32;
+  }
+}
+
+.animate-float-slow {
+  animation: float-slow 7s ease-in-out infinite;
+}
+
+.animate-float-reverse {
+  animation: float-reverse 8s ease-in-out infinite;
+}
+
+.animate-pulse-subtle {
+  animation: pulse-subtle 3s ease-in-out infinite;
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 4s ease-in-out infinite;
+}
+
+.animate-dash-move {
+  stroke-dasharray: 6 6;
+  animation: dash-move 3s linear infinite;
 }

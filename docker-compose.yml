@@ -14,6 +14,11 @@ services:
       - HOST=0.0.0.0
       - NODE_ENV=production
       - LOG_LEVEL=info
+      - CONVEX_URL=${CONVEX_URL}
+      - JWT_SECRET=${JWT_SECRET}
+      - APP_URL=${APP_URL}
+      - RESEND_API_KEY=${RESEND_API_KEY}
+      - EMAIL_FROM=${EMAIL_FROM}
 
   web:
     build:
