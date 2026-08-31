@@ -150,8 +150,9 @@ export class DataService {
   private readonly client: ConvexHttpClient;
 
   constructor() {
-    if (!env.CONVEX_URL) throw new Error('CONVEX_URL is required to initialize the data service.');
-    this.client = new ConvexHttpClient(env.CONVEX_URL);
+    const url = env.CONVEX_URL || (env.NODE_ENV === 'test' ? 'https://ceaseless-bloodhound-791.convex.cloud' : '');
+    if (!url) throw new Error('CONVEX_URL is required to initialize the data service.');
+    this.client = new ConvexHttpClient(url);
   }
 
   public clearAll() {
