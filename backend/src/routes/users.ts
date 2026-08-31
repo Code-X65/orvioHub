@@ -7,6 +7,7 @@ import { smsService } from '../services/smsService.js';
 import { validateNigerianPhone } from '../utils/phoneValidation.js';
 import { ERROR_CODES, AUDIT_EVENTS } from '../config/constants.js';
 import { toPublicUser } from '../utils/userSerializer.js';
+import { parseUserAgent } from '../utils/userAgentParser.js';
 
 const updateProfileSchema = z.object({
   name: z.string().min(1).optional(),
@@ -32,6 +33,8 @@ const updateContactSchema = z.object({
   phoneVisibility: z.enum(['private', 'workspace']).optional(),
   country: z.string().optional(),
   state: z.string().optional(),
+  stateCode: z.string().optional(),
+  lga: z.string().optional(),
   city: z.string().optional(),
   timezone: z.string().optional(),
 });
@@ -501,9 +504,14 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
       const rawSessions = await dataService.getUserSessions(request.user.id);
       const sessions = rawSessions.map((s: any) => {
         const id = s.id || s._id;
+        const parsedUa = parseUserAgent(s.userAgent, s.ipAddress);
         return {
           ...s,
           id,
+          deviceName: s.deviceName || parsedUa.deviceName,
+          browser: parsedUa.browser,
+          operatingSystem: parsedUa.operatingSystem,
+          approximateLocation: parsedUa.approximateLocation,
           isCurrent: Boolean(
             currentSessionId &&
               (String(id) === String(currentSessionId) ||

@@ -8,6 +8,10 @@ export declare const developmentOrigins: string[];
  */
 export declare const productionOrigins: string[];
 /**
+ * All allowed origins for preproduction, derived from application registry and Vercel.
+ */
+export declare const preproductionOrigins: string[];
+/**
  * Get the list of allowed origins based on environment.
  */
 export declare function getAllowedOrigins(env: Environment): string[];

@@ -128,7 +128,7 @@ export const getIncompleteOnboarding = query({
     const results = [];
     for (const f of flows) {
       const user = await ctx.db.get(f.userId);
-      const ws = await ctx.db.get(f.workspaceId);
+      const ws = f.workspaceId ? await ctx.db.get(f.workspaceId) : null;
 
       const daysInactive = Math.floor((now - (f.lastUpdatedAt || f.startedAt)) / (24 * 60 * 60 * 1000));
 
@@ -138,7 +138,7 @@ export const getIncompleteOnboarding = query({
         userName: user?.name || "User",
         userEmail: user?.email || "Unknown",
         workspaceId: f.workspaceId,
-        workspaceName: ws?.name || "Pending Organization",
+        workspaceName: (ws && "name" in ws) ? (ws.name as string) : "Pending Organization",
         productKey: f.productKey,
         currentStep: f.currentStep,
         status: f.status,

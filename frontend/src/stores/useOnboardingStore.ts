@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import { api } from '@/lib/api';
 
 export interface OnboardingState {
@@ -19,13 +20,15 @@ export interface OnboardingState {
   resetFlow: () => Promise<void>;
 }
 
-export const useOnboardingStore = create<OnboardingState>((set) => ({
-  status: 'pending',
-  currentStep: 'account_creation',
-  completedSteps: [],
-  skippedSteps: [],
-  formData: {},
-  isLoading: false,
+export const useOnboardingStore = create<OnboardingState>()(
+  persist(
+    (set) => ({
+      status: 'pending',
+      currentStep: 'account_creation',
+      completedSteps: [],
+      skippedSteps: [],
+      formData: {},
+      isLoading: false,
 
   fetchStatus: async () => {
     set({ isLoading: true });
@@ -164,4 +167,16 @@ export const useOnboardingStore = create<OnboardingState>((set) => ({
       set({ isLoading: false });
     }
   },
-}));
+}),
+    {
+      name: 'orvio_onboarding_state',
+      partialize: (state) => ({
+        status: state.status,
+        currentStep: state.currentStep,
+        completedSteps: state.completedSteps,
+        skippedSteps: state.skippedSteps,
+        formData: state.formData,
+      }),
+    }
+  )
+);

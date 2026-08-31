@@ -43,6 +43,8 @@ export default defineSchema({
     bio: v.optional(v.string()),
     country: v.optional(v.string()),
     state: v.optional(v.string()),
+    stateCode: v.optional(v.string()),
+    lga: v.optional(v.string()),
     city: v.optional(v.string()),
     timezone: v.optional(v.string()),
     language: v.optional(v.string()),
@@ -454,7 +456,6 @@ export default defineSchema({
     lastUpdatedAt: v.number(),
     completedAt: v.optional(v.number()),
   })
-    .index("by_userId", ["userId"])
     .index("by_user", ["userId"])
     .index("by_workspaceId", ["workspaceId"])
     .index("by_workspace_product", ["workspaceId", "productKey"]),

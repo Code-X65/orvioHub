@@ -56,6 +56,9 @@ export const ContactSettings: React.FC = () => {
   const [newPhoneNumber, setNewPhoneNumber] = useState('');
   const [phoneForOtp, setPhoneForOtp] = useState<string | null>(null);
 
+  // Track stateCode separately — LgaSelector needs the code (e.g. "LA"), not the name ("Lagos")
+  const [selectedStateCode, setSelectedStateCode] = useState('');
+
   const {
     register,
     handleSubmit,
@@ -75,7 +78,6 @@ export const ContactSettings: React.FC = () => {
     },
   });
 
-  const selectedState = watch('state');
   const selectedLga = watch('lga');
 
   useEffect(() => {
@@ -84,10 +86,12 @@ export const ContactSettings: React.FC = () => {
         phoneVisibility: (user.phoneVisibility as 'private' | 'workspace') || 'private',
         country: user.country || 'Nigeria',
         state: user.state || '',
-        lga: '',
+        lga: user.lga || '',
         city: user.city || '',
         timezone: user.timezone || 'Africa/Lagos',
       });
+      // Restore stateCode if saved
+      if (user.stateCode) setSelectedStateCode(user.stateCode);
     }
   }, [user, reset]);
 
@@ -368,8 +372,9 @@ export const ContactSettings: React.FC = () => {
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
               <StateSelector
-                value={selectedState}
-                onChange={(_code, name) => {
+                value={selectedStateCode || watch('state')}
+                onChange={(code, name) => {
+                  setSelectedStateCode(code);
                   setValue('state', name, { shouldDirty: true });
                   setValue('lga', '', { shouldDirty: true });
                 }}
@@ -377,7 +382,7 @@ export const ContactSettings: React.FC = () => {
               />
 
               <LgaSelector
-                stateCode={selectedState}
+                stateCode={selectedStateCode}
                 value={selectedLga}
                 onChange={(lga) => setValue('lga', lga, { shouldDirty: true })}
                 label="LGA"

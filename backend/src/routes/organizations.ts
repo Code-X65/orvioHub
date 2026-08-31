@@ -8,8 +8,9 @@ import { requireVerifiedEmail } from '../middleware/rbac.js';
 const createOrgSchema = z.object({
   name: z.string().min(2, 'Organization name must be at least 2 characters'),
   industry: z.string().min(2, 'Industry is required'),
-  country: z.string().min(2, 'Valid country code is required').max(3, 'Country code max 3 characters'),
-  timezone: z.string().min(2, 'Valid timezone is required'),
+  country: z.string().min(2, 'Valid country is required').default('Nigeria'),
+  timezone: z.string().min(2, 'Valid timezone is required').default('Africa/Lagos'),
+  currency: z.string().optional(),
   website: z.string().url('Invalid website URL').optional().or(z.literal('')),
   size: z.string().optional(),
   logo: z.string().optional(),
@@ -18,8 +19,9 @@ const createOrgSchema = z.object({
 const patchOrgSchema = z.object({
   name: z.string().min(2).optional(),
   industry: z.string().min(2).optional(),
-  country: z.string().min(2).max(3).optional(),
+  country: z.string().min(2).optional(),
   timezone: z.string().min(2).optional(),
+  currency: z.string().optional(),
   website: z.string().url().optional().or(z.literal('')),
   size: z.string().optional(),
   logo: z.string().optional(),
@@ -84,12 +86,13 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
         security: [{ bearerAuth: [] }],
         body: {
           type: 'object',
-          required: ['name', 'industry', 'country', 'timezone'],
+          required: ['name', 'industry'],
           properties: {
             name: { type: 'string' },
             industry: { type: 'string' },
             country: { type: 'string' },
             timezone: { type: 'string' },
+            currency: { type: 'string' },
             website: { type: 'string' },
             size: { type: 'string' },
             logo: { type: 'string' },

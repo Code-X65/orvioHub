@@ -1,4 +1,4 @@
-import { applications, DEV_ROOT, DEV_PORT, PROD_ROOT } from "./applications.js";
+import { applications, DEV_ROOT, DEV_PORT, PREPROD_ROOT, PROD_ROOT } from "./applications.js";
 import { type Environment, resolveHost } from "./host.js";
 
 /**
@@ -26,10 +26,23 @@ export const productionOrigins: string[] = [
 ];
 
 /**
+ * All allowed origins for preproduction, derived from application registry and Vercel.
+ */
+export const preproductionOrigins: string[] = [
+  ...Object.values(applications)
+    .filter((app) => app.enabled)
+    .map((app) => app.preproductionUrl || app.productionUrl),
+  `https://api.${PREPROD_ROOT}`,
+  "https://orviohub.vercel.app",
+];
+
+/**
  * Get the list of allowed origins based on environment.
  */
 export function getAllowedOrigins(env: Environment): string[] {
-  return env === "production" ? productionOrigins : developmentOrigins;
+  if (env === "production") return productionOrigins;
+  if (env === "preproduction") return preproductionOrigins;
+  return developmentOrigins;
 }
 
 /**
@@ -37,6 +50,9 @@ export function getAllowedOrigins(env: Environment): string[] {
  */
 export function isAllowedOrigin(origin: string, env: Environment): boolean {
   if (!origin) return false;
+  if (origin.endsWith(".vercel.app") || origin.includes("vercel.app")) return true;
+  if (origin.endsWith(".orviohub.com") || origin.includes("orviohub.com")) return true;
+  if (origin.includes("localhost") || origin.includes("127.0.0.1")) return true;
   const origins = getAllowedOrigins(env);
   return origins.includes(origin);
 }

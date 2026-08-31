@@ -78,7 +78,7 @@ const SurfaceLoading = () => (
 const root = createRoot(document.getElementById("root")!);
 
 try {
-  const host = resolveHost(window.location.host);
+  const host = resolveHost(window.location.host, window.location.pathname);
   const Surface = surfaces[host.application];
 
   root.render(

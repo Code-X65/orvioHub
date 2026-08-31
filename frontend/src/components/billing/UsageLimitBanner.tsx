@@ -1,7 +1,8 @@
 import React from "react";
-import { AlertTriangle, AlertCircle, ArrowUpRight, Sparkles } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowUpRight, Sparkles } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
-interface UsageLimitBannerProps {
+export interface UsageLimitBannerProps {
   warningMessage?: string | null;
   isReached?: boolean;
   onUpgradeClick: () => void;
@@ -18,52 +19,63 @@ export const UsageLimitBanner: React.FC<UsageLimitBannerProps> = ({
 
   return (
     <div
-      className={`w-full p-3.5 sm:p-4 rounded-2xl border transition-all animate-fadeIn flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 ${
+      className={`relative w-full rounded-xs p-4 sm:p-5 shadow-2xl backdrop-blur-xl overflow-hidden group transition-all animate-in fade-in duration-300 ${
         isReached
-          ? "bg-rose-500/10 border-rose-500/30 text-rose-200 shadow-lg shadow-rose-500/5"
-          : "bg-amber-500/10 border-amber-500/30 text-amber-200 shadow-lg shadow-amber-500/5"
+          ? "bg-gradient-to-r from-[#1c0c11] via-[#14080c] to-[#0a0406] border border-rose-900/40"
+          : "bg-gradient-to-r from-[#1c1308] via-[#140c05] to-[#0a0602] border border-amber-900/40"
       }`}
     >
-      <div className="flex items-start sm:items-center gap-3">
-        <div
-          className={`p-2 rounded-xl shrink-0 ${
+      {/* Top glowing accent line */}
+      <div
+        className={`absolute top-0 inset-x-0 h-[1px] bg-gradient-to-r from-transparent via-current to-transparent pointer-events-none opacity-40 ${
+          isReached ? "text-rose-500" : "text-amber-500"
+        }`}
+      />
+
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 relative z-10">
+        {/* Left icon + copy */}
+        <div className="flex items-start sm:items-center gap-3.5">
+          <div
+            className={`w-10 h-10 rounded-xs flex items-center justify-center shrink-0 shadow-inner group-hover:scale-105 transition-transform ${
+              isReached
+                ? "bg-rose-950/50 border border-rose-800/50 text-rose-400"
+                : "bg-amber-950/50 border border-amber-800/50 text-amber-400"
+            }`}
+          >
+            {isReached ? <AlertCircle className="w-5 h-5" /> : <AlertTriangle className="w-5 h-5" />}
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className={`text-[10px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-xs ${
+                  isReached
+                    ? "bg-rose-900/30 text-rose-300 border border-rose-700/40"
+                    : "bg-amber-900/30 text-amber-300 border border-amber-700/40"
+                }`}
+              >
+                {isReached ? "Limit Reached" : "Approaching Limit"}
+              </span>
+              <span className="text-xs text-slate-400 capitalize font-medium">({planKey} Plan)</span>
+            </div>
+            <p className="text-xs text-slate-300 font-medium leading-relaxed">{warningMessage}</p>
+          </div>
+        </div>
+
+        {/* Right upgrade button */}
+        <Button
+          onClick={onUpgradeClick}
+          className={`h-9 px-4 rounded-xs text-xs font-semibold shadow-lg transition-all flex items-center gap-1.5 cursor-pointer active:scale-95 self-end sm:self-center shrink-0 ${
             isReached
-              ? "bg-rose-500/20 text-rose-400 border border-rose-500/30"
-              : "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+              ? "bg-gradient-to-r from-rose-700 via-rose-600 to-rose-700 hover:from-rose-600 hover:to-rose-500 text-white shadow-rose-950/50"
+              : "bg-gradient-to-r from-amber-700 via-amber-600 to-amber-700 hover:from-amber-600 hover:to-amber-500 text-white shadow-amber-950/50"
           }`}
         >
-          {isReached ? <AlertCircle className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
-        </div>
-        <div>
-          <div className="flex items-center gap-2">
-            <span
-              className={`text-[10px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full ${
-                isReached
-                  ? "bg-rose-500/20 text-rose-300 border border-rose-500/40"
-                  : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
-              }`}
-            >
-              {isReached ? "Limit Reached" : "Approaching Plan Limit"}
-            </span>
-            <span className="text-xs text-slate-400 capitalize">({planKey} Plan)</span>
-          </div>
-          <p className="text-xs mt-1 font-medium leading-relaxed">{warningMessage}</p>
-        </div>
+          <Sparkles className="w-3.5 h-3.5" />
+          <span>Upgrade Plan</span>
+          <ArrowUpRight className="w-3.5 h-3.5" />
+        </Button>
       </div>
-
-      <button
-        type="button"
-        onClick={onUpgradeClick}
-        className={`shrink-0 flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition shadow-md cursor-pointer ${
-          isReached
-            ? "bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/20"
-            : "bg-amber-600 hover:bg-amber-500 text-white shadow-amber-600/20"
-        }`}
-      >
-        <Sparkles className="w-3.5 h-3.5" />
-        <span>Upgrade Plan</span>
-        <ArrowUpRight className="w-3.5 h-3.5" />
-      </button>
     </div>
   );
 };

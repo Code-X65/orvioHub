@@ -57,7 +57,7 @@ export const Signup: React.FC = () => {
   const returnTo = searchParams.get('return_to') || searchParams.get('returnTo') || '/app';
 
   const [isLoading, setIsLoading] = useState(false);
-  const [socialLoading, setSocialLoading] = useState<'google' | 'facebook' | null>(null);
+  const [socialLoading, setSocialLoading] = useState<'google' | 'facebook' | 'apple' | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
@@ -106,7 +106,7 @@ export const Signup: React.FC = () => {
     }
   };
 
-  const handleSocialAuth = (provider: 'google' | 'facebook') => {
+  const handleSocialAuth = (provider: 'google' | 'facebook' | 'apple') => {
     setSocialLoading(provider);
     const endpoint = `${API_BASE_URL}/auth/${provider}?returnTo=${encodeURIComponent(returnTo)}&product=${selectedProduct}`;
     window.location.href = endpoint;
@@ -117,8 +117,6 @@ export const Signup: React.FC = () => {
       <div className="w-full max-w-[420px] mx-auto space-y-5 animate-in fade-in duration-200">
         {/* Header and Welcome Copy */}
         <div className="space-y-2 text-center">
-         
-
           <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
             Create your Orviohub account
           </h1>
@@ -127,8 +125,9 @@ export const Signup: React.FC = () => {
           </p>
         </div>
 
-        {/* Social Authentication: Google & Facebook */}
+        {/* Social Authentication: Google, Apple, Facebook */}
         <div className="space-y-2">
+          {/* Google */}
           <Button
             variant="outline"
             type="button"
@@ -149,22 +148,42 @@ export const Signup: React.FC = () => {
             <span>Continue with Google</span>
           </Button>
 
-          <Button
-            variant="outline"
-            type="button"
-            onClick={() => handleSocialAuth('facebook')}
-            disabled={isLoading || !!socialLoading}
-            className="w-full h-10 bg-[#160f14] hover:bg-[#20151c] border-white/10 hover:border-white/20 text-slate-200 hover:text-white rounded-xs text-xs font-medium flex items-center justify-center gap-2.5 transition-all cursor-pointer shadow-sm"
-          >
-            {socialLoading === 'facebook' ? (
-              <Spinner size="sm" className="text-white" />
-            ) : (
-              <svg className="w-4 h-4 shrink-0 fill-[#1877F2]" viewBox="0 0 24 24">
-                <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
-              </svg>
-            )}
-            <span>Continue with Facebook</span>
-          </Button>
+          {/* Apple & Facebook */}
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              variant="outline"
+              type="button"
+              onClick={() => handleSocialAuth('apple')}
+              disabled={isLoading || !!socialLoading}
+              className="w-full h-10 bg-[#160f14] hover:bg-[#20151c] border-white/10 hover:border-white/20 text-slate-200 hover:text-white rounded-xs text-xs font-medium flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm"
+            >
+              {socialLoading === 'apple' ? (
+                <Spinner size="sm" className="text-white" />
+              ) : (
+                <svg className="w-3.5 h-3.5 fill-current shrink-0" viewBox="0 0 24 24">
+                  <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.85c.66-.82 1.11-1.96.99-3.1-.96.04-2.12.64-2.8 1.44-.6.69-1.12 1.83-0.98 2.94 1.07.08 2.15-.55 2.79-1.28z" />
+                </svg>
+              )}
+              <span>Apple ID</span>
+            </Button>
+
+            <Button
+              variant="outline"
+              type="button"
+              onClick={() => handleSocialAuth('facebook')}
+              disabled={isLoading || !!socialLoading}
+              className="w-full h-10 bg-[#160f14] hover:bg-[#20151c] border-white/10 hover:border-white/20 text-slate-200 hover:text-white rounded-xs text-xs font-medium flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm"
+            >
+              {socialLoading === 'facebook' ? (
+                <Spinner size="sm" className="text-white" />
+              ) : (
+                <svg className="w-3.5 h-3.5 fill-[#1877F2] shrink-0" viewBox="0 0 24 24">
+                  <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
+                </svg>
+              )}
+              <span>Facebook</span>
+            </Button>
+          </div>
         </div>
 
         <div className="relative my-3">

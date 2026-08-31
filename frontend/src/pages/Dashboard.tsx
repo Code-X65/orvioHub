@@ -34,6 +34,9 @@ import {
   ArrowUpRight,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { ResumeSetupBanner } from '@/components/onboarding/ResumeSetupBanner';
+import { UsageLimitBanner } from '@/components/billing/UsageLimitBanner';
+import { UpgradeModal } from '@/components/billing/UpgradeModal';
 
 interface WorkspaceItem {
   workspace: {
@@ -136,16 +139,25 @@ export const Dashboard: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [launchingOrgId, setLaunchingOrgId] = useState<string | null>(null);
 
+  // Resume Onboarding Banner State
+  const [onboardingProgress, setOnboardingProgress] = useState<any>(null);
+  const [isBannerDismissed, setIsBannerDismissed] = useState(false);
+
+  // Usage Quota & Upgrade Modal State
+  const [usageSummary, setUsageSummary] = useState<any>(null);
+  const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState(false);
+
   // Waitlist state
   const [joinedWaitlists, setJoinedWaitlists] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    fetchWorkspaces();
+    fetchWorkspacesAndProgress();
   }, []);
 
-  const fetchWorkspaces = async () => {
+  const fetchWorkspacesAndProgress = async () => {
     setIsLoading(true);
     try {
+      // 1. Fetch workspaces
       const res = await api.get<{ data?: { workspaces: WorkspaceItem[] }; workspaces?: WorkspaceItem[] }>('/workspaces');
       const list = res.data?.workspaces || res.workspaces || [];
       setWorkspaces(list);
@@ -163,11 +175,60 @@ export const Dashboard: React.FC = () => {
           }))
         );
       }
+
+      // 2. Fetch primary workspace usage summary
+      if (list.length > 0) {
+        const primaryId = list[0].workspace.id;
+        try {
+          const usageRes = await api.get<any>(`/workspaces/${primaryId}/usage`);
+          if (usageRes?.data || usageRes?.summary) {
+            const sum = usageRes.data || usageRes.summary;
+            setUsageSummary(sum);
+          }
+        } catch {}
+      }
+
+      // 3. Fetch incomplete onboarding draft / progress
+      let activeProgress: any = null;
+      try {
+        const rawDraft = localStorage.getItem('orvio_org_creation_draft');
+        if (rawDraft) {
+          const parsedDraft = JSON.parse(rawDraft);
+          if (parsedDraft.orgName || parsedDraft.step) {
+            activeProgress = {
+              orgName: parsedDraft.orgName,
+              product: parsedDraft.product || 'inventory',
+              step: parsedDraft.step || 1,
+              isDraft: true,
+            };
+          }
+        }
+      } catch {}
+
+      try {
+        const obRes = await api.get<any>('/onboarding/status');
+        if (obRes?.data && obRes.data.status !== 'COMPLETED') {
+          activeProgress = {
+            ...activeProgress,
+            ...obRes.data,
+          };
+        }
+      } catch {}
+
+      if (activeProgress) {
+        setOnboardingProgress(activeProgress);
+      }
     } catch (err: any) {
       console.warn('Could not fetch workspaces:', err.message);
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleResumeSetup = () => {
+    const targetProduct = onboardingProgress?.product || 'inventory';
+    const launcherBase = getLauncherUrl(env);
+    window.location.href = `${launcherBase}/workspaces/new?product=${encodeURIComponent(targetProduct)}`;
   };
 
   const handleLaunchApp = async (workspaceId: string, productKey: string = 'inventory') => {
@@ -260,6 +321,31 @@ export const Dashboard: React.FC = () => {
               <span>New Organization</span>
             </Button>
           </div>
+        </div>
+
+        {/* Dynamic Contextual Banners (Resume Setup & Plan Limits) */}
+        <div className="space-y-4">
+          {/* Resume Onboarding Banner */}
+          {onboardingProgress && !isBannerDismissed && (
+            <ResumeSetupBanner
+              orgName={onboardingProgress.orgName}
+              step={onboardingProgress.step}
+              product={onboardingProgress.product}
+              currentStepName={onboardingProgress.currentStep?.replace(/_/g, ' ')}
+              onResume={handleResumeSetup}
+              onDismiss={() => setIsBannerDismissed(true)}
+            />
+          )}
+
+          {/* Plan Quota Limit Warnings */}
+          {usageSummary?.warningMessage && (
+            <UsageLimitBanner
+              warningMessage={usageSummary.warningMessage}
+              isReached={usageSummary.hasExceededLimits}
+              planKey={usageSummary.planKey}
+              onUpgradeClick={() => setIsUpgradeModalOpen(true)}
+            />
+          )}
         </div>
 
         {/* Toolbar & Search */}
@@ -541,6 +627,21 @@ export const Dashboard: React.FC = () => {
           </div>
         </div>
       </footer>
+
+      {/* Upgrade Plan Tier Selection Modal */}
+      {workspaces.length > 0 && (
+        <UpgradeModal
+          isOpen={isUpgradeModalOpen}
+          workspaceId={workspaces[0].workspace.id}
+          workspaceSlug={workspaces[0].workspace.slug}
+          currentPlanKey={usageSummary?.planKey || 'free'}
+          onClose={() => setIsUpgradeModalOpen(false)}
+          onSuccess={() => {
+            fetchWorkspacesAndProgress();
+            toast.success('Subscription plan upgraded successfully!');
+          }}
+        />
+      )}
     </div>
   );
 };

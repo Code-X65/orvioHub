@@ -26,7 +26,6 @@ import {
   Bell,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { UsageLimitBanner } from '@/components/billing/UsageLimitBanner';
 import { UpgradeModal } from '@/components/billing/UpgradeModal';
 
 interface WorkspaceItem {
@@ -165,10 +164,6 @@ export const AppLauncher: React.FC = () => {
   // Search Filter
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Resume Onboarding Banner State
-  const [onboardingProgress, setOnboardingProgress] = useState<any>(null);
-  const [isBannerDismissed, setIsBannerDismissed] = useState(false);
-
   const fetchCatalogAndAccessData = async () => {
     setIsLoading(true);
     try {
@@ -182,17 +177,8 @@ export const AppLauncher: React.FC = () => {
         // Fallback to FALLBACK_CATALOG
       }
 
-      // 2. Fetch authenticated user organization access & onboarding state
+      // 2. Fetch authenticated user organization access
       if (isAuthenticated) {
-        try {
-          const obRes = await api.get<any>('/onboarding/status');
-          if (obRes.data && obRes.data.status !== 'COMPLETED') {
-            setOnboardingProgress(obRes.data);
-          }
-        } catch {
-          // Optional onboarding fallback
-        }
-
         const res = await api.get<{
           ownedOrganizations: any[];
           joinedOrganizations: any[];
@@ -383,51 +369,8 @@ export const AppLauncher: React.FC = () => {
           </p>
         </div>
 
-        {/* Resume Onboarding Banner */}
-        {isAuthenticated && onboardingProgress && !isBannerDismissed && (
-          <div className="rounded-2xl bg-gradient-to-r from-[#1e111a] via-[#160f14] to-[#0c080b] border border-[#714b67]/40 p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xl animate-in fade-in">
-            <div className="flex items-center gap-3.5">
-              <div className="w-10 h-10 rounded-xl bg-[#714b67]/20 border border-[#714b67]/40 text-[#e2b9d8] flex items-center justify-center shrink-0">
-                <Sparkles className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="text-sm font-semibold text-white">Continue Your Organization Setup</h3>
-                <p className="text-xs text-slate-400">
-                  You have an incomplete setup ({onboardingProgress.currentStep?.replace(/_/g, ' ') || 'organization setup'}). Resume now to finish setting up your workspace and apps.
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 self-end sm:self-center">
-              <Button
-                variant="ghost"
-                onClick={() => setIsBannerDismissed(true)}
-                className="h-9 px-3 text-xs text-slate-400 hover:text-white"
-              >
-                Dismiss
-              </Button>
-              <Button
-                onClick={() => navigate('/onboarding/organization')}
-                className="h-9 px-4 bg-gradient-to-r from-[#714b67] to-[#8d5b80] hover:from-[#8d5b80] hover:to-[#a06892] text-white rounded-xl text-xs font-semibold shadow-md flex items-center gap-1.5 cursor-pointer"
-              >
-                <span>Resume Setup</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </Button>
-            </div>
-          </div>
-        )}
-
         {/* Main Applications Section */}
         <div className="space-y-6">
-          {/* Plan Quota Limit Warnings */}
-          {usageSummary?.warningMessage && (
-            <UsageLimitBanner
-              warningMessage={usageSummary.warningMessage}
-              isReached={usageSummary.hasExceededLimits}
-              planKey={usageSummary.planKey}
-              onUpgradeClick={() => setIsUpgradeModalOpen(true)}
-            />
-          )}
-
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-white/5">
             <div>
               <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">

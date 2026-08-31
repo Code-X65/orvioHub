@@ -98,6 +98,8 @@ export const updateContactDetails = mutation({
     phoneVisibility: v.optional(v.union(v.literal("private"), v.literal("workspace"))),
     country: v.optional(v.string()),
     state: v.optional(v.string()),
+    stateCode: v.optional(v.string()),
+    lga: v.optional(v.string()),
     city: v.optional(v.string()),
     timezone: v.optional(v.string()),
   },

@@ -1,28 +1,28 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useOnboardingStore } from '@/stores/useOnboardingStore';
 import { useLocationStore } from '@/stores/useLocationStore';
+import { useHost } from '@/host/useHost';
+import { getApplicationUrl, ApplicationKey } from '@orviohub/shared';
 import { api } from '@/lib/api';
 import { Header } from '@/components/landing/Header';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Checkbox } from '@/components/ui/checkbox';
 import { CustomSelect, type SelectOption } from '@/components/ui/custom-select';
 import { Spinner } from '@/components/ui/spinner';
 import { toast } from 'sonner';
 import {
   MapPin,
-  Phone,
-  CheckCircle2,
   ArrowRight,
   ArrowLeft,
   ShieldCheck,
   Plus,
   Trash2,
-  Check,
 } from 'lucide-react';
+
+const DRAFT_KEY = 'orvio_org_creation_draft';
 
 // Options Constants
 const ORG_TYPE_OPTIONS: SelectOption[] = [
@@ -36,79 +36,12 @@ const ORG_TYPE_OPTIONS: SelectOption[] = [
   { value: 'other', label: 'Other Business Type', badge: 'Other' },
 ];
 
-const CURRENCY_OPTIONS: SelectOption[] = [
-  { value: 'NGN', label: 'Nigerian Naira (₦ NGN)', badge: '₦' },
-  { value: 'USD', label: 'US Dollar ($ USD)', badge: '$' },
-  { value: 'GBP', label: 'British Pound (£ GBP)', badge: '£' },
-  { value: 'EUR', label: 'Euro (€ EUR)', badge: '€' },
-];
-
-const TIMEZONE_OPTIONS: SelectOption[] = [
-  { value: 'Africa/Lagos', label: 'West Africa Time (WAT) - Lagos', badge: 'WAT' },
-  { value: 'Africa/Accra', label: 'Greenwich Mean Time (GMT) - Accra', badge: 'GMT' },
-  { value: 'Africa/Nairobi', label: 'East Africa Time (EAT) - Nairobi', badge: 'EAT' },
-  { value: 'Africa/Johannesburg', label: 'South Africa Standard Time (SAST)', badge: 'SAST' },
-  { value: 'UTC', label: 'Coordinated Universal Time (UTC)', badge: 'UTC' },
-];
-
 const ROLE_OPTIONS: SelectOption[] = [
   { value: 'ADMIN', label: 'Admin (Full management access)', badge: 'Admin' },
   { value: 'MANAGER', label: 'Branch Manager', badge: 'Manager' },
   { value: 'SALES_ATTENDANT', label: 'Sales Attendant / Cashier', badge: 'Cashier' },
   { value: 'STOCK_MANAGER', label: 'Stock & Inventory Manager', badge: 'Inventory' },
   { value: 'ACCOUNTANT', label: 'Accountant / Financial Officer', badge: 'Finance' },
-];
-
-interface ProductApp {
-  key: string;
-  name: string;
-  category: string;
-  description: string;
-  planRequired: 'free' | 'standard' | 'premium';
-  icon: string;
-}
-
-const PRODUCT_APPS: ProductApp[] = [
-  {
-    key: 'inventory',
-    name: 'Inventory Management',
-    category: 'Operations',
-    description: 'Multi-branch warehouse stock, barcode POS checkout & stock telemetry.',
-    planRequired: 'free',
-    icon: '📦',
-  },
-  {
-    key: 'taskmanagement',
-    name: 'Task Management',
-    category: 'Productivity',
-    description: 'Agile sprints, collaborative kanban boards & team workloads.',
-    planRequired: 'free',
-    icon: '📋',
-  },
-  {
-    key: 'gym',
-    name: 'Gym & Club Management',
-    category: 'Fitness',
-    description: 'Membership plans, attendance tracking & automated renewals.',
-    planRequired: 'standard',
-    icon: '🏋️‍♂️',
-  },
-  {
-    key: 'bookings',
-    name: 'Appointments & Bookings',
-    category: 'Services',
-    description: 'Online client booking portals, scheduling & SMS reminders.',
-    planRequired: 'standard',
-    icon: '📅',
-  },
-  {
-    key: 'crm',
-    name: 'Customer CRM',
-    category: 'Sales',
-    description: 'Client pipelines, deals tracking & communications history.',
-    planRequired: 'premium',
-    icon: '💼',
-  },
 ];
 
 interface TeamInviteRow {
@@ -119,7 +52,12 @@ interface TeamInviteRow {
 
 export const OrganizationWizard: React.FC = () => {
   const navigate = useNavigate();
-  const { user } = useAuthStore();
+  const location = useLocation();
+  const isOnboardingMode = location.pathname.startsWith('/onboarding');
+  const [searchParams] = useSearchParams();
+  const productParam = searchParams.get('product') || 'inventory';
+  const host = useHost();
+  const { user, refreshSession } = useAuthStore();
   const { states, fetchStates, fetchLgas, lgasByState } = useLocationStore();
   const { updateProgress, completeFlow, skipPermanently } = useOnboardingStore();
 
@@ -127,37 +65,12 @@ export const OrganizationWizard: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isConfirmSkipModalOpen, setIsConfirmSkipModalOpen] = useState(false);
 
-  const handleSaveAndExit = async () => {
-    await updateProgress(`org_step_${step}`, {
-      orgName,
-      orgType,
-      branchName,
-      branchCode,
-      stateName,
-      lgaName,
-      city,
-      businessPhone,
-      selectedProducts,
-      selectedPlan,
-      billingInterval,
-    });
-    toast.success('Progress saved. You can resume anytime from the launcher.');
-    navigate('/app');
-  };
-
-  const handleSkipPermanently = async () => {
-    await skipPermanently();
-    setIsConfirmSkipModalOpen(false);
-    toast.success('Onboarding skipped. You can create an organization later from settings.');
-    navigate('/app');
-  };
-
-  // Step 1: Org Details
+  // Step 1: Org Details (Locked to Nigeria defaults)
   const [orgName, setOrgName] = useState('');
   const [orgType, setOrgType] = useState('retail_store');
-  const [country] = useState('Nigeria');
-  const [currency, setCurrency] = useState('NGN');
-  const [timezone, setTimezone] = useState('Africa/Lagos');
+  const country = 'Nigeria';
+  const currency = 'NGN';
+  const timezone = 'Africa/Lagos';
 
   // Step 2: Branch Setup
   const [branchName, setBranchName] = useState('Main Store');
@@ -178,20 +91,82 @@ export const OrganizationWizard: React.FC = () => {
   const [isSendingPhoneOtp, setIsSendingPhoneOtp] = useState(false);
   const [isVerifyingPhoneOtp, setIsVerifyingPhoneOtp] = useState(false);
   const [businessPhoneVerified, setBusinessPhoneVerified] = useState(Boolean(user?.phoneVerifiedAt));
-  const [addressType, setAddressType] = useState<'same-as-branch' | 'custom'>('same-as-branch');
 
-  // Step 4: Product Selection
-  const [selectedProducts, setSelectedProducts] = useState<string[]>(['inventory']);
-  const [activateAllApps, setActivateAllApps] = useState(false);
-
-  // Step 5: Plan Selection
-  const [selectedPlan, setSelectedPlan] = useState<'free' | 'standard' | 'premium'>('free');
-  const [billingInterval, setBillingInterval] = useState<'monthly' | 'annual'>('monthly');
-
-  // Step 6: Team Invitation
+  // Step 4: Team Invitation (Optional)
   const [teamInvites, setTeamInvites] = useState<TeamInviteRow[]>([
     { email: '', role: 'SALES_ATTENDANT', branchAccess: ['MAIN'] },
   ]);
+
+  // Load Saved Draft on Mount
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(DRAFT_KEY);
+      if (raw) {
+        const draft = JSON.parse(raw);
+        if (draft.orgName) setOrgName(draft.orgName);
+        if (draft.orgType) setOrgType(draft.orgType);
+        if (draft.branchName) setBranchName(draft.branchName);
+        if (draft.branchCode) setBranchCode(draft.branchCode);
+        if (draft.stateName) setStateName(draft.stateName);
+        if (draft.lgaName) setLgaName(draft.lgaName);
+        if (draft.city) setCity(draft.city);
+        if (draft.area) setArea(draft.area);
+        if (draft.street) setStreet(draft.street);
+        if (draft.blockNumber) setBlockNumber(draft.blockNumber);
+        if (draft.landmark) setLandmark(draft.landmark);
+        if (draft.businessPhone) setBusinessPhone(draft.businessPhone);
+        if (draft.teamInvites && Array.isArray(draft.teamInvites)) setTeamInvites(draft.teamInvites);
+        if (draft.step && draft.step >= 1 && draft.step <= 4) {
+          setStep(draft.step);
+        }
+      }
+    } catch {
+      // Ignore parse errors
+    }
+  }, []);
+
+  const handleSaveAndExit = async () => {
+    const draftData = {
+      step,
+      orgName,
+      orgType,
+      currency,
+      timezone,
+      branchName,
+      branchCode,
+      stateName,
+      lgaName,
+      city,
+      area,
+      street,
+      blockNumber,
+      landmark,
+      businessPhone,
+      teamInvites,
+      product: productParam,
+      updatedAt: Date.now(),
+    };
+    try {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(draftData));
+      await updateProgress(`org_step_${step}`, draftData);
+    } catch {
+      // Local fallback
+    }
+    toast.success('Progress saved! You can resume anytime from the App Launcher.');
+    navigate('/app');
+  };
+
+  const handleSkipPermanently = async () => {
+    try {
+      localStorage.removeItem(DRAFT_KEY);
+      await skipPermanently();
+    } catch {
+      // Fallback
+    }
+    setIsConfirmSkipModalOpen(false);
+    toast.success('Setup skipped. You can create an organization later from settings.');
+    navigate('/app');
+  };
 
   useEffect(() => {
     fetchStates();
@@ -225,97 +200,16 @@ export const OrganizationWizard: React.FC = () => {
     label: l.name,
   }));
 
-  const handleToggleProduct = (key: string) => {
-    if (selectedProducts.includes(key)) {
-      if (selectedProducts.length === 1) {
-        toast.error('Please select at least one application.');
-        return;
-      }
-      setSelectedProducts(selectedProducts.filter((p) => p !== key));
-    } else {
-      setSelectedProducts([...selectedProducts, key]);
-    }
-  };
-
-  const handleToggleActivateAll = (checked: boolean) => {
-    setActivateAllApps(checked);
-    if (checked) {
-      setSelectedProducts(PRODUCT_APPS.map((p) => p.key));
-      setSelectedPlan('premium');
-    } else {
-      setSelectedProducts(['inventory']);
-      setSelectedPlan('free');
-    }
-  };
-
-  const handleAddInviteRow = () => {
-    if (teamInvites.length >= 5) {
-      toast.info('You can invite up to 5 members during onboarding. Additional invites can be sent later.');
-      return;
-    }
-    setTeamInvites([...teamInvites, { email: '', role: 'SALES_ATTENDANT', branchAccess: ['MAIN'] }]);
-  };
-
-  const handleRemoveInviteRow = (index: number) => {
-    setTeamInvites(teamInvites.filter((_, i) => i !== index));
-  };
-
-  const handleUpdateInvite = (index: number, field: keyof TeamInviteRow, value: any) => {
-    const updated = [...teamInvites];
-    updated[index] = { ...updated[index], [field]: value };
-    setTeamInvites(updated);
-  };
-
-  const handleSendBusinessPhoneOtp = async () => {
-    if (!businessPhone.trim()) {
-      toast.error('Please enter a business phone number.');
-      return;
-    }
-    setIsSendingPhoneOtp(true);
-    try {
-      await api.post('/users/me/phone/verify', {
-        action: 'request_otp',
-        phone: businessPhone.trim(),
-      });
-      setIsPhoneOtpModalOpen(true);
-      toast.success('Verification code sent via SMS.');
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to send SMS.');
-    } finally {
-      setIsSendingPhoneOtp(false);
-    }
-  };
-
-  const handleVerifyBusinessPhoneOtp = async () => {
-    if (!phoneOtp.trim()) return;
-    setIsVerifyingPhoneOtp(true);
-    try {
-      await api.post('/users/me/phone/verify', {
-        action: 'verify_code',
-        phone: businessPhone.trim(),
-        code: phoneOtp.trim(),
-      });
-      setBusinessPhoneVerified(true);
-      setIsPhoneOtpModalOpen(false);
-      toast.success('Business phone verified.');
-    } catch (err: any) {
-      toast.error(err.message || 'Invalid verification code.');
-    } finally {
-      setIsVerifyingPhoneOtp(false);
-    }
-  };
-
-  // Submit Step 1
+  // Step Handlers
   const handleNextStep1 = () => {
     if (!orgName.trim()) {
-      toast.error('Organization name is required.');
+      toast.error('Please enter an organization or business name.');
       return;
     }
     updateProgress('org_step_1', { orgName, orgType, country, currency, timezone });
     setStep(2);
   };
 
-  // Submit Step 2
   const handleNextStep2 = () => {
     if (!branchName.trim()) {
       toast.error('Branch name is required.');
@@ -333,33 +227,67 @@ export const OrganizationWizard: React.FC = () => {
     setStep(3);
   };
 
-  // Submit Step 3
   const handleNextStep3 = () => {
     updateProgress('org_step_3', {
       useMyPhone,
       businessPhone,
-      addressType,
     });
     setStep(4);
   };
 
-  // Submit Step 4
-  const handleNextStep4 = () => {
-    if (selectedProducts.length === 0) {
-      toast.error('Please select at least one application.');
+  const handleAddInviteRow = () => {
+    if (teamInvites.length >= 10) return;
+    setTeamInvites([...teamInvites, { email: '', role: 'SALES_ATTENDANT', branchAccess: [branchCode || 'MAIN'] }]);
+  };
+
+  const handleRemoveInviteRow = (idx: number) => {
+    setTeamInvites(teamInvites.filter((_, i) => i !== idx));
+  };
+
+  const handleUpdateInvite = (idx: number, field: keyof TeamInviteRow, val: any) => {
+    const updated = [...teamInvites];
+    updated[idx] = { ...updated[idx], [field]: val };
+    setTeamInvites(updated);
+  };
+
+  // OTP Verification Handlers
+  const handleSendBusinessPhoneOtp = async () => {
+    if (!businessPhone.trim()) {
+      toast.error('Please enter a valid phone number.');
       return;
     }
-    updateProgress('org_step_4', { selectedProducts, activateAllApps });
-    setStep(5);
+    setIsSendingPhoneOtp(true);
+    try {
+      await api.post('/users/me/phone/verify', { action: 'request_otp', phone: businessPhone });
+      toast.success(`Verification code sent to ${businessPhone}!`);
+      setIsPhoneOtpModalOpen(true);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to send verification SMS.');
+    } finally {
+      setIsSendingPhoneOtp(false);
+    }
   };
 
-  // Submit Step 5
-  const handleNextStep5 = () => {
-    updateProgress('org_step_5', { selectedPlan, billingInterval });
-    setStep(6);
+  const handleVerifyBusinessPhoneOtp = async () => {
+    if (!phoneOtp || phoneOtp.length < 4) {
+      toast.error('Please enter the verification code.');
+      return;
+    }
+    setIsVerifyingPhoneOtp(true);
+    try {
+      await api.post('/users/me/phone/verify', { action: 'verify_code', code: phoneOtp });
+      setBusinessPhoneVerified(true);
+      setIsPhoneOtpModalOpen(false);
+      setPhoneOtp('');
+      toast.success('Phone number verified successfully!');
+    } catch (err: any) {
+      toast.error(err.message || 'Invalid or expired OTP code.');
+    } finally {
+      setIsVerifyingPhoneOtp(false);
+    }
   };
 
-  // Submit Step 6 (Creates the Organization in Backend)
+  // Submit & Create Organization in Backend
   const handleFinishOrgCreation = async () => {
     setIsLoading(true);
     try {
@@ -374,13 +302,22 @@ export const OrganizationWizard: React.FC = () => {
 
       const organizationId = orgRes.organization?.id || orgRes.organization?._id;
 
-      // 2. Select Modules
-      await api.post('/onboarding/modules', {
-        organizationId,
-        modules: selectedProducts,
-      });
+      // 2. Select Product (pre-selected from URL or defaults to inventory)
+      try {
+        await api.post('/onboarding/modules', {
+          organizationId,
+          modules: [productParam],
+        });
+      } catch {}
 
-      // 3. Send Team Invites if any provided
+      // 3. Initialize Workspace
+      try {
+        await api.post('/onboarding/initialize', {
+          organizationId,
+        });
+      } catch {}
+
+      // 4. Send Team Invites if any provided
       const validInvites = teamInvites.filter((inv) => inv.email && inv.email.includes('@'));
       for (const invite of validInvites) {
         try {
@@ -397,16 +334,31 @@ export const OrganizationWizard: React.FC = () => {
       await completeFlow({
         organizationId,
         orgName,
-        selectedProducts,
-        selectedPlan,
+        selectedProducts: [productParam],
+        selectedPlan: 'free',
       });
 
+      // Clear cached draft
+      try {
+        localStorage.removeItem(DRAFT_KEY);
+      } catch {}
+
+      await refreshSession();
       toast.success('Organization created successfully! 🎉');
-      setStep(7);
+      setStep(5);
     } catch (err: any) {
       toast.error(err.message || 'Failed to finalize organization setup.');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleLaunchProduct = () => {
+    try {
+      const targetUrl = getApplicationUrl(productParam as ApplicationKey, host.environment);
+      window.location.href = targetUrl;
+    } catch {
+      navigate('/app');
     }
   };
 
@@ -419,31 +371,29 @@ export const OrganizationWizard: React.FC = () => {
         <div className="space-y-2">
           <div className="flex items-center justify-between text-xs font-semibold text-slate-400">
             <div className="flex items-center gap-2">
-              <span className="text-[#e2b9d8]">Step {step} of 7:</span>
+              <span className="text-[#e2b9d8]">Step {step} of 5:</span>
               <span className="text-white">
                 {step === 1 && 'Organization Details'}
                 {step === 2 && 'Branch Setup'}
                 {step === 3 && 'Contact Details'}
-                {step === 4 && 'Product Selection'}
-                {step === 5 && 'Plan Selection'}
-                {step === 6 && 'Team Invitation'}
-                {step === 7 && 'Ready to Launch'}
+                {step === 4 && 'Team Invitation'}
+                {step === 5 && 'Ready to Launch'}
               </span>
             </div>
-            {step < 7 && (
+            {step < 5 && (
               <button
                 type="button"
                 onClick={handleSaveAndExit}
                 className="text-xs text-slate-400 hover:text-white transition-colors cursor-pointer"
               >
-                Save & Exit
+                {isOnboardingMode ? 'Save & Exit' : 'Cancel & Save Draft'}
               </button>
             )}
           </div>
           <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
             <div
               className="bg-gradient-to-r from-[#714b67] to-[#8d5b80] h-full transition-all duration-300 rounded-full"
-              style={{ width: `${(step / 7) * 100}%` }}
+              style={{ width: `${(step / 5) * 100}%` }}
             />
           </div>
         </div>
@@ -452,8 +402,14 @@ export const OrganizationWizard: React.FC = () => {
         {step === 1 && (
           <div className="space-y-5 animate-in fade-in duration-200">
             <div className="space-y-1.5 text-center">
-              <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">Let's set up your organization</h1>
-              <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">This information helps us configure your account correctly.</p>
+              <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
+                {isOnboardingMode ? "Let's set up your organization" : "Create a new organization"}
+              </h1>
+              <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
+                {isOnboardingMode
+                  ? "This information helps us configure your account correctly."
+                  : "Set up your business profile, primary branch location, and team."}
+              </p>
             </div>
 
             <div className="space-y-3.5">
@@ -481,35 +437,18 @@ export const OrganizationWizard: React.FC = () => {
                 />
               </div>
 
-              <div className="grid grid-cols-3 gap-2.5">
-                <div className="space-y-1">
-                  <Label className="text-xs font-medium text-slate-300">Country</Label>
-                  <Input
-                    value="Nigeria"
-                    disabled
-                    className="h-10 bg-[#0e0a0d]/50 border-white/10 text-slate-400 rounded-xs text-xs cursor-not-allowed"
-                  />
+              {/* Locked Nigerian Defaults Indicator */}
+              <div className="p-3.5 rounded-xs bg-[#0e0a0d] border border-white/10 flex items-center justify-between text-xs">
+                <div className="flex items-center gap-2.5">
+                  <span className="text-xl">🇳🇬</span>
+                  <div>
+                    <p className="text-slate-200 font-medium">Region & Currency</p>
+                    <p className="text-[11px] text-slate-400">Nigeria (West Africa) • Nigerian Naira (₦ NGN) • WAT (GMT+1)</p>
+                  </div>
                 </div>
-
-                <div className="space-y-1">
-                  <Label className="text-xs font-medium text-slate-300">Currency</Label>
-                  <CustomSelect
-                    value={currency}
-                    onChange={setCurrency}
-                    options={CURRENCY_OPTIONS}
-                    placeholder="Select currency"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <Label className="text-xs font-medium text-slate-300">Timezone</Label>
-                  <CustomSelect
-                    value={timezone}
-                    onChange={setTimezone}
-                    options={TIMEZONE_OPTIONS}
-                    placeholder="Select timezone"
-                  />
-                </div>
+                <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  Nigeria
+                </span>
               </div>
             </div>
 
@@ -600,32 +539,23 @@ export const OrganizationWizard: React.FC = () => {
                     <Input
                       value={city}
                       onChange={(e) => setCity(e.target.value)}
-                      placeholder="e.g. Ikeja, Lekki, Wuse"
+                      placeholder="e.g. Ikeja"
                       className="h-10 bg-[#0e0a0d] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs focus:ring-1 focus:ring-[#714b67]"
                     />
                   </div>
 
                   <div className="space-y-1">
-                    <Label className="text-xs text-slate-300">Area / District (optional)</Label>
+                    <Label className="text-xs text-slate-300">Area / District</Label>
                     <Input
                       value={area}
                       onChange={(e) => setArea(e.target.value)}
-                      placeholder="e.g. Allen Avenue, Phase 1"
+                      placeholder="e.g. Allen Avenue"
                       className="h-10 bg-[#0e0a0d] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs focus:ring-1 focus:ring-[#714b67]"
                     />
                   </div>
                 </div>
 
                 <div className="grid grid-cols-3 gap-2.5">
-                  <div className="col-span-1 space-y-1">
-                    <Label className="text-xs text-slate-300">Plot / Block No. <span className="text-rose-400">*</span></Label>
-                    <Input
-                      value={blockNumber}
-                      onChange={(e) => setBlockNumber(e.target.value)}
-                      placeholder="e.g. 15"
-                      className="h-10 bg-[#0e0a0d] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs focus:ring-1 focus:ring-[#714b67]"
-                    />
-                  </div>
                   <div className="col-span-2 space-y-1">
                     <Label className="text-xs text-slate-300">Street Name <span className="text-rose-400">*</span></Label>
                     <Input
@@ -635,14 +565,24 @@ export const OrganizationWizard: React.FC = () => {
                       className="h-10 bg-[#0e0a0d] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs focus:ring-1 focus:ring-[#714b67]"
                     />
                   </div>
+
+                  <div className="space-y-1">
+                    <Label className="text-xs text-slate-300">Block / No. <span className="text-rose-400">*</span></Label>
+                    <Input
+                      value={blockNumber}
+                      onChange={(e) => setBlockNumber(e.target.value)}
+                      placeholder="No. 12"
+                      className="h-10 bg-[#0e0a0d] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs focus:ring-1 focus:ring-[#714b67]"
+                    />
+                  </div>
                 </div>
 
                 <div className="space-y-1">
-                  <Label className="text-xs text-slate-300">Landmark (optional)</Label>
+                  <Label className="text-xs text-slate-300">Nearest Landmark / Description</Label>
                   <Input
                     value={landmark}
                     onChange={(e) => setLandmark(e.target.value)}
-                    placeholder="e.g. Opposite City Mall"
+                    placeholder="e.g. Beside Zenith Bank"
                     className="h-10 bg-[#0e0a0d] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs focus:ring-1 focus:ring-[#714b67]"
                   />
                 </div>
@@ -653,13 +593,13 @@ export const OrganizationWizard: React.FC = () => {
               <Button
                 variant="outline"
                 onClick={() => setStep(1)}
-                className="h-10 px-4 bg-white/5 border-white/10 text-xs text-slate-300"
+                className="h-10 px-4 bg-white/5 border-white/10 text-xs text-slate-300 cursor-pointer"
               >
                 <ArrowLeft className="w-3.5 h-3.5 mr-1" /> Back
               </Button>
               <Button
                 onClick={handleNextStep2}
-                className="flex-1 h-10 bg-gradient-to-r from-[#714b67] to-[#8d5b80] hover:from-[#8d5b80] text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2"
+                className="flex-1 h-10 bg-gradient-to-r from-[#714b67] to-[#8d5b80] hover:from-[#8d5b80] text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer"
               >
                 <span>Continue</span>
                 <ArrowRight className="w-3.5 h-3.5" />
@@ -672,85 +612,62 @@ export const OrganizationWizard: React.FC = () => {
         {step === 3 && (
           <div className="space-y-5 animate-in fade-in duration-200">
             <div className="space-y-1.5 text-center">
-              <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">Business Contact Details</h1>
-              <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">Customers will see this contact information on receipts and invoices.</p>
+              <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">How can customers contact this branch?</h1>
+              <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">This contact number will be printed on receipts and invoices.</p>
             </div>
 
-            <div className="space-y-3.5">
-              <div className="space-y-2">
-                <Label className="text-xs font-medium text-slate-300">Business Phone Number</Label>
-                {user?.phone && (
-                  <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-200">
-                    <Checkbox
-                      checked={useMyPhone}
-                      onCheckedChange={(c) => {
-                        setUseMyPhone(!!c);
-                        if (c && user?.phone) setBusinessPhone(user.phone);
-                      }}
-                    />
-                    <span>Use my verified personal phone: <strong className="text-white">{user.phone}</strong></span>
-                  </label>
-                )}
-
-                {!useMyPhone && (
-                  <div className="flex gap-2 pt-1">
-                    <div className="relative flex-1">
-                      <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
-                      <Input
-                        value={businessPhone}
-                        onChange={(e) => {
-                          setBusinessPhone(e.target.value);
-                          setBusinessPhoneVerified(false);
-                        }}
-                        placeholder="+234 801 234 5678"
-                        className="pl-9 h-10 bg-[#0e0a0d] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs focus:ring-1 focus:ring-[#714b67]"
-                      />
-                    </div>
-                    {businessPhone && !businessPhoneVerified && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={handleSendBusinessPhoneOtp}
-                        disabled={isSendingPhoneOtp}
-                        className="h-10 px-3 bg-white/5 border-white/10 text-xs text-slate-200 shrink-0 rounded-xs"
-                      >
-                        {isSendingPhoneOtp ? <Spinner size="sm" /> : 'Verify'}
-                      </Button>
-                    )}
+            <div className="space-y-4">
+              {user?.phone && (
+                <div className="p-3 bg-white/5 rounded-xl border border-white/10 flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-medium text-white">Use my registered phone number</p>
+                    <p className="text-[11px] text-slate-400 font-mono">{user.phone}</p>
                   </div>
-                )}
+                  <input
+                    type="checkbox"
+                    checked={useMyPhone}
+                    onChange={(e) => {
+                      setUseMyPhone(e.target.checked);
+                      if (e.target.checked && user?.phone) {
+                        setBusinessPhone(user.phone);
+                        setBusinessPhoneVerified(Boolean(user?.phoneVerifiedAt));
+                      }
+                    }}
+                    className="w-4 h-4 rounded accent-[#714b67]"
+                  />
+                </div>
+              )}
 
-                {businessPhoneVerified && (
-                  <p className="text-[11px] text-emerald-400 flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3" /> Phone verified for receipts
-                  </p>
-                )}
-              </div>
-
-              {/* Address Mode */}
-              <div className="space-y-2 pt-2">
-                <Label className="text-xs font-medium text-slate-300">Business Invoicing Address</Label>
-                <div className="space-y-2 pt-1">
-                  <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-200">
-                    <input
-                      type="radio"
-                      name="addressType"
-                      checked={addressType === 'same-as-branch'}
-                      onChange={() => setAddressType('same-as-branch')}
-                      className="text-[#714b67]"
-                    />
-                    <span>Same as branch location ({street || 'Main Store Address'})</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-200">
-                    <input
-                      type="radio"
-                      name="addressType"
-                      checked={addressType === 'custom'}
-                      onChange={() => setAddressType('custom')}
-                      className="text-[#714b67]"
-                    />
-                    <span>Enter separate headquarters / legal billing address</span>
-                  </label>
+              <div className="space-y-1.5">
+                <Label className="text-xs font-medium text-slate-300">Branch Phone Number</Label>
+                <div className="flex gap-2">
+                  <Input
+                    value={businessPhone}
+                    onChange={(e) => {
+                      setBusinessPhone(e.target.value);
+                      setBusinessPhoneVerified(false);
+                    }}
+                    placeholder="08012345678"
+                    className="h-10 bg-[#0e0a0d] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs font-mono focus:ring-1 focus:ring-[#714b67]"
+                  />
+                  {businessPhone && !businessPhoneVerified && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleSendBusinessPhoneOtp}
+                      disabled={isSendingPhoneOtp}
+                      className="h-10 px-3 bg-emerald-500/10 border-emerald-500/20 text-emerald-400 text-xs rounded-xl"
+                    >
+                      {isSendingPhoneOtp ? <Spinner size="sm" /> : 'Verify'}
+                    </Button>
+                  )}
+                  {businessPhoneVerified && (
+                    <div className="flex items-center gap-1 text-xs text-emerald-400 px-2 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-xl">
+                      <ShieldCheck className="w-4 h-4" />
+                      <span>Verified</span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -759,13 +676,13 @@ export const OrganizationWizard: React.FC = () => {
               <Button
                 variant="outline"
                 onClick={() => setStep(2)}
-                className="h-10 px-4 bg-white/5 border-white/10 text-xs text-slate-300"
+                className="h-10 px-4 bg-white/5 border-white/10 text-xs text-slate-300 cursor-pointer"
               >
                 <ArrowLeft className="w-3.5 h-3.5 mr-1" /> Back
               </Button>
               <Button
                 onClick={handleNextStep3}
-                className="flex-1 h-10 bg-gradient-to-r from-[#714b67] to-[#8d5b80] text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2"
+                className="flex-1 h-10 bg-gradient-to-r from-[#714b67] to-[#8d5b80] hover:from-[#8d5b80] text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer"
               >
                 <span>Continue</span>
                 <ArrowRight className="w-3.5 h-3.5" />
@@ -774,256 +691,12 @@ export const OrganizationWizard: React.FC = () => {
           </div>
         )}
 
-        {/* STEP 4: PRODUCT SELECTION */}
+        {/* STEP 4: TEAM INVITATION (OPTIONAL) */}
         {step === 4 && (
           <div className="space-y-5 animate-in fade-in duration-200">
             <div className="space-y-1.5 text-center">
-              <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">Which applications do you need?</h1>
-              <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">Select the apps you want to use. You can activate more later.</p>
-            </div>
-
-            <div className="flex items-center justify-between p-3 rounded-xl bg-[#714b67]/15 border border-[#714b67]/30">
-              <div className="space-y-0.5">
-                <span className="text-xs font-semibold text-white">Activate all available apps</span>
-                <p className="text-[11px] text-slate-300">Unlock the full Orviohub business suite</p>
-              </div>
-              <Checkbox
-                checked={activateAllApps}
-                onCheckedChange={(c) => handleToggleActivateAll(!!c)}
-              />
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              {PRODUCT_APPS.map((app) => {
-                const isSelected = selectedProducts.includes(app.key);
-                return (
-                  <div
-                    key={app.key}
-                    onClick={() => handleToggleProduct(app.key)}
-                    className={`p-3.5 rounded-xl border transition-all cursor-pointer flex flex-col justify-between ${
-                      isSelected
-                        ? 'bg-[#714b67]/20 border-[#714b67] shadow-md shadow-[#714b67]/10'
-                        : 'bg-[#0e0a0d] border-white/10 hover:border-white/20'
-                    }`}
-                  >
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xl">{app.icon}</span>
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
-                          app.planRequired === 'free'
-                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                            : app.planRequired === 'standard'
-                            ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                            : 'bg-purple-500/20 text-purple-400 border border-purple-500/30'
-                        }`}>
-                          {app.planRequired === 'free' ? 'Free' : `${app.planRequired}+`}
-                        </span>
-                      </div>
-                      <div>
-                        <h3 className="text-xs font-bold text-white">{app.name}</h3>
-                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed line-clamp-2">{app.description}</p>
-                      </div>
-                    </div>
-                    <div className="pt-2 flex items-center justify-between text-xs">
-                      <span className="text-[10px] text-slate-500">{app.category}</span>
-                      <div className={`w-4 h-4 rounded-md flex items-center justify-center border ${
-                        isSelected ? 'bg-[#714b67] border-[#714b67] text-white' : 'border-white/20'
-                      }`}>
-                        {isSelected && <Check className="w-3 h-3" />}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="pt-2 flex items-center justify-between gap-3">
-              <Button
-                variant="outline"
-                onClick={() => setStep(3)}
-                className="h-10 px-4 bg-white/5 border-white/10 text-xs text-slate-300"
-              >
-                <ArrowLeft className="w-3.5 h-3.5 mr-1" /> Back
-              </Button>
-              <Button
-                onClick={handleNextStep4}
-                className="flex-1 h-10 bg-gradient-to-r from-[#714b67] to-[#8d5b80] text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2"
-              >
-                <span>Continue</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* STEP 5: PLAN SELECTION */}
-        {step === 5 && (
-          <div className="space-y-5 animate-in fade-in duration-200">
-            <div className="space-y-1.5 text-center">
-              <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">Choose your plan</h1>
-              <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">You can upgrade or downgrade anytime.</p>
-            </div>
-
-            {/* Billing Toggle */}
-            <div className="flex justify-center">
-              <div className="p-1 rounded-xl bg-[#0e0a0d] border border-white/10 inline-flex items-center gap-1 text-xs">
-                <button
-                  type="button"
-                  onClick={() => setBillingInterval('monthly')}
-                  className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
-                    billingInterval === 'monthly' ? 'bg-[#714b67] text-white shadow-sm' : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  Monthly
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setBillingInterval('annual')}
-                  className={`px-3 py-1.5 rounded-lg font-medium transition-all flex items-center gap-1.5 ${
-                    billingInterval === 'annual' ? 'bg-[#714b67] text-white shadow-sm' : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <span>Annual</span>
-                  <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 text-[10px] font-bold">Save 17%</span>
-                </button>
-              </div>
-            </div>
-
-            {/* 3 Plans Grid */}
-            <div className="grid grid-cols-1 gap-3">
-              {/* Free Plan */}
-              <div
-                onClick={() => setSelectedPlan('free')}
-                className={`p-4 rounded-xl border transition-all cursor-pointer flex flex-col justify-between ${
-                  selectedPlan === 'free'
-                    ? 'bg-[#714b67]/20 border-[#714b67] shadow-lg'
-                    : 'bg-[#0e0a0d] border-white/10 hover:border-white/20'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h3 className="text-sm font-bold text-white">Free Plan</h3>
-                    <div className="mt-0.5">
-                      <span className="text-xl font-extrabold text-white">₦0</span>
-                      <span className="text-xs text-slate-400"> /month</span>
-                    </div>
-                  </div>
-                  <div className={`px-3 py-1 rounded-lg text-xs font-semibold ${
-                    selectedPlan === 'free' ? 'bg-[#714b67] text-white' : 'bg-white/5 text-slate-300'
-                  }`}>
-                    {selectedPlan === 'free' ? 'Selected' : 'Select'}
-                  </div>
-                </div>
-                <ul className="grid grid-cols-2 gap-1.5 pt-3 text-xs text-slate-300">
-                  <li className="flex items-center gap-1.5"><Check className="w-3 h-3 text-emerald-400" /> 1 Org • 1 App</li>
-                  <li className="flex items-center gap-1.5"><Check className="w-3 h-3 text-emerald-400" /> 2 Team Members</li>
-                  <li className="flex items-center gap-1.5"><Check className="w-3 h-3 text-emerald-400" /> 500 Products</li>
-                  <li className="flex items-center gap-1.5"><Check className="w-3 h-3 text-emerald-400" /> Community Support</li>
-                </ul>
-              </div>
-
-              {/* Standard Plan */}
-              <div
-                onClick={() => setSelectedPlan('standard')}
-                className={`relative p-4 rounded-xl border transition-all cursor-pointer flex flex-col justify-between ${
-                  selectedPlan === 'standard'
-                    ? 'bg-[#714b67]/25 border-[#714b67] shadow-xl'
-                    : 'bg-[#0e0a0d] border-white/10 hover:border-white/20'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-sm font-bold text-white">Standard Plan</h3>
-                      <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-[#714b67] text-white uppercase tracking-wider">
-                        Most Popular
-                      </span>
-                    </div>
-                    <div className="mt-0.5">
-                      <span className="text-xl font-extrabold text-white">
-                        {billingInterval === 'annual' ? '₦75,000' : '₦7,500'}
-                      </span>
-                      <span className="text-xs text-slate-400">{billingInterval === 'annual' ? ' /year' : ' /month'}</span>
-                    </div>
-                  </div>
-                  <div className={`px-3 py-1 rounded-lg text-xs font-semibold ${
-                    selectedPlan === 'standard' ? 'bg-[#714b67] text-white' : 'bg-white/5 text-slate-300'
-                  }`}>
-                    {selectedPlan === 'standard' ? 'Selected' : 'Select'}
-                  </div>
-                </div>
-                <ul className="grid grid-cols-2 gap-1.5 pt-3 text-xs text-slate-300">
-                  <li className="flex items-center gap-1.5"><Check className="w-3 h-3 text-emerald-400" /> 3 Orgs • 3 Apps</li>
-                  <li className="flex items-center gap-1.5"><Check className="w-3 h-3 text-emerald-400" /> 10 Team Members</li>
-                  <li className="flex items-center gap-1.5"><Check className="w-3 h-3 text-emerald-400" /> 5,000 Products</li>
-                  <li className="flex items-center gap-1.5"><Check className="w-3 h-3 text-emerald-400" /> 3 Branches</li>
-                </ul>
-              </div>
-
-              {/* Premium Plan */}
-              <div
-                onClick={() => setSelectedPlan('premium')}
-                className={`relative p-4 rounded-xl border transition-all cursor-pointer flex flex-col justify-between ${
-                  selectedPlan === 'premium'
-                    ? 'bg-[#714b67]/25 border-[#714b67] shadow-xl'
-                    : 'bg-[#0e0a0d] border-white/10 hover:border-white/20'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-sm font-bold text-white">Premium Plan</h3>
-                      <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-amber-500 text-black uppercase tracking-wider">
-                        Best Value
-                      </span>
-                    </div>
-                    <div className="mt-0.5">
-                      <span className="text-xl font-extrabold text-white">
-                        {billingInterval === 'annual' ? '₦200,000' : '₦20,000'}
-                      </span>
-                      <span className="text-xs text-slate-400">{billingInterval === 'annual' ? ' /year' : ' /month'}</span>
-                    </div>
-                  </div>
-                  <div className={`px-3 py-1 rounded-lg text-xs font-semibold ${
-                    selectedPlan === 'premium' ? 'bg-[#714b67] text-white' : 'bg-white/5 text-slate-300'
-                  }`}>
-                    {selectedPlan === 'premium' ? 'Selected' : 'Select'}
-                  </div>
-                </div>
-                <ul className="grid grid-cols-2 gap-1.5 pt-3 text-xs text-slate-300">
-                  <li className="flex items-center gap-1.5"><Check className="w-3 h-3 text-emerald-400" /> 10 Orgs • Unlimited Apps</li>
-                  <li className="flex items-center gap-1.5"><Check className="w-3 h-3 text-emerald-400" /> 50 Team Members</li>
-                  <li className="flex items-center gap-1.5"><Check className="w-3 h-3 text-emerald-400" /> 25,000 Products</li>
-                  <li className="flex items-center gap-1.5"><Check className="w-3 h-3 text-emerald-400" /> Priority WhatsApp Support</li>
-                </ul>
-              </div>
-            </div>
-
-            <div className="pt-2 flex items-center justify-between gap-3">
-              <Button
-                variant="outline"
-                onClick={() => setStep(4)}
-                className="h-10 px-4 bg-white/5 border-white/10 text-xs text-slate-300"
-              >
-                <ArrowLeft className="w-3.5 h-3.5 mr-1" /> Back
-              </Button>
-              <Button
-                onClick={handleNextStep5}
-                className="flex-1 h-10 bg-gradient-to-r from-[#714b67] to-[#8d5b80] text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2"
-              >
-                <span>Continue</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* STEP 6: TEAM INVITATION */}
-        {step === 6 && (
-          <div className="space-y-5 animate-in fade-in duration-200">
-            <div className="space-y-1.5 text-center">
               <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">Invite team members</h1>
-              <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">Invite your team to collaborate. You can do this later if you prefer.</p>
+              <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">Invite your team to collaborate. You can also do this anytime later.</p>
             </div>
 
             <div className="space-y-3">
@@ -1072,8 +745,8 @@ export const OrganizationWizard: React.FC = () => {
             <div className="pt-2 flex items-center justify-between gap-3">
               <Button
                 variant="outline"
-                onClick={() => setStep(5)}
-                className="h-10 px-4 bg-white/5 border-white/10 text-xs text-slate-300"
+                onClick={() => setStep(3)}
+                className="h-10 px-4 bg-white/5 border-white/10 text-xs text-slate-300 cursor-pointer"
               >
                 <ArrowLeft className="w-3.5 h-3.5 mr-1" /> Back
               </Button>
@@ -1083,7 +756,7 @@ export const OrganizationWizard: React.FC = () => {
                   variant="ghost"
                   onClick={handleFinishOrgCreation}
                   disabled={isLoading}
-                  className="text-xs text-slate-400 hover:text-white"
+                  className="text-xs text-slate-400 hover:text-white cursor-pointer"
                 >
                   Skip
                 </Button>
@@ -1091,9 +764,9 @@ export const OrganizationWizard: React.FC = () => {
                 <Button
                   onClick={handleFinishOrgCreation}
                   disabled={isLoading}
-                  className="h-10 px-6 bg-gradient-to-r from-[#714b67] to-[#8d5b80] hover:from-[#8d5b80] text-white rounded-xl text-xs font-semibold flex items-center gap-2 cursor-pointer"
+                  className="h-10 px-6 bg-gradient-to-r from-[#714b67] to-[#8d5b80] hover:from-[#8d5b80] text-white rounded-xl text-xs font-semibold flex items-center gap-2 cursor-pointer shadow-lg shadow-[#714b67]/25"
                 >
-                  {isLoading ? <Spinner size="sm" className="text-white" /> : <span>Finalize Setup</span>}
+                  {isLoading ? <Spinner size="sm" className="text-white" /> : <span>Create Organization</span>}
                   <ArrowRight className="w-3.5 h-3.5" />
                 </Button>
               </div>
@@ -1101,8 +774,8 @@ export const OrganizationWizard: React.FC = () => {
           </div>
         )}
 
-        {/* STEP 7: COMPLETION */}
-        {step === 7 && (
+        {/* STEP 5: READY TO LAUNCH */}
+        {step === 5 && (
           <div className="space-y-6 text-center py-6 animate-in zoom-in-95 duration-300">
             <div className="w-16 h-16 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 flex items-center justify-center mx-auto text-3xl shadow-xl">
               🎉
@@ -1111,18 +784,18 @@ export const OrganizationWizard: React.FC = () => {
             <div className="space-y-1.5">
               <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">You're all set!</h1>
               <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
-                Your organization <strong className="text-white">{orgName}</strong> is ready to go.
+                Your organization <strong className="text-white">{orgName}</strong> is ready.
               </p>
             </div>
 
-            <div className="space-y-2 text-left text-xs max-w-sm mx-auto">
+            <div className="space-y-2 text-left text-xs max-w-sm mx-auto p-4 bg-white/5 border border-white/10 rounded-xl">
               <div className="flex items-center justify-between text-slate-400">
-                <span>Activated Apps:</span>
-                <span className="font-semibold text-white capitalize">{selectedProducts.join(', ')}</span>
+                <span>Application:</span>
+                <span className="font-semibold text-white capitalize">{productParam} Management</span>
               </div>
               <div className="flex items-center justify-between text-slate-400">
-                <span>Selected Plan:</span>
-                <span className="font-semibold text-[#e2b9d8] capitalize">{selectedPlan} Plan</span>
+                <span>Plan:</span>
+                <span className="font-semibold text-[#e2b9d8]">Free Plan (Upgrade anytime in billing)</span>
               </div>
               <div className="flex items-center justify-between text-slate-400">
                 <span>Main Branch:</span>
@@ -1132,28 +805,26 @@ export const OrganizationWizard: React.FC = () => {
 
             <div className="pt-4 flex flex-col gap-2.5 max-w-sm mx-auto">
               <Button
-                onClick={() => navigate('/app')}
-                className="w-full h-10 bg-gradient-to-r from-[#714b67] to-[#8d5b80] hover:from-[#8d5b80] text-white rounded-xl text-xs font-semibold shadow-lg shadow-[#714b67]/25 flex items-center justify-center gap-2 cursor-pointer"
+                onClick={handleLaunchProduct}
+                className="w-full h-11 bg-gradient-to-r from-[#714b67] to-[#8d5b80] hover:from-[#8d5b80] text-white rounded-xl text-xs font-semibold shadow-lg shadow-[#714b67]/25 flex items-center justify-center gap-2 cursor-pointer"
               >
-                <span>Go to Dashboard</span>
+                <span>Launch {productParam.charAt(0).toUpperCase() + productParam.slice(1)} Workspace</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </Button>
 
-              {selectedProducts.includes('inventory') && (
-                <Button
-                  variant="outline"
-                  onClick={() => navigate('/onboarding/inventory')}
-                  className="w-full h-10 bg-white/5 hover:bg-white/10 border-white/10 text-slate-200 rounded-xl text-xs font-medium cursor-pointer"
-                >
-                  <span>Complete Inventory Setup</span>
-                </Button>
-              )}
+              <Button
+                variant="outline"
+                onClick={() => navigate('/app')}
+                className="w-full h-10 bg-white/5 hover:bg-white/10 border-white/10 text-slate-300 rounded-xl text-xs font-medium cursor-pointer"
+              >
+                <span>Go to App Launcher</span>
+              </Button>
             </div>
           </div>
         )}
 
-        {/* Skip Wizard Permanently */}
-        {step < 7 && (
+        {/* Skip Setup Permanently Modal trigger - ONLY for initial onboarding */}
+        {step < 5 && isOnboardingMode && (
           <div className="mt-6 text-center">
             <button
               type="button"
@@ -1161,6 +832,17 @@ export const OrganizationWizard: React.FC = () => {
               className="text-xs text-slate-500 hover:text-slate-400 underline underline-offset-4 transition-colors cursor-pointer"
             >
               Skip organization setup permanently
+            </button>
+          </div>
+        )}
+        {step < 5 && !isOnboardingMode && (
+          <div className="mt-6 text-center">
+            <button
+              type="button"
+              onClick={() => navigate('/app')}
+              className="text-xs text-slate-500 hover:text-slate-400 underline underline-offset-4 transition-colors cursor-pointer"
+            >
+              Cancel and return to App Launcher
             </button>
           </div>
         )}
@@ -1173,7 +855,7 @@ export const OrganizationWizard: React.FC = () => {
             <div className="text-center space-y-2">
               <h3 className="text-sm font-bold text-white">Skip Organization Setup?</h3>
               <p className="text-xs text-slate-400 leading-relaxed">
-                You will be taken to the App Launcher. You can start creating an organization or join existing ones whenever you are ready.
+                You will be taken to the App Launcher. You can create an organization or join existing ones whenever you are ready.
               </p>
             </div>
             <div className="flex gap-2 pt-2">
@@ -1246,3 +928,5 @@ export const OrganizationWizard: React.FC = () => {
     </div>
   );
 };
+
+export default OrganizationWizard;

@@ -1750,6 +1750,8 @@ export class DataService {
       phoneVisibility?: 'private' | 'workspace';
       country?: string;
       state?: string;
+      stateCode?: string;
+      lga?: string;
       city?: string;
       timezone?: string;
     }

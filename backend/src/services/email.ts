@@ -5,51 +5,162 @@ import { env } from '../config/env.js';
 type OutboxMessage = {
   _id?: string;
   to: string;
-  template: 'verification' | 'invitation' | 'onboardingCompleted' | 'passwordReset' | 'emailChange';
+  template: 'verification' | 'invitation' | 'onboardingCompleted' | 'passwordReset' | 'emailChange' | 'twoFactorStatus' | 'securityAlert';
   payload: Record<string, string>;
 };
+
+function buildHtmlTemplate({
+  title,
+  preheader,
+  contentHtml,
+  buttonText,
+  buttonUrl,
+  footerNote,
+}: {
+  title: string;
+  preheader?: string;
+  contentHtml: string;
+  buttonText?: string;
+  buttonUrl?: string;
+  footerNote?: string;
+}) {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title}</title>
+  <style>
+    body { margin: 0; padding: 0; background-color: #0c080b; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #f1f5f9; -webkit-font-smoothing: antialiased; }
+    .container { max-width: 580px; margin: 40px auto; background-color: #140e13; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 4px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+    .header { padding: 28px 32px; background: linear-gradient(180deg, #1c131a 0%, #140e13 100%); border-bottom: 1px solid rgba(255, 255, 255, 0.06); text-align: left; }
+    .brand { font-size: 20px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px; text-decoration: none; }
+    .brand-accent { color: #c79dbd; }
+    .body { padding: 32px; font-size: 14px; line-height: 1.6; color: #cbd5e1; }
+    .title { font-size: 20px; font-weight: 700; color: #ffffff; margin-top: 0; margin-bottom: 16px; letter-spacing: -0.3px; }
+    .button-container { margin: 28px 0; text-align: left; }
+    .button { display: inline-block; background-color: #714b67; color: #ffffff !important; padding: 12px 28px; font-size: 13px; font-weight: 600; text-decoration: none; border-radius: 3px; box-shadow: 0 4px 12px rgba(113, 75, 103, 0.35); }
+    .fallback-url { margin-top: 24px; padding: 14px; background-color: #0b070a; border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 3px; font-size: 11px; word-break: break-all; color: #94a3b8; font-family: monospace; }
+    .footer { padding: 24px 32px; background-color: #0e0a0d; border-top: 1px solid rgba(255, 255, 255, 0.05); font-size: 11px; color: #64748b; text-align: left; line-height: 1.5; }
+    .footer a { color: #c79dbd; text-decoration: none; }
+  </style>
+</head>
+<body>
+  ${preheader ? `<div style="display: none; max-height: 0px; overflow: hidden;">${preheader}</div>` : ''}
+  <div class="container">
+    <div class="header">
+      <div class="brand">Orvio<span class="brand-accent">Hub</span></div>
+    </div>
+    <div class="body">
+      <h1 class="title">${title}</h1>
+      ${contentHtml}
+      ${
+        buttonText && buttonUrl
+          ? `<div class="button-container">
+              <a href="${buttonUrl}" class="button" target="_blank">${buttonText}</a>
+            </div>
+            <div class="fallback-url">
+              If the button doesn't work, copy and paste this link in your browser:<br/>
+              <a href="${buttonUrl}" style="color: #c79dbd; text-decoration: underline;">${buttonUrl}</a>
+            </div>`
+          : ''
+      }
+      ${footerNote ? `<p style="margin-top: 24px; font-size: 12px; color: #94a3b8;">${footerNote}</p>` : ''}
+    </div>
+    <div class="footer">
+      <div><strong>Orvio Technologies Nigeria</strong> • Multi-Workspace Business Platform</div>
+      <div>Operating in Nigeria (West Africa) • Timezone: Africa/Lagos (GMT+1)</div>
+      <div style="margin-top: 8px;">Need help? Contact support at <a href="mailto:support@orviohub.com">support@orviohub.com</a></div>
+    </div>
+  </div>
+</body>
+</html>`;
+}
 
 function renderEmail(message: { template: string; payload: Record<string, string> }) {
   switch (message.template) {
     case 'verification':
       return {
-        subject: 'Verify your email address - orvioHub',
-        html: `<div style="font-family: sans-serif; padding: 20px; color: #1e293b;">
-          <h2>Verify your orvioHub Account</h2>
-          <p>Hello ${message.payload.name || 'there'},</p>
-          <p>Thank you for signing up for orvioHub. Please click the button below to verify your email address:</p>
-          <p style="margin: 24px 0;">
-            <a href="${message.payload.url}" style="background-color: #714b67; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold;">
-              Verify Email Address
-            </a>
-          </p>
-          <p style="font-size: 12px; color: #64748b;">Or copy and paste this link in your browser:<br/><a href="${message.payload.url}">${message.payload.url}</a></p>
-        </div>`,
+        subject: 'Verify your OrvioHub account email',
+        html: buildHtmlTemplate({
+          title: 'Verify your email address',
+          preheader: 'Complete your OrvioHub registration by confirming your email address.',
+          contentHtml: `<p>Hello ${message.payload.name || 'there'},</p>
+          <p>Thank you for signing up for OrvioHub. Please click the button below to verify your email address and activate all business workspace features:</p>`,
+          buttonText: 'Verify Email Address',
+          buttonUrl: message.payload.url,
+          footerNote: 'This verification link will expire in 24 hours. If you did not create an account, you can safely ignore this email.',
+        }),
       };
+
     case 'invitation':
       return {
-        subject: `You've been invited to join ${message.payload.organizationName || message.payload.workspaceName || 'a workspace'} on orvioHub`,
-        html: `<p>${message.payload.inviterName || 'A teammate'} invited you to join ${message.payload.organizationName || message.payload.workspaceName} as ${message.payload.role || 'Member'}.</p><p><a href="${message.payload.url}">Accept invitation</a>.</p>`,
+        subject: `You've been invited to join ${message.payload.organizationName || message.payload.workspaceName || 'an organization'} on OrvioHub`,
+        html: buildHtmlTemplate({
+          title: 'Workspace Invitation',
+          preheader: `Join ${message.payload.organizationName || message.payload.workspaceName} on OrvioHub.`,
+          contentHtml: `<p>Hello,</p>
+          <p><strong>${message.payload.inviterName || 'A teammate'}</strong> has invited you to collaborate in <strong>${message.payload.organizationName || message.payload.workspaceName || 'their workspace'}</strong> as a <strong>${message.payload.role || 'Member'}</strong>.</p>
+          <p>Click below to accept your invitation and start collaborating:</p>`,
+          buttonText: 'Accept Invitation',
+          buttonUrl: message.payload.url,
+          footerNote: 'This invitation is tied to your email address and is valid for 7 days.',
+        }),
       };
+
     case 'onboardingCompleted':
       return {
-        subject: `Welcome to ${message.payload.organizationName || 'orvioHub'}!`,
-        html: `<p>Welcome to ${message.payload.organizationName || 'orvioHub'}, ${message.payload.name || ''}.</p>`,
+        subject: `Welcome to ${message.payload.organizationName || 'OrvioHub'}!`,
+        html: buildHtmlTemplate({
+          title: 'Welcome to OrvioHub!',
+          preheader: 'Your workspace is ready for business.',
+          contentHtml: `<p>Hello ${message.payload.name || 'there'},</p>
+          <p>Congratulations! Your organization <strong>${message.payload.organizationName || 'Workspace'}</strong> has been successfully configured.</p>
+          <p>You can now access your product suites including Inventory, POS, CRM, and Multi-Branch Management.</p>`,
+          buttonText: 'Open Workspace Dashboard',
+          buttonUrl: message.payload.url || 'http://home.orviohub.localhost:4000',
+        }),
       };
+
     case 'passwordReset':
       return {
-        subject: 'Reset your password - orvioHub',
-        html: `<p>Hello ${message.payload.name || ''},</p><p>We received a request to reset your password. Click the link below to set a new password:</p><p><a href="${message.payload.url}">Reset Password</a></p><p>If you did not request a password reset, you can safely ignore this email. This link will expire in 1 hour.</p>`,
+        subject: 'Reset your OrvioHub password',
+        html: buildHtmlTemplate({
+          title: 'Password Reset Request',
+          preheader: 'Reset your account password.',
+          contentHtml: `<p>Hello ${message.payload.name || 'there'},</p>
+          <p>We received a request to reset your password for your OrvioHub account.</p>
+          <p>Click the button below to choose a new password:</p>`,
+          buttonText: 'Reset Password',
+          buttonUrl: message.payload.url,
+          footerNote: 'For security reasons, this link will expire in 1 hour. If you did not make this request, please contact your security admin immediately.',
+        }),
       };
+
     case 'emailChange':
       return {
-        subject: 'Confirm your new email address - orvioHub',
-        html: `<p>Hello ${message.payload.name || ''},</p><p>You requested to change your email address on orvioHub. Please click the link below to confirm:</p><p><a href="${message.payload.url}">Confirm Email Change</a></p><p>This link will expire in 24 hours. If you did not request this change, please ignore this email.</p>`,
+        subject: 'Confirm your new email address - OrvioHub',
+        html: buildHtmlTemplate({
+          title: 'Confirm Email Address Change',
+          preheader: 'Confirm change of email address for your OrvioHub account.',
+          contentHtml: `<p>Hello ${message.payload.name || 'there'},</p>
+          <p>You recently requested to update your login email address on OrvioHub.</p>
+          <p>Click below to verify and activate your new email address:</p>`,
+          buttonText: 'Confirm Email Change',
+          buttonUrl: message.payload.url,
+          footerNote: 'This link expires in 24 hours. If you did not request this change, please contact support immediately.',
+        }),
       };
+
     default:
       return {
-        subject: 'Notification from orvioHub',
-        html: `<p>${message.payload.url || ''}</p>`,
+        subject: 'Notification from OrvioHub',
+        html: buildHtmlTemplate({
+          title: 'Account Notification',
+          contentHtml: `<p>${message.payload.message || 'You have a new notification from OrvioHub.'}</p>`,
+          buttonText: message.payload.url ? 'View in OrvioHub' : undefined,
+          buttonUrl: message.payload.url,
+        }),
       };
   }
 }

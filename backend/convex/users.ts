@@ -346,18 +346,13 @@ export const linkSocialIdentity = mutation({
 export const unlinkIdentity = mutation({
   args: {
     userId: v.id("users"),
-    identityId: v.id("authIdentities"),
+    identityId: v.optional(v.union(v.id("authIdentities"), v.string())),
+    provider: v.optional(v.union(v.literal("password"), v.literal("google"), v.literal("facebook"), v.literal("phone"), v.literal("apple"), v.string())),
   },
   handler: async (ctx, args) => {
-    const identity = await ctx.db.get(args.identityId);
-    if (!identity || identity.userId !== args.userId) {
-      throw new Error("IDENTITY_NOT_FOUND");
-    }
-
     const user = await ctx.db.get(args.userId);
     if (!user) throw new Error("USER_NOT_FOUND");
 
-    // Check how many login methods exist
     const allIdentities = await ctx.db
       .query("authIdentities")
       .withIndex("by_userId", (q) => q.eq("userId", args.userId))
@@ -365,21 +360,32 @@ export const unlinkIdentity = mutation({
 
     const hasPassword = Boolean(user.passwordHash);
     const otherSocialCount = allIdentities.filter(
-      (i) => i._id !== args.identityId && i.provider !== "password"
+      (i) => (args.identityId ? i._id !== args.identityId : true) && (args.provider ? i.provider !== args.provider : true) && i.provider !== "password"
     ).length;
 
-    if (identity.provider === "password") {
+    const isPasswordTarget = args.provider === "password" || (args.identityId && allIdentities.find((i) => i._id === args.identityId)?.provider === "password");
+
+    if (isPasswordTarget) {
       if (otherSocialCount === 0) {
         throw new Error("CANNOT_REMOVE_ONLY_LOGIN_METHOD");
       }
-      await ctx.db.patch(args.userId, { passwordHash: undefined });
+      await ctx.db.patch(args.userId, { passwordHash: undefined, updatedAt: Date.now() });
     } else {
       if (!hasPassword && otherSocialCount === 0) {
         throw new Error("CANNOT_REMOVE_ONLY_LOGIN_METHOD");
       }
     }
 
-    await ctx.db.delete(args.identityId);
+    const targetIdentity = args.identityId
+      ? allIdentities.find((i) => i._id === args.identityId)
+      : args.provider
+      ? allIdentities.find((i) => i.provider === args.provider)
+      : undefined;
+
+    if (targetIdentity) {
+      await ctx.db.delete(targetIdentity._id);
+    }
+
     return { success: true };
   },
 });
@@ -613,6 +619,8 @@ export const updateUserProfile = mutation({
     phoneVisibility: v.optional(v.union(v.literal("private"), v.literal("workspace"))),
     country: v.optional(v.string()),
     state: v.optional(v.string()),
+    stateCode: v.optional(v.string()),
+    lga: v.optional(v.string()),
     city: v.optional(v.string()),
     timezone: v.optional(v.string()),
     language: v.optional(v.string()),
@@ -707,6 +715,8 @@ export const updateContactDetails = mutation({
     phoneVisibility: v.optional(v.union(v.literal("private"), v.literal("workspace"))),
     country: v.optional(v.string()),
     state: v.optional(v.string()),
+    stateCode: v.optional(v.string()),
+    lga: v.optional(v.string()),
     city: v.optional(v.string()),
     timezone: v.optional(v.string()),
   },
@@ -1057,21 +1067,7 @@ export const consumeBackupCode = mutation({
   },
 });
 
-export const touchLastLogin = mutation({
-  args: {
-    userId: v.id("users"),
-  },
-  handler: async (ctx, args) => {
-    const now = Date.now();
-    await ctx.db.patch(args.userId, {
-      lastLoginAt: now,
-      failedLoginAttempts: 0,
-      lockedUntil: undefined,
-      updatedAt: now,
-    });
-    return { success: true };
-  },
-});
+
 
 export const recordFailedLogin = mutation({
   args: {
@@ -1132,7 +1128,7 @@ export const incrementTokenVersion = mutation({
 
 export const handleSocialAuth = mutation({
   args: {
-    provider: v.union(v.literal("google"), v.literal("facebook")),
+    provider: v.union(v.literal("google"), v.literal("facebook"), v.literal("apple")),
     providerUserId: v.string(),
     email: v.string(),
     emailVerified: v.boolean(),
@@ -1208,6 +1204,9 @@ export const handleSocialAuth = mutation({
       avatarUrl: args.picture,
       emailVerified: args.emailVerified,
       emailVerifiedAt: args.emailVerified ? now : undefined,
+      country: "Nigeria",
+      currencyPreference: "NGN",
+      timezone: "Africa/Lagos",
       status: "ACTIVE",
       tokenVersion: 1,
       lastLoginAt: now,
@@ -1241,60 +1240,4 @@ export const handleSocialAuth = mutation({
   },
 });
 
-export const getIdentitiesByUserId = query({
-  args: {
-    userId: v.id("users"),
-  },
-  handler: async (ctx, args) => {
-    const identities = await ctx.db
-      .query("authIdentities")
-      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
-      .collect();
-
-    return identities.map((i) => ({
-      id: i._id,
-      userId: i.userId,
-      provider: i.provider,
-      providerEmail: i.providerEmail,
-      providerEmailVerified: i.providerEmailVerified,
-      createdAt: i.createdAt,
-      lastUsedAt: i.lastUsedAt,
-    }));
-  },
-});
-
-export const unlinkIdentity = mutation({
-  args: {
-    userId: v.id("users"),
-    provider: v.union(v.literal("password"), v.literal("google"), v.literal("facebook"), v.literal("phone"), v.literal("apple")),
-  },
-  handler: async (ctx, args) => {
-    const user = await ctx.db.get(args.userId);
-    if (!user) throw new Error("USER_NOT_FOUND");
-
-    const allIdentities = await ctx.db
-      .query("authIdentities")
-      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
-      .collect();
-
-    // Check if user has password and at least one social identity or multiple identities
-    const hasPassword = Boolean(user.passwordHash);
-    const totalAuthMethods = (hasPassword ? 1 : 0) + allIdentities.filter((i) => i.provider !== "password").length;
-
-    if (totalAuthMethods <= 1) {
-      throw new Error("CANNOT_DISCONNECT_SOLE_AUTHENTICATION_METHOD");
-    }
-
-    const targetIdentity = allIdentities.find((i) => i.provider === args.provider);
-    if (targetIdentity) {
-      await ctx.db.delete(targetIdentity._id);
-    }
-
-    if (args.provider === "password") {
-      await ctx.db.patch(args.userId, { passwordHash: undefined, updatedAt: Date.now() });
-    }
-
-    return { success: true };
-  },
-});
 

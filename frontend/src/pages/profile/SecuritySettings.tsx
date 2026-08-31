@@ -32,6 +32,7 @@ export const SecuritySettings: React.FC = () => {
   // 2FA State
   const [is2faModalOpen, setIs2faModalOpen] = useState(false);
   const [twoFactorSecret, setTwoFactorSecret] = useState('');
+  const [twoFactorOtpauthUrl, setTwoFactorOtpauthUrl] = useState('');
   const [twoFactorVerifyCode, setTwoFactorVerifyCode] = useState('');
   const [isStarting2fa, setIsStarting2fa] = useState(false);
   const [isVerifying2fa, setIsVerifying2fa] = useState(false);
@@ -105,8 +106,9 @@ export const SecuritySettings: React.FC = () => {
   const handleStart2fa = async () => {
     setIsStarting2fa(true);
     try {
-      const res = await api.post<any>('/auth/2fa/enable');
+      const res = await api.post<{ secret: string; otpauthUrl: string }>('/auth/2fa/enable');
       setTwoFactorSecret(res.secret);
+      setTwoFactorOtpauthUrl(res.otpauthUrl);
       setTwoFactorVerifyCode('');
       setBackupCodes(null);
       setIs2faModalOpen(true);
@@ -420,58 +422,70 @@ export const SecuritySettings: React.FC = () => {
               </div>
             </div>
 
-            {!backupCodes ? (
-              <form onSubmit={handleVerify2fa} className="space-y-4">
-                <div className="p-3 bg-black/60 rounded-xs border border-white/10 space-y-2">
-                  <div className="text-xs text-slate-300 font-mono flex items-center justify-between">
-                    <span>Secret Key:</span>
-                    <button
+      {!backupCodes ? (
+                <form onSubmit={handleVerify2fa} className="space-y-4">
+                  <div className="flex flex-col items-center justify-center p-4 bg-white rounded-sm shadow-inner mx-auto w-fit">
+                    {twoFactorOtpauthUrl && (
+                      <img
+                        src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(
+                          twoFactorOtpauthUrl
+                        )}`}
+                        alt="2FA QR Code"
+                        className="w-44 h-44 rounded"
+                      />
+                    )}
+                  </div>
+
+                  <div className="p-3 bg-black/60 rounded-xs border border-white/10 space-y-2">
+                    <div className="text-xs text-slate-300 font-mono flex items-center justify-between">
+                      <span>Secret Key:</span>
+                      <button
+                        type="button"
+                        onClick={handleCopySecret}
+                        className="text-pink-300 hover:text-pink-200 text-xs flex items-center gap-1 cursor-pointer"
+                      >
+                        <Copy className="w-3 h-3" />
+                        {copiedSecret ? 'Copied' : 'Copy'}
+                      </button>
+                    </div>
+                    <div className="p-2 bg-white/5 rounded-xs font-mono text-center text-xs text-white tracking-widest break-all">
+                      {twoFactorSecret}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-medium text-slate-300">Enter 6-Digit Code from App</Label>
+                    <Input
+                      type="text"
+                      maxLength={6}
+                      value={twoFactorVerifyCode}
+                      onChange={(e) => setTwoFactorVerifyCode(e.target.value)}
+                      required
+                      placeholder="123456"
+                      className="bg-black/60 border-white/10 text-white text-center font-mono tracking-widest text-lg focus:border-[#714b67] rounded-xs"
+                    />
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-2">
+                    <Button
                       type="button"
-                      onClick={handleCopySecret}
-                      className="text-pink-300 hover:text-pink-200 text-xs flex items-center gap-1 cursor-pointer"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setIs2faModalOpen(false)}
+                      className="border-white/10 bg-transparent text-slate-300 text-xs rounded-xs"
                     >
-                      <Copy className="w-3 h-3" />
-                      {copiedSecret ? 'Copied' : 'Copy'}
-                    </button>
+                      Cancel
+                    </Button>
+                    <Button
+                      type="submit"
+                      disabled={isVerifying2fa}
+                      className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-4 rounded-xs"
+                    >
+                      {isVerifying2fa ? 'Verifying...' : 'Activate 2FA'}
+                    </Button>
                   </div>
-                  <div className="p-2 bg-white/5 rounded-xs font-mono text-center text-xs text-white tracking-widest break-all">
-                    {twoFactorSecret}
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <Label className="text-xs font-medium text-slate-300">Enter 6-Digit Code from App</Label>
-                  <Input
-                    type="text"
-                    maxLength={6}
-                    value={twoFactorVerifyCode}
-                    onChange={(e) => setTwoFactorVerifyCode(e.target.value)}
-                    required
-                    placeholder="123456"
-                    className="bg-black/60 border-white/10 text-white text-center font-mono tracking-widest text-lg focus:border-[#714b67] rounded-xs"
-                  />
-                </div>
-
-                <div className="flex justify-end gap-2 pt-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setIs2faModalOpen(false)}
-                    className="border-white/10 bg-transparent text-slate-300 text-xs rounded-xs"
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    type="submit"
-                    disabled={isVerifying2fa}
-                    className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-4 rounded-xs"
-                  >
-                    {isVerifying2fa ? 'Verifying...' : 'Activate 2FA'}
-                  </Button>
-                </div>
-              </form>
-            ) : (
+                </form>
+              ) : (
               <div className="space-y-4">
                 <div className="p-3 rounded-xs bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs">
                   2FA successfully activated! Save these emergency backup recovery codes in a safe place.

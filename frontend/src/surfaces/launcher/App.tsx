@@ -1,7 +1,7 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import { AuthGuard } from "../../components/auth/AuthGuard";
 import { AppLauncher } from "../../pages/launcher/AppLauncher";
-import { CreateWorkspace } from "../../pages/workspaces/CreateWorkspace";
+import { CreateWorkspaceForm } from "../../pages/workspaces/CreateWorkspaceForm";
 import { AppProductLanding } from "../../pages/products/AppProductLanding";
 import { PricingPage } from "../../pages/pricing/PricingPage";
 import { BillingCallbackPage } from "../../pages/billing/BillingCallbackPage";
@@ -52,7 +52,7 @@ export default function LauncherApp() {
         path="/organizations/new"
         element={
           <AuthGuard>
-            <CreateWorkspace />
+            <CreateWorkspaceForm />
           </AuthGuard>
         }
       />
@@ -60,7 +60,7 @@ export default function LauncherApp() {
         path="/app/organizations/new"
         element={
           <AuthGuard>
-            <CreateWorkspace />
+            <CreateWorkspaceForm />
           </AuthGuard>
         }
       />
@@ -68,7 +68,7 @@ export default function LauncherApp() {
         path="/workspaces/new"
         element={
           <AuthGuard>
-            <CreateWorkspace />
+            <CreateWorkspaceForm />
           </AuthGuard>
         }
       />

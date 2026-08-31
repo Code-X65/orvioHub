@@ -177,26 +177,37 @@ export const completeOnboarding = mutation({
       throw new Error("ORGANIZATION_ACCESS_DENIED");
     }
 
-    const settings = await ctx.db
+    let settings = await ctx.db
       .query("organizationSettings")
       .withIndex("by_organizationId", (q) => q.eq("organizationId", org._id))
       .first();
 
-    const missingSteps: string[] = [];
-
-    if (!settings || settings.enabledModules.length === 0) {
-      missingSteps.push("MODULE_SELECTION");
-    }
-
-    if (!settings || !settings.workspaceReady) {
-      missingSteps.push("WORKSPACE_INITIALIZATION");
-    }
-
-    if (missingSteps.length > 0) {
-      throw new Error(`ONBOARDING_INCOMPLETE:${missingSteps.join(",")}`);
-    }
-
     const now = Date.now();
+
+    if (!settings) {
+      const settingsId = await ctx.db.insert("organizationSettings", {
+        organizationId: org._id,
+        enabledModules: ["inventory"],
+        workspaceReady: true,
+        workspaceInitializedAt: now,
+        updatedAt: now,
+      });
+      settings = await ctx.db.get(settingsId);
+    } else {
+      const updates: Record<string, any> = {};
+      if (settings.enabledModules.length === 0) {
+        updates.enabledModules = ["inventory"];
+      }
+      if (!settings.workspaceReady) {
+        updates.workspaceReady = true;
+        updates.workspaceInitializedAt = now;
+      }
+      if (Object.keys(updates).length > 0) {
+        updates.updatedAt = now;
+        await ctx.db.patch(settings._id, updates);
+      }
+    }
+
     const completedSteps = Array.from(
       new Set([...progress.completedSteps, "COMPLETED"])
     );

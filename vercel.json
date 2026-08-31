@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "pnpm --filter @orviohub/shared build && vite build",
-  "outputDirectory": "dist",
+  "buildCommand": "pnpm --filter @orviohub/shared build && pnpm --filter frontend build",
+  "outputDirectory": "frontend/dist",
   "framework": "vite",
   "rewrites": [
     {

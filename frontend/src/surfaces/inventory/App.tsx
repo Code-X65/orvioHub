@@ -6,27 +6,19 @@ import { InventoryOnboarding } from "../../pages/inventory/InventoryOnboarding";
 import { OrganizationSettings } from "../../pages/settings/OrganizationSettings";
 import { AcceptInvite } from "../../pages/auth/AcceptInvite";
 
-import { useAuthStore } from "../../stores/useAuthStore";
-
-const InventoryRoot = () => {
-  const { isAuthenticated } = useAuthStore();
-  if (isAuthenticated) {
-    return <InventoryDashboard />;
-  }
-  return <AppProductLanding />;
-};
-
 export default function InventoryApp() {
   return (
     <Routes>
       <Route path="/invite/:token" element={<AcceptInvite />} />
       <Route path="/invitations/:token" element={<AcceptInvite />} />
       
-      {/* Root Route: Dashboard if authenticated, Showcase if guest */}
-      <Route path="/" element={<InventoryRoot />} />
+      {/* 1. Public Inventory Landing & Feature Showcase */}
+      <Route path="/" element={<AppProductLanding />} />
       <Route path="/preview" element={<AppProductLanding />} />
+      <Route path="/overview" element={<AppProductLanding />} />
+      <Route path="/features" element={<AppProductLanding />} />
 
-      {/* 2. Authenticated Application Dashboard & Operations */}
+      {/* 2. Authenticated Application Dashboard & Operations (Strictly Guarded) */}
       <Route
         path="/dashboard"
         element={
@@ -36,7 +28,7 @@ export default function InventoryApp() {
         }
       />
       <Route
-        path="/inventory/dashboard"
+        path="/dashboard/*"
         element={
           <AuthGuard>
             <InventoryDashboard />

@@ -19,6 +19,7 @@ import type * as adminProducts from "../adminProducts.js";
 import type * as adminUsers from "../adminUsers.js";
 import type * as audit from "../audit.js";
 import type * as branches from "../branches.js";
+import type * as cronCleanups from "../cronCleanups.js";
 import type * as emailOutbox from "../emailOutbox.js";
 import type * as http from "../http.js";
 import type * as inventory from "../inventory.js";
@@ -65,6 +66,7 @@ declare const fullApi: ApiFromModules<{
   adminUsers: typeof adminUsers;
   audit: typeof audit;
   branches: typeof branches;
+  cronCleanups: typeof cronCleanups;
   emailOutbox: typeof emailOutbox;
   http: typeof http;
   inventory: typeof inventory;

@@ -614,102 +614,93 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     }
   );
 
-  // POST /api/v1/auth/2fa/login-verify
-  fastify.post(
-    '/2fa/login-verify',
-    {
-      config: {
-        rateLimit: { max: 10, timeWindow: '15 minutes' },
-      },
-      schema: {
-        tags: ['Auth'],
-        summary: 'Verify 2FA TOTP or backup code during login challenge',
-        body: {
-          type: 'object',
-          required: ['tempToken', 'code'],
-          properties: {
-            tempToken: { type: 'string' },
-            code: { type: 'string' },
-          },
+  // POST /api/v1/auth/2fa/login-verify (and aliases /mfa/challenge, /2fa/challenge)
+  const loginTwoFactorHandler = async (request: any, reply: any) => {
+    const parsed = loginTwoFactorSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.VALIDATION_ERROR,
+          message: 'Temporary token and verification code are required.',
         },
-      },
-    },
-    async (request, reply) => {
-      const parsed = loginTwoFactorSchema.safeParse(request.body);
-      if (!parsed.success) {
+      });
+    }
+
+    let decoded: { userId: string; email: string; is2faPending?: boolean };
+    try {
+      decoded = fastify.jwt.verify(parsed.data.tempToken);
+      if (!decoded.is2faPending || !decoded.userId) {
+        throw new Error('Invalid temporary token.');
+      }
+    } catch {
+      return reply.status(401).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INVALID_TOKEN,
+          message: 'Invalid or expired 2FA session token. Please sign in again.',
+        },
+      });
+    }
+
+    try {
+      const { user, usedBackupCode } = await dataService.verifyTwoFactorLogin(decoded.userId, parsed.data.code);
+
+      const session = await dataService.createSession(user.id, {
+        userAgent: request.headers['user-agent'],
+        ipAddress: request.ip,
+        authenticationMethod: 'mfa_totp',
+        mfaVerified: true,
+        tokenVersion: user.tokenVersion ?? 1,
+      });
+
+      const accessToken = fastify.jwt.sign(
+        {
+          userId: user.id,
+          email: user.email,
+          sessionId: session.sessionId,
+          tokenVersion: user.tokenVersion ?? 1,
+        },
+        { expiresIn: '15m' }
+      );
+
+      const status = await dataService.getOnboardingStatus(user.id);
+
+      setAuthCookies(reply, { token: accessToken, refreshToken: session.refreshToken });
+
+      return reply.send({
+        success: true,
+        data: {
+          user: {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            emailVerified: user.emailVerified,
+            twoFactorEnabled: user.twoFactorEnabled,
+          },
+          token: accessToken,
+          refreshToken: session.refreshToken,
+          onboarding: status,
+          usedBackupCode: !!usedBackupCode,
+        },
+      });
+    } catch (err: any) {
+      if (err.code === 'INVALID_2FA_CODE') {
         return reply.status(400).send({
           success: false,
           error: {
-            code: ERROR_CODES.VALIDATION_ERROR,
-            message: 'Temporary token and verification code are required.',
+            code: ERROR_CODES.INVALID_2FA_CODE,
+            message: 'Invalid verification code or backup code. Please try again.',
           },
         });
       }
-
-      let decoded: { userId: string; email: string; is2faPending?: boolean };
-      try {
-        decoded = fastify.jwt.verify(parsed.data.tempToken);
-        if (!decoded.is2faPending || !decoded.userId) {
-          throw new Error('Invalid temporary token.');
-        }
-      } catch {
-        return reply.status(401).send({
-          success: false,
-          error: {
-            code: ERROR_CODES.INVALID_TOKEN,
-            message: 'Invalid or expired 2FA session token. Please sign in again.',
-          },
-        });
-      }
-
-      try {
-        const { user, usedBackupCode } = await dataService.verifyTwoFactorLogin(decoded.userId, parsed.data.code);
-
-        const accessToken = fastify.jwt.sign({
-          userId: user.id,
-          email: user.email,
-          tokenVersion: user.tokenVersion ?? 0,
-        });
-        const session = await dataService.createSession(
-          user.id,
-          request.headers['user-agent'],
-          request.ip,
-          user.tokenVersion ?? 0
-        );
-        const status = await dataService.getOnboardingStatus(user.id);
-
-        setAuthCookies(reply, { token: accessToken, refreshToken: session.refreshToken });
-
-        return reply.send({
-          success: true,
-          data: {
-            user: {
-              id: user.id,
-              email: user.email,
-              name: user.name,
-              emailVerified: user.emailVerified,
-              twoFactorEnabled: user.twoFactorEnabled,
-            },
-            token: accessToken,
-            refreshToken: session.refreshToken,
-            onboarding: status,
-            usedBackupCode: !!usedBackupCode,
-          },
-        });
-      } catch (err: any) {
-        if (err.code === 'INVALID_2FA_CODE') {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: ERROR_CODES.INVALID_2FA_CODE,
-              message: 'Invalid verification code or backup code. Please try again.',
-            },
-          });
-        }
-        throw err;
-      }
+      throw err;
     }
-  );
+  };
+
+  fastify.post('/2fa/login-verify', { config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } }, loginTwoFactorHandler);
+  fastify.post('/2fa/challenge', { config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } }, loginTwoFactorHandler);
+  fastify.post('/mfa/challenge', { config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } }, loginTwoFactorHandler);
 
   // POST /api/v1/auth/resend-verification
   fastify.post(
@@ -1494,15 +1485,15 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      const { returnTo } = request.query as { returnTo?: string };
+      const { returnTo, product } = request.query as { returnTo?: string; product?: string };
 
-      if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+      if (env.NODE_ENV === 'production' && (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET)) {
         if (request.headers.accept?.includes('application/json')) {
           return reply.status(400).send({
             success: false,
             error: {
               code: ERROR_CODES.OAUTH_NOT_CONFIGURED,
-              message: 'Google OAuth credentials (GOOGLE_CLIENT_ID & GOOGLE_CLIENT_SECRET) are not configured in api/.env.',
+              message: 'Google OAuth credentials are not configured on the server.',
             },
           });
         }
@@ -1511,7 +1502,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
 
       // Validate internal returnTo URL if provided to prevent open redirects
       const safeReturnTo = returnTo && returnTo.startsWith('/') && !returnTo.startsWith('//') ? returnTo : undefined;
-      const state = oauthService.generateState('google', safeReturnTo);
+      const state = oauthService.generateState('google', safeReturnTo, product);
       const authUrl = oauthService.getGoogleAuthUrl(state);
 
       if (request.headers.accept?.includes('application/json')) {
@@ -1602,20 +1593,21 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           type: 'object',
           properties: {
             returnTo: { type: 'string' },
+            product: { type: 'string' },
           },
         },
       },
     },
     async (request, reply) => {
-      const { returnTo } = request.query as { returnTo?: string };
+      const { returnTo, product } = request.query as { returnTo?: string; product?: string };
 
-      if (!env.FACEBOOK_APP_ID || !env.FACEBOOK_APP_SECRET) {
+      if (env.NODE_ENV === 'production' && (!env.FACEBOOK_APP_ID || !env.FACEBOOK_APP_SECRET)) {
         if (request.headers.accept?.includes('application/json')) {
           return reply.status(400).send({
             success: false,
             error: {
               code: ERROR_CODES.OAUTH_NOT_CONFIGURED,
-              message: 'Facebook OAuth credentials (FACEBOOK_APP_ID & FACEBOOK_APP_SECRET) are not configured in api/.env.',
+              message: 'Facebook OAuth credentials are not configured on the server.',
             },
           });
         }
@@ -1623,7 +1615,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       const safeReturnTo = returnTo && returnTo.startsWith('/') && !returnTo.startsWith('//') ? returnTo : undefined;
-      const state = oauthService.generateState('facebook', safeReturnTo);
+      const state = oauthService.generateState('facebook', safeReturnTo, product);
       const authUrl = oauthService.getFacebookAuthUrl(state);
 
       if (request.headers.accept?.includes('application/json')) {
@@ -1695,6 +1687,119 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.redirect(`${accountsBaseUrl()}/auth/callback?token=${jwtToken}&refreshToken=${session.refreshToken}`);
       } catch (err: any) {
         console.error('[Facebook OAuth Error]:', err?.message || err, err?.stack);
+        const errorCode = err.code || (err.message?.includes('OAUTH_') ? err.message : ERROR_CODES.OAUTH_PROVIDER_ERROR);
+        return reply.redirect(`${accountsBaseUrl()}/auth/callback?error=${errorCode}`);
+      }
+    }
+  );
+
+  // --- Apple OAuth ---
+
+  // GET /api/v1/auth/apple
+  fastify.get(
+    '/apple',
+    {
+      schema: {
+        tags: ['Auth'],
+        summary: 'Initiate Apple OAuth authorization',
+        querystring: {
+          type: 'object',
+          properties: {
+            returnTo: { type: 'string' },
+            product: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { returnTo, product } = request.query as { returnTo?: string; product?: string };
+
+      if (env.NODE_ENV === 'production' && !env.APPLE_CLIENT_ID) {
+        if (request.headers.accept?.includes('application/json')) {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.OAUTH_NOT_CONFIGURED,
+              message: 'Apple OAuth credentials are not configured on the server.',
+            },
+          });
+        }
+        return reply.redirect(`${accountsBaseUrl()}/auth/callback?error=${ERROR_CODES.OAUTH_NOT_CONFIGURED}`);
+      }
+
+      const safeReturnTo = returnTo && returnTo.startsWith('/') && !returnTo.startsWith('//') ? returnTo : undefined;
+      const state = oauthService.generateState('apple', safeReturnTo, product);
+      const authUrl = oauthService.getAppleAuthUrl(state);
+
+      if (request.headers.accept?.includes('application/json')) {
+        return reply.send({ success: true, data: { url: authUrl, state } });
+      }
+
+      return reply.redirect(authUrl);
+    }
+  );
+
+  // GET /api/v1/auth/apple/callback
+  fastify.get(
+    '/apple/callback',
+    {
+      schema: {
+        tags: ['Auth'],
+        summary: 'Apple OAuth callback',
+        querystring: {
+          type: 'object',
+          properties: {
+            code: { type: 'string' },
+            state: { type: 'string' },
+            error: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { code, state, error } = request.query as {
+        code?: string;
+        state?: string;
+        error?: string;
+      };
+
+      if (error) {
+        return reply.redirect(`${accountsBaseUrl()}/auth/callback?error=${ERROR_CODES.OAUTH_ACCESS_DENIED}`);
+      }
+
+      if (!state) {
+        return reply.redirect(`${accountsBaseUrl()}/auth/callback?error=${ERROR_CODES.OAUTH_STATE_INVALID}`);
+      }
+
+      try {
+        oauthService.validateAndConsumeState(state, 'apple');
+
+        if (!code) {
+          return reply.redirect(`${accountsBaseUrl()}/auth/callback?error=${ERROR_CODES.OAUTH_CODE_INVALID}`);
+        }
+
+        const profile = await oauthService.exchangeAppleCode(code);
+        const { user } = await dataService.handleSocialAuth(profile);
+        const session = await dataService.createSession(user.id, {
+          userAgent: request.headers['user-agent'],
+          ipAddress: request.ip,
+          authenticationMethod: 'oauth',
+          tokenVersion: user.tokenVersion ?? 1,
+        });
+        const jwtToken = fastify.jwt.sign(
+          {
+            userId: user.id,
+            email: user.email,
+            sessionId: session.sessionId,
+            tokenVersion: user.tokenVersion ?? 1,
+          },
+          { expiresIn: '15m' }
+        );
+
+        setAuthCookies(reply, { token: jwtToken, refreshToken: session.refreshToken });
+        return reply.redirect(`${accountsBaseUrl()}/auth/callback?token=${jwtToken}&refreshToken=${session.refreshToken}`);
+      } catch (err: any) {
+        console.error('[Apple OAuth Error]:', err?.message || err, err?.stack);
         const errorCode = err.code || (err.message?.includes('OAUTH_') ? err.message : ERROR_CODES.OAUTH_PROVIDER_ERROR);
         return reply.redirect(`${accountsBaseUrl()}/auth/callback?error=${errorCode}`);
       }

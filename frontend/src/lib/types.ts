@@ -28,6 +28,8 @@ export interface User {
   bio?: string;
   country?: string;
   state?: string;
+  stateCode?: string;
+  lga?: string;
   city?: string;
   phone?: string;
   phoneVerifiedAt?: number;
