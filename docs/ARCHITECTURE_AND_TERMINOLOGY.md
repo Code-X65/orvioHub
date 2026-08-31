@@ -25,36 +25,55 @@ $$\text{1 Customer Organization} \longleftrightarrow \text{1 Backend Workspace}$
 ## 2. Structural Hierarchy Model
 
 ```
-Orviohub Account
-└── User
-    └── Organization (Customer-Facing: Business, Store, Team, School, Gym)
-        └── Workspace (Internal 1:1 Technical Operating Environment)
-            ├── Members & Staff (Assigned workspace roles)
-            ├── Roles and permissions (RBAC + Multi-product access control)
-            ├── Branches or locations (e.g., Main Store, Warehouse, Outlet)
-            ├── Enabled applications (Inventory, Task Management, etc.)
-            ├── Product memberships (App-level roles and branch scoping)
-            ├── Subscription & entitlements (Plan tiers, quotas, feature flags)
-            ├── Onboarding state (Flow status & step progression)
-            ├── Audit logs (Immutable security & activity trails)
-            └── Business data (Catalog, products, stock levels, orders, sales)
+Orviohub Account (Mandatory Personal Identity)
+├── Personal Profile (Name, photo, contact, bio)
+├── Login Methods (Email/password, Google, Facebook)
+├── Security & Sessions (MFA, active sessions, audit events)
+├── Notifications & Preferences (Theme, language, timezone)
+├── Privacy & Data Controls (Data export, consents, deletion)
+├── Organization Memberships (0..many: Joined organizations)
+└── Owned Organizations (0..many: Created organizations)
+    └── Workspace (Internal 1:1 Technical Operating Environment)
+        ├── Members & Staff (Assigned workspace roles)
+        ├── Roles and permissions (RBAC + Multi-product access control)
+        ├── Branches or locations (e.g., Main Store, Warehouse, Outlet)
+        ├── Enabled applications (Inventory, Task Management, etc.)
+        ├── Product memberships (App-level roles and branch scoping)
+        ├── Subscription & entitlements (Plan tiers, quotas, feature flags)
+        ├── Onboarding state (Flow status & step progression)
+        ├── Audit logs (Immutable security & activity trails)
+        └── Business data (Catalog, products, stock levels, orders, sales)
 ```
 
-### Clarifying Concrete Relationship Example
+### Relational Cardinality
+$$\text{users } (1) \longleftrightarrow (0..\text{many}) \text{ workspaceMemberships}$$
+$$\text{workspaces } (1) \longleftrightarrow (1..\text{many}) \text{ workspaceMemberships}$$
+
+### Clarifying Concrete Relationship Examples
+
 ```
-User account: alex@codex.com
-└── Organization: Code X Stores
-    └── Workspace: Code X Stores (ws_987410)
-        ├── Owner: Alex Vance (user_101)
-        ├── Member: Mary Johnson (user_202)
-        │   ├── Workspace Role: Member
-        │   ├── Inventory Role: Sales Attendant
-        │   └── Branch Access: Main Store (branch_01)
-        ├── Main Store Branch (branch_01)
-        ├── Warehouse Branch (branch_02)
-        ├── Inventory Application (Enabled)
-        ├── Task Management Application (Enabled)
-        └── Subscription: Standard Plan ($49/mo)
+User 1: Mary Johnson (user_202)
+- Orviohub Account: Active
+- Organizations Owned: None (0)
+- Organizations Joined: Code X Stores (ws_987410)
+  ├── Workspace Role: Member
+  ├── Inventory Role: Sales Attendant
+  └── Branch Access: Main Store (branch_01)
+
+User 2: David (user_101)
+- Orviohub Account: Active
+- Organizations Owned: None (0)
+- Organizations Joined: None (0)
+- Status: Personal account only (Account Center & public exploration)
+
+User 3: Alex Vance / Code X (user_303)
+- Orviohub Account: Active
+- Organization Owned: Code X Stores (ws_987410)
+  ├── Workspace Role: Owner
+  ├── Main Store Branch (branch_01)
+  ├── Warehouse Branch (branch_02)
+  ├── Enabled Apps: Inventory, Task Management
+  └── Subscription: Standard Plan ($49/mo)
 ```
 
 ---
@@ -63,7 +82,7 @@ User account: alex@codex.com
 
 ### Official Definition & Onboarding Copy
 > **Official Onboarding Explanation:**
-> *“An organization is your business, store, team, or group on Orviohub. It is managed in a secure workspace where you can invite members, use Orviohub applications, manage branches, and control your business data.”*
+> *“Create your Orviohub account. Your account lets you securely sign in, manage your profile, and access Orviohub applications. You can create an organization, join one by invitation, or continue without an organization and decide later.”*
 
 ### UI Replacement Matrix
 
@@ -136,33 +155,23 @@ Within the organization context, the Inventory application configures:
 
 ---
 
-## 5. End-to-End Onboarding Journey
+## 5. End-to-End Onboarding Paths
 
 ```
-1. User Account Creation / Authentication
+1. User Account Creation / Authentication (Email/Password, Google, Facebook)
    ↓
 2. Email Verification (when mandated)
    ↓
-3. Personal Profile Setup (First name, Last name, Phone, Region)
+3. Personal Profile Setup (First name, Last name, Display name, Timezone)
    ↓
-4. Entry Point Decision: "Create an organization" OR "Join an organization"
-   ↓
-5. Enter Organization Details (Name, Type, Currency, Country, Timezone)
-   ↓
-6. Backend Workspace Provisioning (1:1 workspace created, DB vault configured)
-   ↓
-7. Ownership Assignment (User becomes Organization Owner & Workspace Owner)
-   ↓
-8. Application Selection (Inventory, CRM, Tasks, Finance, etc.)
-   ↓
-9. Subscription & Plan Selection (Free Trial, Standard, Pro, Enterprise)
-   ↓
-10. Product-Specific Onboarding (Store branch, opening stock, POS defaults)
-   ↓
-11. Invite Staff & Members (Assign branch access and product roles)
-   ↓
-12. Launch Application Dashboard
+4. Welcome Screen: "Welcome to Orviohub" - "What would you like to do?"
+   ├─► PATH 1: Explore Orviohub / Go to My Account (Personal account only)
+   ├─► PATH 2: Join an Organization (Accept pending invite with product roles)
+   ├─► PATH 3: Create an Organization (Enter org details, select apps & plan)
+   └─► PATH 4: Explore Products (Public pages, docs, product previews)
 ```
+
+For comprehensive specifications of all 4 paths, empty states, and state machines, see [AUTH_AND_ONBOARDING_ARCHITECTURE.md](file:///e:/dev/orvioHub/docs/AUTH_AND_ONBOARDING_ARCHITECTURE.md).
 
 ---
 
@@ -238,3 +247,59 @@ Enterprise Organization: Code X Holdings
 ```
 
 > **Implementation Note:** Do not build the parent-organization hierarchy in MVP. The 1:1 model provides full isolation, high performance, and simple customer onboarding while preserving clean upgrade paths for future multi-workspace hierarchies.
+
+---
+
+## 10. Orviohub Explorer Dashboard & Personal State Model
+
+### Core Product Policy
+> *“Users who sign up and choose Explore Orviohub land on a personal Explorer Dashboard. This dashboard allows them to discover Orviohub applications, manage their account, view information, review invitations, and create or join an organization later. It does not provide access to business operations or organization data until the user has valid organization membership and permissions.”*
+
+### Separation of Responsibilities
+
+| Dimension | Personal Explorer Dashboard (`/explorer`) | Organization Workspace Dashboard (`/app`, `/inventory`) |
+| :--- | :--- | :--- |
+| **Ownership** | Belongs strictly to the individual user account | Belongs to a specific organization (`workspaceId`) |
+| **Context Requirement** | Does **NOT** require any workspace or organization | Requires active workspace context and valid role |
+| **Business Data** | Zero business, POS, sales, branch, or stock data | Contains live operations, inventory stock, POS, reports |
+| **Available Actions** | Explore product demos, manage security/profile, review invites, view pricing/docs | Operate POS, adjust stock, manage branches, bill clients |
+| **Billing Status** | 100% Free • No billing, no credit card required | Governed by organization subscription plan |
+| **Empty State Interception** | Seamless discovery; selecting business apps prompts create-or-join guide | Restricts access if user lacks product entitlement |
+
+---
+
+## 11. Context Hierarchy & Branch Scoping Rules
+
+### Complete Architectural Model
+```text
+Orviohub account
+└── User (Personal Account)
+    └── Organization (Workspace)
+        ├── Organization profile & settings
+        ├── Members and platform roles
+        ├── Applications (Inventory, Task Management, CRM, etc.)
+        │   └── Product-specific roles & permissions
+        ├── Branches or locations (Physical / logical units)
+        │   └── Staff branch assignments
+        ├── Subscription and billing
+        └── Business data (Stock, sales, movements, receipts)
+```
+
+### Context Resolution & Security Rules
+Every protected business request resolves and verifies five trusted dimensions:
+$$\text{Authenticated User} + \text{Active Workspace Membership} + \text{Product Entitlement} + \text{Product Permissions} + \text{Branch Access}$$
+
+1. **Branch Independence within Organization**:
+   - A branch is a location or operational unit inside an organization (e.g., `Main Store`, `Warehouse`).
+   - A branch is **NOT** a separate organization, separate user account, or separate billing subscription.
+2. **Strict Data Isolation**:
+   - A user assigned to `Main Store` cannot view or adjust stock in `Warehouse` without assigned permissions.
+   - Client-supplied `branchId` or `workspaceId` are never trusted without backend validation.
+3. **No-Branch State**:
+   - If an employee has product access but no branch assignment, the system displays:
+     *“You have access to Inventory, but no branch has been assigned to you. Ask an organization administrator to assign you to a branch.”*
+4. **App Launcher Role**:
+   - The App Launcher is the central place where users select an organization and application.
+   - Branch selection occurs inside the application context.
+
+

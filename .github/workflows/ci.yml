@@ -7,8 +7,8 @@ on:
     branches: [ main, develop ]
 
 jobs:
-  test-api:
-    name: API Validation
+  validate-and-test:
+    name: Monorepo Build & Test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -17,40 +17,43 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
-          cache: 'npm'
-          cache-dependency-path: api/package-lock.json
+          node-version: '22'
 
-      - name: Install API Dependencies
-        run: npm ci
-        working-directory: api
-
-      - name: Typecheck API
-        run: npm run typecheck
-        working-directory: api
-
-      - name: Build API Output
-        run: npm run build
-        working-directory: api
-
-  test-web:
-    name: Web Frontend Validation
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
         with:
-          node-version: '24'
-          cache: 'npm'
-          cache-dependency-path: web/package-lock.json
+          version: 9
 
-      - name: Install Web Dependencies
-        run: npm ci
-        working-directory: web
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
 
-      - name: Typecheck & Build Web
-        run: npm run build
-        working-directory: web
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Shared Packages
+        run: pnpm --filter @orviohub/shared build
+
+      - name: Typecheck Backend
+        run: pnpm --filter backend typecheck
+
+      - name: Typecheck & Build Frontend
+        run: pnpm --filter frontend build
+
+      - name: Run Backend Test Suites
+        run: pnpm --filter backend test
+        env:
+          NODE_ENV: test
+          JWT_SECRET: test-jwt-secret-key-minimum-32-characters-required
+          PORT: 3000
+          HOST: 127.0.0.1
+

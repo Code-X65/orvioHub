@@ -1,0 +1,2 @@
+// Components directory placeholder
+export {};
