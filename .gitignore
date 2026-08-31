@@ -1,1 +1,5 @@
 node_modules
+
+# Lockfiles for non-pnpm package managers (this is a pnpm workspace)
+package-lock.json
+yarn.lock
