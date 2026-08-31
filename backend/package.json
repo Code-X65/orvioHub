@@ -1,6 +1,7 @@
 {
   "name": "backend",
   "version": "1.0.0",
+  "packageManager": "pnpm@9.15.4",
   "description": "Fastify API service for orvioHub",
   "type": "module",
   "main": "dist/server.js",
