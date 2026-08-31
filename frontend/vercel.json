@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "pnpm install",
   "buildCommand": "pnpm --filter @orviohub/shared build && vite build",
   "outputDirectory": "dist",
   "framework": "vite",
