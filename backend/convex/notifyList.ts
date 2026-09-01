@@ -12,6 +12,17 @@ export const getByProduct = query({
   },
 });
 
+export const getByEmail = query({
+  args: { email: v.string() },
+  handler: async (ctx, args) => {
+    const emailNormalized = args.email.toLowerCase().trim();
+    return await ctx.db
+      .query("productNotifyList")
+      .withIndex("by_email", (q) => q.eq("emailNormalized", emailNormalized))
+      .collect();
+  },
+});
+
 export const add = mutation({
   args: {
     productKey: v.string(),
@@ -21,15 +32,16 @@ export const add = mutation({
   handler: async (ctx, args) => {
     const emailNormalized = args.email.toLowerCase().trim();
 
-    // Check if already in waitlist for this product
+    // Check if already in waitlist for this product using by_product_email index
     const existing = await ctx.db
       .query("productNotifyList")
-      .withIndex("by_email", (q) => q.eq("emailNormalized", emailNormalized))
-      .filter((q) => q.eq(q.field("productKey"), args.productKey))
+      .withIndex("by_product_email", (q) =>
+        q.eq("productKey", args.productKey).eq("emailNormalized", emailNormalized)
+      )
       .first();
 
     if (existing) {
-      return { alreadySubscribed: true };
+      return { alreadySubscribed: true, id: existing._id };
     }
 
     const id = await ctx.db.insert("productNotifyList", {

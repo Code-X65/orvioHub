@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "../hooks/useAuth";
 import { adminDashboardApi } from "../api/adminDashboard";
+import { InventoryIcon } from "../components/icons/InventoryIcon";
 import StatCard from "../components/StatCard";
 import OnboardingFunnel from "../components/OnboardingFunnel";
 import ActivityFeed from "../components/ActivityFeed";
@@ -60,21 +61,21 @@ export const Dashboard: React.FC = () => {
   const funnelStages = [
     {
       id: "signup",
-      name: "1. Account Created",
+      name: "1. Account & Identity Created",
       count: funnel.totalSignups || 0,
       conversionRate: 100,
       dropoffRate: 0,
     },
     {
       id: "profile",
-      name: "2. Profile Completed",
+      name: "2. Profile & Phone Verified",
       count: funnel.profileCompleted || 0,
       conversionRate: funnel.totalSignups ? Math.round((funnel.profileCompleted / funnel.totalSignups) * 100) : 0,
       dropoffRate: funnel.totalSignups ? 100 - Math.round((funnel.profileCompleted / funnel.totalSignups) * 100) : 0,
     },
     {
       id: "organization",
-      name: "3. Organization Provisioned",
+      name: "3. Organization & Branch Setup",
       count: funnel.orgCreated || 0,
       conversionRate: funnel.profileCompleted ? Math.round((funnel.orgCreated / funnel.profileCompleted) * 100) : 0,
       dropoffRate: funnel.profileCompleted ? 100 - Math.round((funnel.orgCreated / funnel.profileCompleted) * 100) : 0,
@@ -88,7 +89,7 @@ export const Dashboard: React.FC = () => {
     },
     {
       id: "completed",
-      name: "5. Onboarding Finished",
+      name: "5. Team & Workspace Ready",
       count: funnel.onboardingCompleted || 0,
       conversionRate: funnel.productActivated ? Math.round((funnel.onboardingCompleted / funnel.productActivated) * 100) : 0,
       dropoffRate: funnel.productActivated ? 100 - Math.round((funnel.onboardingCompleted / funnel.productActivated) * 100) : 0,
@@ -230,9 +231,14 @@ export const Dashboard: React.FC = () => {
 
             <div className="space-y-2.5 text-xs">
               <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between">
-                <div>
-                  <p className="font-semibold text-slate-200">Inventory & POS</p>
-                  <p className="text-[11px] text-slate-500">inventory.orviohub.com</p>
+                <div className="flex items-center gap-2.5">
+                  <div className="w-7 h-7 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center shrink-0">
+                    <InventoryIcon className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <p className="font-semibold text-slate-200">Inventory & POS</p>
+                    <p className="text-[11px] text-slate-500">inventory.orviohub.com</p>
+                  </div>
                 </div>
                 <span className="font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20">
                   {productActivations["inventory"] || 0} Orgs

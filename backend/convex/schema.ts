@@ -270,6 +270,7 @@ export default defineSchema({
   })
     .index("by_product", ["productKey"])
     .index("by_email", ["emailNormalized"])
+    .index("by_product_email", ["productKey", "emailNormalized"])
     .index("by_product_notified", ["productKey", "notified"])
     .index("by_user", ["userId"]),
 

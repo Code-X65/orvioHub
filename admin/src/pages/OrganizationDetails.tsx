@@ -5,13 +5,14 @@ import {
   Users,
   Shield,
   Package,
-  MapPin,
   Loader2,
   Ban,
   Power,
   CreditCard,
   PlusCircle,
+  Store,
 } from "lucide-react";
+import { InventoryIcon } from "../components/icons/InventoryIcon";
 import { useAuth } from "../hooks/useAuth";
 import { adminOrganizationsApi } from "../api/adminOrganizations";
 import { adminBillingApi, ManualPaymentRecord } from "../api/adminBilling";
@@ -382,13 +383,22 @@ export const OrganizationDetails: React.FC = () => {
                   key={productKey}
                   className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between text-xs"
                 >
-                  <div>
-                    <p className="font-bold text-white uppercase">{productKey}</p>
-                    <p className="text-[11px] text-slate-400">
-                      {isActive
-                        ? `Active since ${new Date(activeProd.activatedAt || Date.now()).toLocaleDateString()}`
-                        : "Not activated for this workspace"}
-                    </p>
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center shrink-0">
+                      {productKey === "inventory" ? (
+                        <InventoryIcon className="w-5 h-5" />
+                      ) : (
+                        <Package className="w-4 h-4 text-brand-400" />
+                      )}
+                    </div>
+                    <div>
+                      <p className="font-bold text-white uppercase">{productKey}</p>
+                      <p className="text-[11px] text-slate-400">
+                        {isActive
+                          ? `Active since ${new Date(activeProd.activatedAt || Date.now()).toLocaleDateString()}`
+                          : "Not activated for this workspace"}
+                      </p>
+                    </div>
                   </div>
 
                   <button
@@ -448,11 +458,16 @@ export const OrganizationDetails: React.FC = () => {
         </div>
       </div>
 
-      {/* Branches & Topology */}
+      {/* Branches & Store Locations Table */}
       <div className="p-6 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-4 shadow-xl">
-        <div className="flex items-center gap-2">
-          <MapPin className="w-4 h-4 text-brand-400" />
-          <h3 className="text-sm font-bold text-white">Registered Branches ({branches.length})</h3>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Store className="w-4 h-4 text-brand-400" />
+            <h3 className="text-sm font-bold text-white">Store Branches & Warehouse Locations ({branches.length})</h3>
+          </div>
+          <span className="text-xs text-slate-400">
+            {branches.filter((b: any) => b.status === "active").length} Active Locations
+          </span>
         </div>
 
         {branches.length === 0 ? (
@@ -460,19 +475,49 @@ export const OrganizationDetails: React.FC = () => {
             No physical branch locations registered (Default single-store setup).
           </p>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-            {branches.map((b: any) => (
-              <div
-                key={b.id}
-                className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between"
-              >
-                <div>
-                  <p className="font-bold text-white">{b.name}</p>
-                  <p className="text-[11px] text-slate-400 font-mono">Code: {b.code || "MAIN"}</p>
-                </div>
-                <StatusBadge status={b.status || "active"} size="sm" />
-              </div>
-            ))}
+          <div className="overflow-x-auto rounded-xl border border-slate-800">
+            <table className="w-full text-left text-xs text-slate-300">
+              <thead className="bg-slate-950/60 text-[10px] font-bold uppercase text-slate-400 border-b border-slate-800">
+                <tr>
+                  <th className="py-2.5 px-4">Branch Name & Code</th>
+                  <th className="py-2.5 px-4">Location (LGA / State)</th>
+                  <th className="py-2.5 px-4">Address</th>
+                  <th className="py-2.5 px-4">Contact</th>
+                  <th className="py-2.5 px-4">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60">
+                {branches.map((b: any) => (
+                  <tr key={b.id} className="hover:bg-slate-800/30">
+                    <td className="py-3 px-4">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-white">{b.name}</span>
+                        {b.isPrimary && (
+                          <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[9px] font-bold">
+                            Primary
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[10px] text-slate-400 font-mono">Code: {b.code || "MAIN"}</span>
+                    </td>
+                    <td className="py-3 px-4">
+                      <span className="text-slate-200">
+                        {b.lga ? `${b.lga}, ` : ""}{b.state || org.state || "Nigeria"}
+                      </span>
+                    </td>
+                    <td className="py-3 px-4 text-slate-400 max-w-xs truncate">
+                      {b.formattedAddress || b.address || "—"}
+                    </td>
+                    <td className="py-3 px-4 text-slate-400 font-mono text-[11px]">
+                      {b.phone || "—"}
+                    </td>
+                    <td className="py-3 px-4">
+                      <StatusBadge status={b.status || "active"} size="sm" />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </div>

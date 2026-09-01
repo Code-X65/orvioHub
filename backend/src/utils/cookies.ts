@@ -39,14 +39,23 @@ export function setAuthCookies(
  */
 export function clearAuthCookies(reply: FastifyReply) {
   const isProduction = process.env.NODE_ENV === 'production';
-  const cookieDomain = isProduction ? '.orviohub.com' : '.orviohub.localhost';
+  const domains = isProduction
+    ? ['.orviohub.com', 'orviohub.com']
+    : ['.orviohub.localhost', 'orviohub.localhost', 'localhost'];
 
-  reply.clearCookie('orvio_session', {
-    path: '/',
-    domain: cookieDomain,
-  });
-  reply.clearCookie('orvio_refresh_token', {
-    path: '/',
-    domain: cookieDomain,
-  });
+  for (const domain of domains) {
+    reply.clearCookie('orvio_session', {
+      path: '/',
+      domain,
+    });
+    reply.clearCookie('orvio_refresh_token', {
+      path: '/',
+      domain,
+    });
+  }
+
+  // Also clear host-only cookie (no domain attribute)
+  reply.clearCookie('orvio_session', { path: '/' });
+  reply.clearCookie('orvio_refresh_token', { path: '/' });
 }
+

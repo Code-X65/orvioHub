@@ -38,6 +38,7 @@ import type * as paymentTransactions from "../paymentTransactions.js";
 import type * as plans from "../plans.js";
 import type * as products from "../products.js";
 import type * as scripts_createAdmin from "../scripts/createAdmin.js";
+import type * as scripts_purgeTestData from "../scripts/purgeTestData.js";
 import type * as sessions from "../sessions.js";
 import type * as subscriptions from "../subscriptions.js";
 import type * as usageCounters from "../usageCounters.js";
@@ -85,6 +86,7 @@ declare const fullApi: ApiFromModules<{
   plans: typeof plans;
   products: typeof products;
   "scripts/createAdmin": typeof scripts_createAdmin;
+  "scripts/purgeTestData": typeof scripts_purgeTestData;
   sessions: typeof sessions;
   subscriptions: typeof subscriptions;
   usageCounters: typeof usageCounters;

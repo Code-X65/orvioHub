@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { useBranchStore } from '@/stores/useBranchStore';
@@ -11,9 +12,9 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { getCrossSubdomainUrl, getLauncherUrl } from '@/lib/domain';
 import { useHost } from '@/host/useHost';
+import { InventoryIcon } from '@/components/icons/InventoryIcon';
 import { toast } from 'sonner';
 import {
-  Boxes,
   LayoutGrid,
   LogOut,
   User as UserIcon,
@@ -230,11 +231,28 @@ const CATEGORIES = [
 ];
 
 export const InventoryDashboard: React.FC = () => {
+  const [searchParams] = useSearchParams();
+  const branchParam = searchParams.get('branch');
+
   const host = useHost();
   const env = host.environment;
   const { logout, user } = useAuthStore();
   const { currentWorkspace } = useWorkspaceStore();
-  const { activeBranch, branches } = useBranchStore();
+  const { activeBranch, branches, setActiveBranch } = useBranchStore();
+
+  // Sync ?branch= URL parameter to activeBranch in branch store
+  useEffect(() => {
+    if (branchParam && branches.length > 0) {
+      const match = branches.find(
+        (b) =>
+          (b.id || b._id) === branchParam ||
+          (b.code && b.code.toLowerCase() === branchParam.toLowerCase())
+      );
+      if (match && (!activeBranch || (activeBranch.id || activeBranch._id) !== (match.id || match._id))) {
+        setActiveBranch(match);
+      }
+    }
+  }, [branchParam, branches, activeBranch, setActiveBranch]);
 
   // Navigation Sidebar active item
   const [activeNav, setActiveNav] = useState<string>('overview');
@@ -437,8 +455,8 @@ export const InventoryDashboard: React.FC = () => {
         {/* Brand & App Title Header */}
         <div className="p-3.5 border-b border-white/10 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-xs bg-[#714b67] flex items-center justify-center text-white font-bold shadow-sm shrink-0">
-              <Boxes className="w-4 h-4" />
+            <div className="w-8 h-8 rounded-xs bg-[#190f17] border border-white/10 flex items-center justify-center shadow-sm shrink-0">
+              <InventoryIcon className="w-6 h-6" />
             </div>
             <div className="min-w-0">
               <span className="font-bold text-white text-xs tracking-tight block">Inventory Hub</span>

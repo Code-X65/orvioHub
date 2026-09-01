@@ -1,7 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../../stores/useAuthStore';
-import { Loader2 } from 'lucide-react';
 import { getLoginUrl, getAccountsUrl, isAllowedReturnTo } from '@orviohub/shared';
 import { useHost } from '../../host/useHost';
 
@@ -31,9 +30,16 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({
 
   if (!isInitialized) {
     return (
-      <div className="min-h-screen bg-black flex flex-col items-center justify-center space-y-4">
-        <Loader2 className="w-8 h-8 text-[#714b67] animate-spin" />
-        <p className="text-slate-400 text-xs animate-pulse">Loading workspace session...</p>
+      <div className="min-h-screen bg-black text-slate-100 flex flex-col justify-between animate-pulse">
+        <div className="h-20 border-b border-white/5 bg-black/90 px-6 sm:px-12 flex items-center justify-between">
+          <div className="w-24 h-7 rounded-xs bg-white/10" />
+          <div className="w-20 h-8 rounded-xs bg-white/10" />
+        </div>
+        <div className="flex-1 max-w-5xl w-full mx-auto px-6 py-12 space-y-6">
+          <div className="w-1/3 h-8 rounded-xs bg-white/10" />
+          <div className="w-1/2 h-4 rounded-xs bg-white/5" />
+          <div className="h-64 rounded-sm bg-[#120b10] border border-white/5" />
+        </div>
       </div>
     );
   }
@@ -102,23 +108,24 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({
       return <Navigate to="/verify-email" replace />;
     }
 
-    const isOnboardingRoute = location.pathname.startsWith('/onboarding');
-    // If organization onboarding is already completed, redirect to home workspace
+    const isPlatformOnboardingSurface = host.application === 'launcher' || host.application === 'accounts';
+    const isOnboardingRoute = isPlatformOnboardingSurface && location.pathname.startsWith('/onboarding');
+
+    // If platform onboarding is already completed, prevent getting stuck in onboarding on platform surfaces
     if (onboardingStatus?.status === 'COMPLETED' && isOnboardingRoute) {
       if (host.application === 'accounts') {
         return <Navigate to="/profile" replace />;
       }
-      const homeBase = getAccountsUrl(host.environment).replace('accounts', 'home');
-      window.location.href = homeBase;
-      return null;
+      return <Navigate to="/app" replace />;
     }
 
-    // Step progression guard: Prevent skipping ahead without an organization
+    // Step progression guard: Prevent skipping ahead without an organization on platform surfaces
     const isAdvancedStep =
-      location.pathname === '/onboarding/modules' ||
-      location.pathname === '/onboarding/workspace' ||
-      location.pathname === '/onboarding/team' ||
-      location.pathname === '/onboarding/complete';
+      isPlatformOnboardingSurface &&
+      (location.pathname === '/onboarding/modules' ||
+        location.pathname === '/onboarding/workspace' ||
+        location.pathname === '/onboarding/team' ||
+        location.pathname === '/onboarding/complete');
 
     if (isAdvancedStep && !onboardingStatus?.organization?.id) {
       return <Navigate to="/onboarding/organization" replace />;

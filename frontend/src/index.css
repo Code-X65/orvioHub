@@ -164,3 +164,9 @@ h1, h2, h3, h4, h5, h6 {
   stroke-dasharray: 6 6;
   animation: dash-move 3s linear infinite;
 }
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}

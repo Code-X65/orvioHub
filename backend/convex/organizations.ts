@@ -80,9 +80,37 @@ export const createOrganization = mutation({
     industry: v.string(),
     country: v.string(),
     timezone: v.string(),
+    currency: v.optional(v.string()),
     website: v.optional(v.string()),
     size: v.optional(v.string()),
     logo: v.optional(v.string()),
+    phone: v.optional(v.string()),
+    planId: v.optional(v.string()),
+    products: v.optional(v.array(v.string())),
+    primaryBranch: v.optional(
+      v.object({
+        name: v.string(),
+        code: v.optional(v.string()),
+        country: v.optional(v.string()),
+        state: v.optional(v.string()),
+        stateCode: v.optional(v.string()),
+        lga: v.optional(v.string()),
+        city: v.optional(v.string()),
+        street: v.optional(v.string()),
+        blockNumber: v.optional(v.string()),
+        area: v.optional(v.string()),
+        landmark: v.optional(v.string()),
+      })
+    ),
+    invitations: v.optional(
+      v.array(
+        v.object({
+          email: v.string(),
+          role: v.string(),
+          branchAccess: v.optional(v.array(v.string())),
+        })
+      )
+    ),
   },
   handler: async (ctx, args) => {
     // 1. Verify user exists and email is verified
@@ -95,6 +123,8 @@ export const createOrganization = mutation({
     }
 
     const now = Date.now();
+    const activeProducts = args.products && args.products.length > 0 ? args.products : ["inventory"];
+    const activePlan = args.planId || "free";
 
     // 2. Check idempotency: If user already has an active onboarding with an org
     const onboarding = await ctx.db
@@ -112,6 +142,82 @@ export const createOrganization = mutation({
             q.eq("organizationId", existingOrg._id).eq("userId", args.userId)
           )
           .first();
+
+        // Ensure workspace exists
+        let ws = await ctx.db
+          .query("workspaces")
+          .withIndex("by_organizationId", (q) => q.eq("organizationId", existingOrg._id))
+          .first();
+
+        if (!ws) {
+          const wsId = await ctx.db.insert("workspaces", {
+            organizationId: existingOrg._id,
+            name: existingOrg.name,
+            slug: existingOrg.slug,
+            type: existingOrg.industry || "business",
+            ownerId: args.userId,
+            country: existingOrg.country || "NG",
+            timezone: existingOrg.timezone || "Africa/Lagos",
+            currency: args.currency || (existingOrg.country === "NG" ? "NGN" : "USD"),
+            status: "active",
+            planId: activePlan,
+            isDefault: true,
+            enabledModules: activeProducts,
+            settings: {
+              phone: args.phone,
+              currency: args.currency || (existingOrg.country === "NG" ? "NGN" : "USD"),
+              timezone: existingOrg.timezone,
+            },
+            createdAt: now,
+            updatedAt: now,
+          });
+          ws = await ctx.db.get(wsId);
+        }
+
+        if (ws) {
+          // Ensure workspace membership
+          const wsMem = await ctx.db
+            .query("workspaceMemberships")
+            .withIndex("by_workspace_user", (q) =>
+              q.eq("workspaceId", ws!._id).eq("userId", args.userId)
+            )
+            .first();
+
+          if (!wsMem) {
+            await ctx.db.insert("workspaceMemberships", {
+              workspaceId: ws._id,
+              userId: args.userId,
+              status: "active",
+              defaultRole: "owner",
+              role: "owner",
+              acceptedAt: now,
+              createdAt: now,
+              updatedAt: now,
+            });
+          }
+
+          // Ensure products
+          for (const prodKey of activeProducts) {
+            const wsProd = await ctx.db
+              .query("workspaceProducts")
+              .withIndex("by_workspace_product", (q) =>
+                q.eq("workspaceId", ws!._id).eq("productKey", prodKey)
+              )
+              .first();
+
+            if (!wsProd) {
+              await ctx.db.insert("workspaceProducts", {
+                workspaceId: ws._id,
+                productKey: prodKey,
+                status: "active",
+                planId: activePlan,
+                trialStartedAt: now,
+                activatedBy: args.userId,
+                activatedAt: now,
+              });
+            }
+          }
+        }
 
         return {
           organization: existingOrg,
@@ -141,7 +247,7 @@ export const createOrganization = mutation({
       slug = `${baseSlug}-${counter}`;
     }
 
-    // 4. ATOMIC CREATION: Org + Membership + Settings + Default Workspace + Onboarding Update
+    // 4. ATOMIC CREATION: Org + Membership + Settings + Workspace + WorkspaceMembership + Products + Branch + Onboarding
     const organizationId = await ctx.db.insert("organizations", {
       name: args.name,
       slug,
@@ -166,28 +272,122 @@ export const createOrganization = mutation({
 
     await ctx.db.insert("organizationSettings", {
       organizationId,
-      enabledModules: [],
-      workspaceReady: false,
+      enabledModules: activeProducts,
+      workspaceReady: true,
+      workspaceInitializedAt: now,
       defaults: {},
       updatedAt: now,
     });
 
-    // Auto-provision default workspace
-    await ctx.db.insert("workspaces", {
+    // Auto-provision primary workspace
+    const workspaceId = await ctx.db.insert("workspaces", {
       organizationId,
-      name: "Main Workspace",
-      slug: "main",
+      name: args.name,
+      slug,
+      type: args.industry || "business",
+      ownerId: args.userId,
+      country: args.country || "NG",
+      timezone: args.timezone || "Africa/Lagos",
+      currency: args.currency || (args.country === "NG" ? "NGN" : "USD"),
+      status: "active",
+      planId: activePlan,
       isDefault: true,
-      enabledModules: [],
+      enabledModules: activeProducts,
       settings: {
-        currency: args.country === "NG" ? "NGN" : "USD",
+        phone: args.phone,
+        currency: args.currency || (args.country === "NG" ? "NGN" : "USD"),
         timezone: args.timezone,
       },
       createdAt: now,
       updatedAt: now,
     });
 
-    let completedSteps = ["ACCOUNT_CREATED", "EMAIL_VERIFIED", "ORGANIZATION_CREATION", "ORGANIZATION_CREATED"];
+    // Owner workspace membership
+    await ctx.db.insert("workspaceMemberships", {
+      workspaceId,
+      userId: args.userId,
+      status: "active",
+      defaultRole: "owner",
+      role: "owner",
+      acceptedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // Primary branch
+    const branchData = args.primaryBranch;
+    const branchId = await ctx.db.insert("branches", {
+      workspaceId,
+      name: branchData?.name || "Main Store",
+      code: branchData?.code || "MAIN",
+      isPrimary: true,
+      status: "active",
+      country: branchData?.country || args.country || "Nigeria",
+      state: branchData?.state || "Lagos",
+      stateCode: branchData?.stateCode,
+      lga: branchData?.lga,
+      city: branchData?.city || "Ikeja",
+      street: branchData?.street,
+      blockNumber: branchData?.blockNumber,
+      area: branchData?.area,
+      landmark: branchData?.landmark,
+      phone: args.phone,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // Provision selected products & product memberships for owner
+    for (const prodKey of activeProducts) {
+      await ctx.db.insert("workspaceProducts", {
+        workspaceId,
+        productKey: prodKey,
+        status: "active",
+        planId: activePlan,
+        trialStartedAt: now,
+        activatedBy: args.userId,
+        activatedAt: now,
+      });
+
+      await ctx.db.insert("productMemberships", {
+        workspaceId,
+        userId: args.userId,
+        productKey: prodKey,
+        role: "owner",
+        permissions: ["*"],
+        branchIds: [branchId],
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    // Provision invitations if supplied
+    if (args.invitations && args.invitations.length > 0) {
+      for (const inv of args.invitations) {
+        if (!inv.email || !inv.email.includes("@")) continue;
+        const tokenHash = `inv_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        await ctx.db.insert("workspaceInvitations", {
+          workspaceId,
+          email: inv.email.toLowerCase().trim(),
+          emailNormalized: inv.email.toLowerCase().trim(),
+          role: inv.role || "member",
+          branchIds: [branchId],
+          tokenHash,
+          status: "pending",
+          invitedBy: args.userId,
+          expiresAt: now + 7 * 86400000,
+          createdAt: now,
+        });
+      }
+    }
+
+    let completedSteps = [
+      "ACCOUNT_CREATED",
+      "EMAIL_VERIFIED",
+      "ORGANIZATION_CREATION",
+      "ORGANIZATION_CREATED",
+      "ORGANIZATION_CONFIGURED",
+    ];
     let onboardingId;
     if (onboarding) {
       completedSteps = Array.from(
@@ -195,7 +395,8 @@ export const createOrganization = mutation({
       );
       await ctx.db.patch(onboarding._id, {
         organizationId,
-        currentStep: "MODULE_SELECTION",
+        currentStep: "COMPLETED",
+        status: "COMPLETED",
         completedSteps,
         updatedAt: now,
       });
@@ -204,8 +405,8 @@ export const createOrganization = mutation({
       onboardingId = await ctx.db.insert("onboardingProgress", {
         userId: args.userId,
         organizationId,
-        currentStep: "MODULE_SELECTION",
-        status: "IN_PROGRESS",
+        currentStep: "COMPLETED",
+        status: "COMPLETED",
         completedSteps,
         startedAt: now,
         updatedAt: now,

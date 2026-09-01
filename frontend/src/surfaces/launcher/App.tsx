@@ -14,34 +14,15 @@ import { ModuleSelection } from "../../pages/onboarding/ModuleSelection";
 import { WorkspaceInit } from "../../pages/onboarding/WorkspaceInit";
 import { TeamInvite } from "../../pages/onboarding/TeamInvite";
 import { Complete } from "../../pages/onboarding/Complete";
+import { InventoryOnboarding } from "../../pages/inventory/InventoryOnboarding";
+import { TasksOnboarding } from "../../pages/tasks/TasksOnboarding";
 
 export default function LauncherApp() {
   return (
     <Routes>
-      <Route
-        path="/"
-        element={
-          <AuthGuard>
-            <AppLauncher />
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/app"
-        element={
-          <AuthGuard>
-            <AppLauncher />
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/launcher"
-        element={
-          <AuthGuard>
-            <AppLauncher />
-          </AuthGuard>
-        }
-      />
+      <Route path="/" element={<AppLauncher />} />
+      <Route path="/app" element={<AppLauncher />} />
+      <Route path="/launcher" element={<AppLauncher />} />
       <Route path="/pricing" element={<PricingPage />} />
       <Route path="/billing/callback" element={<BillingCallbackPage />} />
       <Route path="/invite/:token" element={<AcceptInvite />} />
@@ -152,6 +133,22 @@ export default function LauncherApp() {
           element={
             <AuthGuard>
               <Complete />
+            </AuthGuard>
+          }
+        />
+        <Route
+          path="inventory"
+          element={
+            <AuthGuard>
+              <InventoryOnboarding />
+            </AuthGuard>
+          }
+        />
+        <Route
+          path="tasks"
+          element={
+            <AuthGuard>
+              <TasksOnboarding />
             </AuthGuard>
           }
         />

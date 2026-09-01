@@ -30,6 +30,7 @@ export const Users: React.FC = () => {
   const [search, setSearch] = useState("");
   const [verifiedFilter, setVerifiedFilter] = useState<"all" | "verified" | "unverified">("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [userTypeFilter, setUserTypeFilter] = useState<"all" | "ACCOUNT_OWNER" | "ORG_MEMBER" | "GENERAL_USER">("all");
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
 
@@ -73,6 +74,11 @@ export const Users: React.FC = () => {
   useEffect(() => {
     loadUsers();
   }, [sessionToken, page, search, verifiedFilter, statusFilter]);
+
+  const filteredUsers = users.filter((u) => {
+    if (userTypeFilter === "all") return true;
+    return u.userType === userTypeFilter;
+  });
 
   const handleSuspend = (user: any) => {
     setDialogConfig({
@@ -211,6 +217,21 @@ export const Users: React.FC = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
+          {/* User Type Filter */}
+          <select
+            value={userTypeFilter}
+            onChange={(e) => {
+              setUserTypeFilter(e.target.value as any);
+              setPage(1);
+            }}
+            className="px-3 py-2 rounded-xl bg-slate-950/90 border border-slate-800 text-xs text-slate-300 outline-none focus:border-brand-500"
+          >
+            <option value="all">All User Types</option>
+            <option value="ACCOUNT_OWNER">Account Owners</option>
+            <option value="ORG_MEMBER">Organization Staff</option>
+            <option value="GENERAL_USER">General Users</option>
+          </select>
+
           {/* Email Verification Filter */}
           <select
             value={verifiedFilter}
@@ -247,7 +268,8 @@ export const Users: React.FC = () => {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="border-b border-slate-800 bg-slate-950/60 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                <th className="py-3.5 px-5">User</th>
+                <th className="py-3.5 px-5">User & Type</th>
+                <th className="py-3.5 px-4">Auth Methods</th>
                 <th className="py-3.5 px-4">Verification</th>
                 <th className="py-3.5 px-4">Status</th>
                 <th className="py-3.5 px-4">Organizations</th>
@@ -258,19 +280,19 @@ export const Users: React.FC = () => {
             <tbody className="divide-y divide-slate-800/80 text-xs text-slate-300">
               {loading ? (
                 <tr>
-                  <td colSpan={6} className="py-16 text-center text-slate-500">
+                  <td colSpan={7} className="py-16 text-center text-slate-500">
                     <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-brand-400" />
                     Loading users...
                   </td>
                 </tr>
-              ) : users.length === 0 ? (
+              ) : filteredUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-16 text-center text-slate-500">
+                  <td colSpan={7} className="py-16 text-center text-slate-500">
                     No users matching criteria.
                   </td>
                 </tr>
               ) : (
-                users.map((u) => (
+                filteredUsers.map((u) => (
                   <tr key={u.id} className="hover:bg-slate-800/40 transition">
                     <td className="py-4 px-5">
                       <div className="flex items-center gap-3">
@@ -278,15 +300,46 @@ export const Users: React.FC = () => {
                           {u.name?.charAt(0)?.toUpperCase() || "U"}
                         </div>
                         <div>
-                          <Link
-                            to={`/users/${u.id}`}
-                            className="font-bold text-white hover:text-brand-400 transition flex items-center gap-1.5"
-                          >
-                            <span>{u.name}</span>
-                            <ExternalLink className="w-3 h-3 text-slate-500 opacity-60 hover:opacity-100" />
-                          </Link>
+                          <div className="flex items-center gap-2">
+                            <Link
+                              to={`/users/${u.id}`}
+                              className="font-bold text-white hover:text-brand-400 transition flex items-center gap-1.5"
+                            >
+                              <span>{u.name}</span>
+                              <ExternalLink className="w-3 h-3 text-slate-500 opacity-60 hover:opacity-100" />
+                            </Link>
+
+                            {u.userType === "ACCOUNT_OWNER" && (
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[9px] font-bold">
+                                Owner
+                              </span>
+                            )}
+                            {u.userType === "ORG_MEMBER" && (
+                              <span className="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 text-[9px] font-bold">
+                                Staff
+                              </span>
+                            )}
+                            {u.userType === "GENERAL_USER" && (
+                              <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700 text-[9px] font-medium">
+                                General
+                              </span>
+                            )}
+                          </div>
                           <p className="text-[11px] text-slate-400">{u.email}</p>
                         </div>
+                      </div>
+                    </td>
+
+                    <td className="py-4 px-4">
+                      <div className="flex flex-wrap gap-1">
+                        {(u.providers || ["password"]).map((p: string) => (
+                          <span
+                            key={p}
+                            className="px-1.5 py-0.5 rounded bg-slate-950 text-slate-300 border border-slate-800 text-[10px] font-medium capitalize"
+                          >
+                            {p}
+                          </span>
+                        ))}
                       </div>
                     </td>
 

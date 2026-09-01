@@ -88,6 +88,7 @@ export async function buildApp() {
   await fastify.register(workspaceRoutes, { prefix: '/api/v1/workspaces' });
   await fastify.register(inventoryRoutes, { prefix: '/api/v1/inventory' });
   await fastify.register(productsRoutes, { prefix: '/api/v1/products' });
+  await fastify.register(productsRoutes, { prefix: '/v1/products' });
   await fastify.register(adminProductsRoutes, { prefix: '/api/v1/admin/products' });
   await fastify.register(billingRoutes, { prefix: '/api/v1' });
   await fastify.register(adminBillingRoutes, { prefix: '/api/v1/admin' });

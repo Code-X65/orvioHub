@@ -121,8 +121,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         ? `/workspaces/${workspaceId}/branches?productKey=${encodeURIComponent(productKey)}`
         : `/workspaces/${workspaceId}/branches`;
 
-      const res = await api.get<{ branches: Branch[] }>(endpoint);
-      const list = res.branches || [];
+      const res = await api.get<{ branches?: Branch[]; data?: { branches: Branch[] } }>(endpoint);
+      const list = res.branches || res.data?.branches || [];
 
       // Sort: primary branch first, then alphabetically
       const sorted = [...list].sort((a, b) => {

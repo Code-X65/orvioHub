@@ -14,6 +14,33 @@ const createOrgSchema = z.object({
   website: z.string().url('Invalid website URL').optional().or(z.literal('')),
   size: z.string().optional(),
   logo: z.string().optional(),
+  phone: z.string().optional(),
+  planId: z.string().optional(),
+  products: z.array(z.string()).optional(),
+  primaryBranch: z
+    .object({
+      name: z.string(),
+      code: z.string().optional(),
+      country: z.string().optional(),
+      state: z.string().optional(),
+      stateCode: z.string().optional(),
+      lga: z.string().optional(),
+      city: z.string().optional(),
+      street: z.string().optional(),
+      blockNumber: z.string().optional(),
+      area: z.string().optional(),
+      landmark: z.string().optional(),
+    })
+    .optional(),
+  invitations: z
+    .array(
+      z.object({
+        email: z.string(),
+        role: z.string(),
+        branchAccess: z.array(z.string()).optional(),
+      })
+    )
+    .optional(),
 });
 
 const patchOrgSchema = z.object({
@@ -123,9 +150,15 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
         industry: parsed.data.industry,
         country: parsed.data.country,
         timezone: parsed.data.timezone,
+        currency: parsed.data.currency,
         website: parsed.data.website || undefined,
         size: parsed.data.size,
         logo: parsed.data.logo,
+        phone: parsed.data.phone,
+        planId: parsed.data.planId,
+        products: parsed.data.products,
+        primaryBranch: parsed.data.primaryBranch,
+        invitations: parsed.data.invitations,
       });
 
       return reply.status(result.isDuplicate ? 200 : 201).send({

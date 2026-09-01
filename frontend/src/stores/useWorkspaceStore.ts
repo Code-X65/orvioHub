@@ -12,6 +12,8 @@ export interface WorkspaceItem {
   city?: string;
   timezone?: string;
   logoUrl?: string;
+  planId?: string;
+  enabledModules?: string[];
   status: string;
   createdAt: number;
 }
@@ -79,8 +81,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       if (search) params.append('search', search);
 
       const qs = params.toString() ? `?${params.toString()}` : '';
-      const response = await api.get<{ workspaces: UserWorkspaceEntry[] }>(`/workspaces${qs}`);
-      const workspaces = response.workspaces || [];
+      const response = await api.get<{ workspaces?: UserWorkspaceEntry[]; data?: { workspaces: UserWorkspaceEntry[] } }>(`/workspaces${qs}`);
+      const workspaces = response.workspaces || response.data?.workspaces || [];
       set({ workspaces, isLoading: false });
 
       // If no active workspace is selected, try restoring from localStorage or select first

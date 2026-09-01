@@ -76,9 +76,18 @@ export const NotificationSettings: React.FC = () => {
         description="Configure your personal alerts, digests, and email notifications."
         activeSection="notifications"
       >
-        <div className="flex items-center justify-center py-16 text-slate-400">
-          <Loader2 className="w-6 h-6 animate-spin mr-2" />
-          <span>Loading preferences...</span>
+        <div className="space-y-6 animate-pulse">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="p-5 rounded-xs bg-white/5 border border-white/10 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="space-y-1.5">
+                  <div className="w-48 h-4 rounded-xs bg-white/10" />
+                  <div className="w-64 h-3 rounded-xs bg-white/5" />
+                </div>
+                <div className="w-10 h-5 rounded-full bg-white/10" />
+              </div>
+            </div>
+          ))}
         </div>
       </ProfileLayout>
     );

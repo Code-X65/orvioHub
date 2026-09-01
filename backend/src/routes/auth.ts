@@ -7,6 +7,7 @@ import { getAccountsUrl } from '@orviohub/shared';
 import { ERROR_CODES, AUDIT_EVENTS, PRODUCT_CATALOG, type ProductKey } from '../config/constants.js';
 import { setAuthCookies, clearAuthCookies } from '../utils/cookies.js';
 import { toPublicUser } from '../utils/userSerializer.js';
+import type { JwtPayload } from '../plugins/auth.js';
 
 const accountsBaseUrl = () => {
   try {
@@ -920,7 +921,6 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     '/logout',
     {
-      preHandler: [fastify.authenticate],
       schema: {
         tags: ['Auth'],
         summary: 'Log out current user and invalidate active session tokens',
@@ -935,17 +935,45 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
+      let userId: string | undefined = (request as any).user?.id;
+
+      // Extract user from authorization header if present
+      if (!userId && request.headers.authorization?.startsWith('Bearer ')) {
+        try {
+          const decoded = await request.jwtVerify<JwtPayload>();
+          userId = decoded.userId;
+        } catch {
+          // Ignore invalid/expired token on logout
+        }
+      }
+
+      // Extract user from session cookie if present
+      if (!userId && request.cookies?.orvio_session) {
+        try {
+          const decoded = fastify.jwt.verify<JwtPayload>(request.cookies.orvio_session);
+          userId = decoded.userId;
+        } catch {
+          // Ignore
+        }
+      }
+
       const body = (request.body as { refreshToken?: string } | undefined) || {};
-      const userId = request.user?.id;
-      
-      if (userId) {
-        await dataService.logoutUser(userId, body.refreshToken);
-        await dataService.logAudit({
-          actorUserId: userId,
-          eventType: AUDIT_EVENTS.AUTH_LOGOUT,
-          ipAddress: request.ip,
-          userAgent: request.headers['user-agent'],
-        });
+      const refreshToken = body.refreshToken || request.cookies?.orvio_refresh_token;
+
+      if (userId || refreshToken) {
+        try {
+          await dataService.logoutUser(userId || '', refreshToken);
+          if (userId) {
+            await dataService.logAudit({
+              actorUserId: userId,
+              eventType: AUDIT_EVENTS.AUTH_LOGOUT,
+              ipAddress: request.ip,
+              userAgent: request.headers['user-agent'],
+            });
+          }
+        } catch {
+          // Ignore DB revocation errors during logout
+        }
       }
 
       clearAuthCookies(reply);

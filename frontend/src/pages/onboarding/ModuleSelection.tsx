@@ -7,14 +7,15 @@ import { ModuleCard, ModuleInfo } from '@/components/onboarding/ModuleCard';
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
 import { toast } from 'sonner';
-import { Package, Users, TrendingUp, PieChart, Briefcase, ClipboardList, ArrowRight, Layers } from 'lucide-react';
+import { InventoryIcon } from '@/components/icons/InventoryIcon';
+import { Users, TrendingUp, PieChart, Briefcase, ClipboardList, ArrowRight, Layers } from 'lucide-react';
 
 const MODULES_CATALOG: ModuleInfo[] = [
   {
     id: 'inventory',
     name: 'Inventory & Stock Management',
     desc: 'Multi-warehouse stock tracking, low-stock alerts, barcodes, and POS terminal ready.',
-    icon: Package,
+    icon: InventoryIcon,
     category: 'Operations',
     isComingSoon: false,
   },

@@ -245,9 +245,15 @@ export const getOrganizationDetails = query({
       branches: branches.map((b: any) => ({
         id: b._id,
         name: b.name,
-        code: b.code,
-        status: b.status,
-        address: b.address,
+        code: b.code || "MAIN",
+        isPrimary: b.isPrimary || false,
+        status: b.status || "active",
+        state: b.state,
+        lga: b.lga,
+        city: b.city,
+        formattedAddress: b.formattedAddress || b.address,
+        phone: b.phone,
+        createdAt: b.createdAt,
       })),
       onboarding: flows.map((f: any) => ({
         id: f._id,

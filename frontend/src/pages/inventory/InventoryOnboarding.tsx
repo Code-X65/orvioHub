@@ -2,11 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/useAuthStore';
+import { useHost } from '@/host/useHost';
+import { getApplicationUrl } from '@orviohub/shared';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { CustomSelect } from '@/components/ui/custom-select';
 import { toast } from 'sonner';
+import { InventoryIcon } from '@/components/icons/InventoryIcon';
 import {
   Boxes,
   ShoppingCart,
@@ -58,7 +61,26 @@ const BUSINESS_TYPES = [
 
 export const InventoryOnboarding: React.FC = () => {
   const navigate = useNavigate();
+  const host = useHost();
   const { user } = useAuthStore();
+
+  const handleEnterDashboard = () => {
+    if (host.application === 'inventory') {
+      navigate('/dashboard');
+    } else {
+      const invUrl = getApplicationUrl('inventory', host.environment);
+      window.location.href = `${invUrl}/dashboard`;
+    }
+  };
+
+  const handleGoToLauncher = () => {
+    if (host.application === 'launcher') {
+      navigate('/app');
+    } else {
+      const launcherUrl = getApplicationUrl('launcher', host.environment);
+      window.location.href = `${launcherUrl}/app`;
+    }
+  };
 
   // Active step (1 to 12)
   const [activeStep, setActiveStep] = useState<number>(1);
@@ -272,8 +294,8 @@ export const InventoryOnboarding: React.FC = () => {
       <header className="sticky top-0 z-40 bg-[#0a0508]/90 backdrop-blur-md border-b border-white/5 px-6 py-4">
         <div className="max-w-5xl mx-auto flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-xs bg-[#714b67] text-white flex items-center justify-center font-bold text-sm shadow-md">
-              <Boxes className="w-4 h-4" />
+            <div className="w-8 h-8 rounded-xs bg-[#190f17] border border-white/10 flex items-center justify-center shadow-md shrink-0">
+              <InventoryIcon className="w-6 h-6" />
             </div>
             <div>
               <div className="text-xs font-bold text-white leading-tight">
@@ -301,7 +323,7 @@ export const InventoryOnboarding: React.FC = () => {
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => navigate('/inventory/dashboard')}
+              onClick={handleEnterDashboard}
               className="text-[11px] text-slate-400 hover:text-white transition-colors"
             >
               Skip to Dashboard
@@ -317,8 +339,8 @@ export const InventoryOnboarding: React.FC = () => {
           {activeStep === 1 && (
             <div className="space-y-6 animate-in fade-in duration-200">
               <div className="space-y-2 text-center max-w-xl mx-auto">
-                <div className="w-14 h-14 rounded-2xl bg-[#714b67]/20 border border-[#714b67]/30 text-[#c79dbd] flex items-center justify-center mx-auto mb-2 shadow-lg">
-                  <Sparkles className="w-7 h-7" />
+                <div className="w-16 h-16 rounded-2xl bg-[#190f17] border border-white/10 flex items-center justify-center mx-auto mb-2 shadow-lg">
+                  <InventoryIcon className="w-11 h-11" />
                 </div>
                 <h1 className="text-3xl font-bold text-white tracking-tight">
                   Welcome to Inventory & POS
@@ -1212,7 +1234,7 @@ export const InventoryOnboarding: React.FC = () => {
 
               <div className="pt-6 space-y-3">
                 <Button
-                  onClick={() => navigate('/inventory/dashboard')}
+                  onClick={handleEnterDashboard}
                   className="w-full h-12 bg-[#714b67] hover:bg-[#86597a] active:bg-[#603f57] text-white rounded-xs font-semibold text-sm shadow-xl shadow-[#714b67]/25 flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <span>Enter Inventory Dashboard</span>
@@ -1221,7 +1243,7 @@ export const InventoryOnboarding: React.FC = () => {
 
                 <Button
                   variant="outline"
-                  onClick={() => navigate('/app')}
+                  onClick={handleGoToLauncher}
                   className="w-full h-10 bg-transparent hover:bg-white/5 border-white/10 text-slate-300 text-xs rounded-xs"
                 >
                   Go to Workspace App Launcher

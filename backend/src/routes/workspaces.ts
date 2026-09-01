@@ -578,6 +578,46 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
     }
   );
 
+  // GET /api/v1/workspaces/:workspaceId/products/:productKey/is-active
+  fastify.get(
+    '/:workspaceId/products/:productKey/is-active',
+    {
+      schema: {
+        tags: ['Workspaces'],
+        summary: 'Check if a product is active for a workspace',
+        params: {
+          type: 'object',
+          required: ['workspaceId', 'productKey'],
+          properties: {
+            workspaceId: { type: 'string' },
+            productKey: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId, productKey } = request.params as {
+        workspaceId: string;
+        productKey: string;
+      };
+      try {
+        const isActive = await dataService.isWorkspaceProductActive(workspaceId, productKey);
+        return reply.send({
+          success: true,
+          data: { isActive, workspaceId, productKey },
+        });
+      } catch (err: any) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+            message: err.message || 'Failed to check product activation status.',
+          },
+        });
+      }
+    }
+  );
+
   // GET /api/v1/workspaces/:workspaceId/products/:productKey/access
   fastify.get(
     '/:workspaceId/products/:productKey/access',

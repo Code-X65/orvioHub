@@ -82,9 +82,28 @@ export const ActiveSessions: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-12 text-slate-400">
-        <Loader2 className="w-6 h-6 animate-spin mr-2" />
-        <span>Loading active devices...</span>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between pb-4 border-b border-slate-200 dark:border-slate-800">
+          <div className="space-y-1.5">
+            <div className="w-36 h-4 rounded-xs bg-white/10 animate-pulse" />
+            <div className="w-56 h-3 rounded-xs bg-white/5 animate-pulse" />
+          </div>
+        </div>
+        {[1, 2, 3].map((i) => (
+          <div
+            key={i}
+            className="p-4 rounded-xs border border-slate-200/80 dark:border-slate-800 bg-white/50 dark:bg-slate-900/40 flex items-center justify-between gap-4 animate-pulse"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xs bg-white/10" />
+              <div className="space-y-2">
+                <div className="w-32 h-4 rounded-xs bg-white/10" />
+                <div className="w-48 h-3 rounded-xs bg-white/5" />
+              </div>
+            </div>
+            <div className="w-16 h-7 rounded-xs bg-white/10" />
+          </div>
+        ))}
       </div>
     );
   }

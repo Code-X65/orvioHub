@@ -16,6 +16,7 @@ import {
   Layers,
   X,
 } from "lucide-react";
+import { InventoryIcon } from "../components/icons/InventoryIcon";
 import { useAuth } from "../hooks/useAuth";
 import { adminProductsApi, type PlatformProduct } from "../api/adminProducts";
 import ConfirmDialog from "../components/ConfirmDialog";
@@ -378,7 +379,11 @@ export const Products: React.FC = () => {
                             : "bg-slate-800/40 text-slate-400 border-slate-700/40"
                         }`}
                       >
-                        {p.name?.charAt(0) || "P"}
+                        {p.key === "inventory" || p.name?.toLowerCase().includes("inventory") ? (
+                          <InventoryIcon className="w-7 h-7" />
+                        ) : (
+                          p.name?.charAt(0) || "P"
+                        )}
                       </div>
                       <div>
                         <div className="flex items-center gap-1.5">

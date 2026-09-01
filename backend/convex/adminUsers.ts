@@ -95,23 +95,55 @@ export const listUsers = query({
     const offset = (page - 1) * pageSize;
     const paginated = users.slice(offset, offset + pageSize);
 
-    // Enrich with workspace count
-    const memberships = await ctx.db.query("workspaceMemberships").collect();
+    // Enrich with workspace count, ownership, and auth identities
+    const [memberships, workspaces, identities] = await Promise.all([
+      ctx.db.query("workspaceMemberships").collect(),
+      ctx.db.query("workspaces").collect(),
+      ctx.db.query("authIdentities").collect(),
+    ]);
+
     const membershipCounts: Record<string, number> = {};
     for (const m of memberships) {
       membershipCounts[m.userId] = (membershipCounts[m.userId] || 0) + 1;
     }
 
-    const items = paginated.map((u: any) => ({
-      id: u._id,
-      email: u.email,
-      name: u.name || `${u.firstName || ""} ${u.lastName || ""}`.trim() || "User",
-      emailVerified: !!u.emailVerified,
-      status: u.status || "ACTIVE",
-      organizationCount: membershipCounts[u._id] || 0,
-      lastLoginAt: u.lastLoginAt,
-      createdAt: u.createdAt,
-    }));
+    const ownedWorkspaceUserIds = new Set(workspaces.map((w: any) => w.ownerId));
+
+    const identityMap: Record<string, string[]> = {};
+    for (const ident of identities) {
+      if (!identityMap[ident.userId]) identityMap[ident.userId] = [];
+      if (!identityMap[ident.userId].includes(ident.provider)) {
+        identityMap[ident.userId].push(ident.provider);
+      }
+    }
+
+    const items = paginated.map((u: any) => {
+      const providers = identityMap[u._id] || [];
+      if (providers.length === 0) {
+        if (u.passwordHash) providers.push("password");
+        if (u.phoneVerified) providers.push("phone");
+      }
+
+      let userType: "ACCOUNT_OWNER" | "ORG_MEMBER" | "GENERAL_USER" = "GENERAL_USER";
+      if (ownedWorkspaceUserIds.has(u._id)) {
+        userType = "ACCOUNT_OWNER";
+      } else if (membershipCounts[u._id] && membershipCounts[u._id] > 0) {
+        userType = "ORG_MEMBER";
+      }
+
+      return {
+        id: u._id,
+        email: u.email,
+        name: u.name || `${u.firstName || ""} ${u.lastName || ""}`.trim() || "User",
+        emailVerified: !!u.emailVerified,
+        status: u.status || "ACTIVE",
+        userType,
+        providers,
+        organizationCount: membershipCounts[u._id] || 0,
+        lastLoginAt: u.lastLoginAt,
+        createdAt: u.createdAt,
+      };
+    });
 
     return {
       items,

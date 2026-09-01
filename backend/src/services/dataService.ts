@@ -649,7 +649,38 @@ export class DataService {
   public async getMembership(organizationId: string, userId: string) { return asMembership(await this.query('organizations:getMembership', { organizationId, userId })); }
   public async getOrganizationById(id: string) { return asOrganization(await this.query('organizations:getOrganizationById', { organizationId: id })); }
 
-  public async createOrganization(data: { userId: string; name: string; industry: string; country: string; timezone: string; website?: string; size?: string; logo?: string }) {
+  public async createOrganization(data: {
+    userId: string;
+    name: string;
+    industry: string;
+    country: string;
+    timezone: string;
+    currency?: string;
+    website?: string;
+    size?: string;
+    logo?: string;
+    phone?: string;
+    planId?: string;
+    products?: string[];
+    primaryBranch?: {
+      name: string;
+      code?: string;
+      country?: string;
+      state?: string;
+      stateCode?: string;
+      lga?: string;
+      city?: string;
+      street?: string;
+      blockNumber?: string;
+      area?: string;
+      landmark?: string;
+    };
+    invitations?: Array<{
+      email: string;
+      role: string;
+      branchAccess?: string[];
+    }>;
+  }) {
     const result = await this.mutate('organizations:createOrganization', data) as any;
     return { organization: asOrganization(result.organization)!, membership: asMembership(result.membership)!, onboarding: result.onboarding, isDuplicate: result.isDuplicate };
   }
@@ -2520,6 +2551,20 @@ export class DataService {
       // Fallback
     }
     return 1;
+  }
+
+  public async isWorkspaceProductActive(workspaceId: string, productKey: string) {
+    try {
+      const res = await this.query('workspaceProducts:isActive', {
+        workspaceId: workspaceId as any,
+        productKey,
+      });
+      if (typeof res === 'boolean') return res;
+    } catch {
+      // Fallback
+    }
+    // Default fallback: inventory is active, other products false
+    return productKey === 'inventory';
   }
 
   public async activateProductForWorkspace(

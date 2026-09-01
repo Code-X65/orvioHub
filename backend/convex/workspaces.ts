@@ -207,17 +207,44 @@ export const getWorkspaceContext = query({
     const ws = await ctx.db.get(args.workspaceId);
     if (!ws || ws.deletedAt || (ws.status || "").toLowerCase() === "deleted") return null;
 
-    const membership = await ctx.db
+    let membership = await ctx.db
       .query("workspaceMemberships")
       .withIndex("by_workspace_user", (q) =>
         q.eq("workspaceId", args.workspaceId).eq("userId", args.userId)
       )
       .first();
 
-    const products = await ctx.db
+    // Fallback: check workspace owner or organization membership
+    let orgMembership: any = null;
+    if (!membership && ws.organizationId) {
+      orgMembership = await ctx.db
+        .query("organizationMemberships")
+        .withIndex("by_org_and_user", (q: any) =>
+          q.eq("organizationId", ws.organizationId).eq("userId", args.userId)
+        )
+        .first();
+    }
+
+    const isOwner = ws.ownerId === args.userId || orgMembership?.role === "OWNER";
+    const isAdmin = isOwner || orgMembership?.role === "ADMIN";
+
+    if (!membership && !isOwner && !isAdmin) {
+      return null;
+    }
+
+    let products = await ctx.db
       .query("workspaceProducts")
       .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
       .collect();
+
+    if (!products || products.length === 0) {
+      const mods = ws.enabledModules || ["inventory"];
+      products = mods.map((mod) => ({
+        productKey: mod,
+        status: "active",
+        planId: "free",
+      })) as any;
+    }
 
     const productMemberships = await ctx.db
       .query("productMemberships")
@@ -227,7 +254,11 @@ export const getWorkspaceContext = query({
       .collect();
 
     const permissions = new Set<string>();
-    const role = (membership?.role || membership?.defaultRole || "member").toLowerCase();
+    const role = (
+      membership?.role ||
+      membership?.defaultRole ||
+      (isOwner ? "owner" : isAdmin ? "admin" : "member")
+    ).toLowerCase();
 
     if (role === "owner" || role === "admin") {
       permissions.add("*");
@@ -250,10 +281,17 @@ export const getWorkspaceContext = query({
       }
     }
 
+    // Resolve name: fallback to organization name if workspace name is placeholder
+    let wsName = ws.name || "Workspace";
+    if ((wsName === "Main Workspace" || !wsName) && ws.organizationId) {
+      const org = await ctx.db.get(ws.organizationId);
+      if (org?.name) wsName = org.name;
+    }
+
     return {
       workspace: {
         id: ws._id,
-        name: ws.name || "Workspace",
+        name: wsName,
         slug: ws.slug || "",
         type: ws.type || "business",
         currency: ws.currency || "NGN",
@@ -265,15 +303,13 @@ export const getWorkspaceContext = query({
         status: ws.status || "active",
         createdAt: ws.createdAt,
       },
-      membership: membership
-        ? {
-            id: membership._id,
-            role: membership.role || membership.defaultRole || "member",
-            status: membership.status || "active",
-          }
-        : null,
-      products: (products || []).map((p) => ({
-        key: p.productKey || "",
+      membership: {
+        id: membership?._id || ws._id,
+        role: role,
+        status: membership?.status || "active",
+      },
+      products: (products || []).map((p: any) => ({
+        key: p.productKey || p.key || "",
         status: p.status || "active",
         planId: p.planId,
       })),
@@ -297,12 +333,51 @@ export const selectWorkspace = mutation({
       throw new Error(`WORKSPACE_${status.toUpperCase()}`);
     }
 
-    const membership = await ctx.db
+    let membership = await ctx.db
       .query("workspaceMemberships")
       .withIndex("by_workspace_user", (q) =>
         q.eq("workspaceId", args.workspaceId).eq("userId", args.userId)
       )
       .first();
+
+    // Fallback: check workspace owner or organization membership
+    if (!membership && ws.organizationId) {
+      const orgMembership = await ctx.db
+        .query("organizationMemberships")
+        .withIndex("by_org_and_user", (q: any) =>
+          q.eq("organizationId", ws.organizationId).eq("userId", args.userId)
+        )
+        .first();
+
+      if (orgMembership && orgMembership.status === "ACTIVE") {
+        const memRole = orgMembership.role === "OWNER" ? "owner" : orgMembership.role === "ADMIN" ? "admin" : "member";
+        const memId = await ctx.db.insert("workspaceMemberships", {
+          workspaceId: args.workspaceId,
+          userId: args.userId,
+          status: "active",
+          defaultRole: memRole,
+          role: memRole,
+          acceptedAt: Date.now(),
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+        membership = await ctx.db.get(memId);
+      }
+    }
+
+    if (!membership && ws.ownerId === args.userId) {
+      const memId = await ctx.db.insert("workspaceMemberships", {
+        workspaceId: args.workspaceId,
+        userId: args.userId,
+        status: "active",
+        defaultRole: "owner",
+        role: "owner",
+        acceptedAt: Date.now(),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      membership = await ctx.db.get(memId);
+    }
 
     const memStatus = (membership?.status || "").toLowerCase();
     if (!membership || memStatus !== "active") {
@@ -311,12 +386,28 @@ export const selectWorkspace = mutation({
 
     // Verify product access if specified
     if (args.productKey) {
-      const product = await ctx.db
+      let product = await ctx.db
         .query("workspaceProducts")
         .withIndex("by_workspace_product", (q) =>
           q.eq("workspaceId", args.workspaceId).eq("productKey", args.productKey!)
         )
         .first();
+
+      if (!product) {
+        // Auto-provision product entitlement for inventory
+        if (args.productKey === "inventory") {
+          const prodId = await ctx.db.insert("workspaceProducts", {
+            workspaceId: args.workspaceId,
+            productKey: "inventory",
+            status: "active",
+            planId: "free",
+            trialStartedAt: Date.now(),
+            activatedBy: args.userId as any,
+            activatedAt: Date.now(),
+          });
+          product = await ctx.db.get(prodId);
+        }
+      }
 
       const prodStatus = (product?.status || "").toLowerCase();
       if (!product || (prodStatus !== "active" && prodStatus !== "trial")) {
@@ -344,10 +435,19 @@ export const selectWorkspace = mutation({
     });
 
     // Resolve complete context
-    const products = await ctx.db
+    let products = await ctx.db
       .query("workspaceProducts")
       .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
       .collect();
+
+    if (!products || products.length === 0) {
+      const mods = ws.enabledModules || ["inventory"];
+      products = mods.map((mod) => ({
+        productKey: mod,
+        status: "active",
+        planId: "free",
+      })) as any;
+    }
 
     const productMemberships = await ctx.db
       .query("productMemberships")
@@ -380,10 +480,16 @@ export const selectWorkspace = mutation({
       }
     }
 
+    let wsName = ws.name || "Workspace";
+    if ((wsName === "Main Workspace" || !wsName) && ws.organizationId) {
+      const org = await ctx.db.get(ws.organizationId);
+      if (org?.name) wsName = org.name;
+    }
+
     return {
       workspace: {
         id: ws._id,
-        name: ws.name || "Workspace",
+        name: wsName,
         slug: ws.slug || "",
         type: ws.type || "business",
         currency: ws.currency || "NGN",
@@ -400,8 +506,8 @@ export const selectWorkspace = mutation({
         role: membership.role || membership.defaultRole || "member",
         status: membership.status || "active",
       },
-      products: (products || []).map((p) => ({
-        key: p.productKey || "",
+      products: (products || []).map((p: any) => ({
+        key: p.productKey || p.key || "",
         status: p.status || "active",
         planId: p.planId,
       })),
@@ -417,6 +523,7 @@ export const getUserWorkspaces = query({
     search: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    // 1. Direct workspace memberships
     let memberships: any[] = [];
     try {
       memberships = await ctx.db
@@ -428,28 +535,94 @@ export const getUserWorkspaces = query({
     }
 
     if (!memberships || memberships.length === 0) {
-      memberships = await ctx.db
-        .query("workspaceMemberships")
-        .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      try {
+        memberships = await ctx.db
+          .query("workspaceMemberships")
+          .withIndex("by_user", (q) => q.eq("userId", args.userId))
+          .collect();
+      } catch {
+        memberships = [];
+      }
+    }
+
+    // 2. Owned workspaces
+    let ownedWorkspaces: any[] = [];
+    try {
+      ownedWorkspaces = await ctx.db
+        .query("workspaces")
+        .withIndex("by_owner", (q) => q.eq("ownerId", args.userId))
         .collect();
+    } catch {
+      ownedWorkspaces = [];
+    }
+
+    // 3. Organization memberships
+    let orgMemberships: any[] = [];
+    try {
+      orgMemberships = await ctx.db
+        .query("organizationMemberships")
+        .withIndex("by_userId", (q) => q.eq("userId", args.userId))
+        .collect();
+    } catch {
+      orgMemberships = [];
+    }
+
+    const wsMap = new Map<string, { ws: any; membership: any; orgMembership: any }>();
+
+    // Add direct memberships
+    for (const m of memberships || []) {
+      const memStatus = (m?.status || "active").toLowerCase();
+      if (memStatus === "removed" || memStatus === "deleted") continue;
+      const ws: any = await ctx.db.get(m.workspaceId as any);
+      if (ws) {
+        wsMap.set(String(ws._id), { ws, membership: m, orgMembership: null });
+      }
+    }
+
+    // Add owned workspaces
+    for (const ws of ownedWorkspaces || []) {
+      const wsId = String(ws._id);
+      if (!wsMap.has(wsId)) {
+        wsMap.set(wsId, { ws, membership: null, orgMembership: null });
+      }
+    }
+
+    // Add workspaces through organizations
+    for (const om of orgMemberships || []) {
+      if ((om.status || "").toLowerCase() === "inactive") continue;
+      const orgWorkspaces = await ctx.db
+        .query("workspaces")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", om.organizationId))
+        .collect();
+
+      for (const ws of orgWorkspaces) {
+        const wsId = String(ws._id);
+        if (!wsMap.has(wsId)) {
+          wsMap.set(wsId, { ws, membership: null, orgMembership: om });
+        } else {
+          const entry = wsMap.get(wsId)!;
+          if (!entry.orgMembership) entry.orgMembership = om;
+        }
+      }
     }
 
     const results = [];
     const searchFilter = args.search ? args.search.toLowerCase().trim() : null;
     const targetProduct = args.productKey ? args.productKey.toLowerCase().trim() : null;
 
-    for (const m of memberships || []) {
-      const memStatus = (m?.status || "active").toLowerCase();
-      if (memStatus === "removed" || memStatus === "deleted") continue;
-
-      const ws: any = await ctx.db.get(m.workspaceId as any);
-      if (!ws) continue;
-
+    for (const entry of Array.from(wsMap.values())) {
+      const { ws, membership, orgMembership } = entry;
       const wsStatus = (ws.status || "active").toLowerCase();
       if (ws.deletedAt || wsStatus === "archived" || wsStatus === "deleted") continue;
 
-      const wsName = ws.name || "";
-      const wsSlug = ws.slug || "";
+      let wsName = ws.name || "";
+      let wsSlug = ws.slug || "";
+
+      // If workspace has placeholder name, look up organization name
+      if ((wsName === "Main Workspace" || !wsName) && ws.organizationId) {
+        const org = (await ctx.db.get(ws.organizationId as any)) as any;
+        if (org && typeof org.name === "string") wsName = org.name;
+      }
 
       if (searchFilter && !wsName.toLowerCase().includes(searchFilter) && !wsSlug.toLowerCase().includes(searchFilter)) {
         continue;
@@ -465,6 +638,16 @@ export const getUserWorkspaces = query({
         products = [];
       }
 
+      // If no products registered, fallback to enabledModules or default inventory
+      if (!products || products.length === 0) {
+        const mods = ws.enabledModules || ["inventory"];
+        products = mods.map((mod: string) => ({
+          productKey: mod,
+          status: "active",
+          planId: "free",
+        }));
+      }
+
       // Product-aware filtering if specified
       if (targetProduct) {
         const hasProduct = (products || []).some((p) => {
@@ -475,11 +658,20 @@ export const getUserWorkspaces = query({
         if (!hasProduct) continue;
       }
 
+      let role = "member";
+      if (membership?.role || membership?.defaultRole) {
+        role = membership.role || membership.defaultRole;
+      } else if (ws.ownerId === args.userId || orgMembership?.role === "OWNER") {
+        role = "owner";
+      } else if (orgMembership?.role === "ADMIN") {
+        role = "admin";
+      }
+
       results.push({
         workspace: {
           id: ws._id,
-          name: ws.name || "Workspace",
-          slug: ws.slug || "",
+          name: wsName || "Workspace",
+          slug: wsSlug || "",
           type: ws.type || "business",
           currency: ws.currency || "NGN",
           country: ws.country,
@@ -488,8 +680,8 @@ export const getUserWorkspaces = query({
           status: ws.status || "active",
           createdAt: ws.createdAt,
         },
-        role: m.role || m.defaultRole || "member",
-        membershipId: m._id,
+        role,
+        membershipId: membership?._id || ws._id,
         enabledProducts: (products || []).map((p) => ({
           productKey: p.productKey || "",
           status: p.status || "active",

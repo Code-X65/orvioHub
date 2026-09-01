@@ -6,7 +6,7 @@ export interface ModuleInfo {
   id: string;
   name: string;
   desc: string;
-  icon: LucideIcon;
+  icon: LucideIcon | React.ComponentType<{ className?: string }>;
   category: string;
   isComingSoon?: boolean;
   requiredBy?: string[];

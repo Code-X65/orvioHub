@@ -306,11 +306,11 @@ export const AppModules: React.FC<AppModulesProps> = ({ onSelectModule }) => {
                   <div className="flex items-center justify-between gap-1 mb-1">
                     <span className="text-xs font-bold text-white">{app.name}</span>
                     {app.isAvailable ? (
-                      <span className="text-[10px] font-semibold text-emerald-400 bg-emerald-950/80 px-1.5 py-0.5 rounded-xs border border-emerald-500/30">
+                      <span className="text-[10px] font-semibold text-emerald-400 bg-emerald-950/80 px-1.5 py-0.5 rounded-sm border border-emerald-500/30">
                         Live
                       </span>
                     ) : (
-                      <span className="text-[10px] font-semibold text-[#c79dbd] bg-[#251521] px-1.5 py-0.5 rounded-xs border border-[#44253b]">
+                      <span className="text-[10px] font-semibold text-[#c79dbd] bg-[#251521] px-1.5 py-0.5 rounded-sm border border-[#44253b]">
                         Coming Soon
                       </span>
                     )}
@@ -327,7 +327,7 @@ export const AppModules: React.FC<AppModulesProps> = ({ onSelectModule }) => {
                 className="flex flex-col items-center cursor-pointer focus:outline-none"
               >
                 {/* Large Squircle App Icon Tile */}
-                <div className="w-20 h-20 sm:w-24 sm:h-24 md:w-28 md:h-28 rounded-2xl sm:rounded-3xl bg-[#141417] hover:bg-[#1e1e24] border border-white/[0.08] hover:border-white/20 flex items-center justify-center transition-all duration-200 group-hover:scale-105 group-hover:shadow-2xl group-hover:shadow-black/70 shadow-lg p-3 sm:p-4">
+                <div className="w-20 h-20 sm:w-24 sm:h-24 md:w-28 md:h-28 rounded-sm sm:rounded-sm bg-[#141417] hover:bg-[#1e1e24] border border-white/[0.08] hover:border-white/20 flex items-center justify-center transition-all duration-200 group-hover:scale-105 group-hover:shadow-2xl group-hover:shadow-black/70 shadow-lg p-3 sm:p-4">
                   {app.icon}
                 </div>
 

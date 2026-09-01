@@ -68,10 +68,57 @@ const surfaces: Record<ApplicationKey, React.LazyExoticComponent<React.Component
   taskmanagement: lazy(() => import("./surfaces/taskmanagement/App")),
 };
 
-const SurfaceLoading = () => (
-  <div className="min-h-screen bg-black flex flex-col items-center justify-center space-y-3 text-slate-400 font-sans">
-    <div className="w-8 h-8 rounded-full border-2 border-[#714b67]/20 border-t-[#714b67] animate-spin" />
-    <p className="text-[11px] uppercase tracking-widest text-slate-500 font-medium">Loading Surface...</p>
+const SurfaceSkeleton = () => (
+  <div className="min-h-screen bg-black text-slate-100 flex flex-col justify-between">
+    {/* Header Skeleton Bar */}
+    <header className="sticky top-0 z-50 w-full bg-black/90 backdrop-blur-xl border-b border-white/5 h-20 flex items-center justify-between px-6 sm:px-8 lg:px-12 max-w-[1520px] mx-auto">
+      <div className="flex items-center gap-3">
+        <div className="w-8 h-8 rounded-full bg-white/10 animate-pulse" />
+        <div className="w-20 h-5 rounded-xs bg-white/10 animate-pulse" />
+      </div>
+      <div className="hidden lg:flex items-center gap-6">
+        <div className="w-16 h-4 rounded-xs bg-white/10 animate-pulse" />
+        <div className="w-20 h-4 rounded-xs bg-white/10 animate-pulse" />
+        <div className="w-16 h-4 rounded-xs bg-white/10 animate-pulse" />
+      </div>
+      <div className="flex items-center gap-3">
+        <div className="w-20 h-8 rounded-xs bg-white/10 animate-pulse" />
+      </div>
+    </header>
+
+    {/* Hero & Content Skeleton */}
+    <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-10">
+      <div className="text-center max-w-2xl mx-auto space-y-4 pt-6">
+        <div className="w-36 h-6 rounded-xs bg-[#714b67]/20 border border-[#714b67]/30 mx-auto animate-pulse" />
+        <div className="w-3/4 h-10 rounded-xs bg-white/10 mx-auto animate-pulse" />
+        <div className="w-1/2 h-4 rounded-xs bg-white/5 mx-auto animate-pulse" />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pt-6">
+        {[1, 2, 3, 4, 5, 6].map((i) => (
+          <div
+            key={i}
+            className="p-6 rounded-xs border border-white/10 bg-[#120b10] space-y-4 animate-pulse"
+          >
+            <div className="flex items-center justify-between">
+              <div className="w-12 h-12 rounded-xs bg-white/10" />
+              <div className="w-20 h-5 rounded-xs bg-white/10" />
+            </div>
+            <div className="w-3/4 h-5 rounded-xs bg-white/10" />
+            <div className="w-full h-3.5 rounded-xs bg-white/5" />
+            <div className="w-5/6 h-3.5 rounded-xs bg-white/5" />
+            <div className="pt-4 border-t border-white/5 flex gap-2">
+              <div className="flex-1 h-9 rounded-xs bg-[#714b67]/30" />
+              <div className="flex-1 h-9 rounded-xs bg-white/5" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </main>
+
+    <footer className="w-full border-t border-white/5 bg-black py-6 text-center text-xs text-slate-600">
+      Loading surface...
+    </footer>
   </div>
 );
 
@@ -86,7 +133,7 @@ try {
       <HostProvider value={host}>
         <QueryClientProvider client={queryClient}>
           <BrowserRouter>
-            <Suspense fallback={<SurfaceLoading />}>
+            <Suspense fallback={<SurfaceSkeleton />}>
               <Surface />
             </Suspense>
             <Toaster />

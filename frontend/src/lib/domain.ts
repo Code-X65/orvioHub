@@ -49,6 +49,7 @@ export function getCrossSubdomainUrl(
 
   const token = localStorage.getItem("orvio_auth_token");
   const refreshToken = localStorage.getItem("orvio_refresh_token");
+  const user = localStorage.getItem("orvio_user");
 
   if (!token) return targetUrl;
 
@@ -57,6 +58,22 @@ export function getCrossSubdomainUrl(
     url.searchParams.set("auth_token", token);
     if (refreshToken) {
       url.searchParams.set("refresh_token", refreshToken);
+    }
+    if (user) {
+      try {
+        const parsed = JSON.parse(user);
+        // Exclude giant base64 avatar images to prevent HTTP 431 (Request Header Fields Too Large)
+        const { avatar, avatarUrl, ...safeUser } = parsed;
+        if (typeof avatar === 'string' && avatar.startsWith('http')) {
+          (safeUser as any).avatar = avatar;
+        }
+        if (typeof avatarUrl === 'string' && avatarUrl.startsWith('http')) {
+          (safeUser as any).avatarUrl = avatarUrl;
+        }
+        url.searchParams.set("auth_user", JSON.stringify(safeUser));
+      } catch {
+        // Ignore parsing errors
+      }
     }
     return url.toString();
   } catch {

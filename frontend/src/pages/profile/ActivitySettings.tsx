@@ -13,7 +13,6 @@ import {
   Clock,
   Filter,
   Flag,
-  Loader2,
   CheckCircle2,
 } from 'lucide-react';
 
@@ -136,9 +135,22 @@ export const ActivitySettings: React.FC = () => {
 
         {/* Activity Timeline */}
         {isLoading ? (
-          <div className="flex items-center justify-center py-16 text-slate-400">
-            <Loader2 className="w-6 h-6 animate-spin mr-2" />
-            <span>Loading security timeline...</span>
+          <div className="space-y-3">
+            {[1, 2, 3, 4].map((i) => (
+              <div
+                key={i}
+                className="p-4 rounded-xs border border-white/10 bg-white/5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 animate-pulse"
+              >
+                <div className="flex items-start gap-3.5">
+                  <div className="w-8 h-8 rounded-xs bg-white/10 shrink-0 mt-0.5" />
+                  <div className="space-y-2">
+                    <div className="w-44 h-4 rounded-xs bg-white/10" />
+                    <div className="w-60 h-3 rounded-xs bg-white/5" />
+                  </div>
+                </div>
+                <div className="w-24 h-4 rounded-xs bg-white/10" />
+              </div>
+            ))}
           </div>
         ) : (
           <div className="space-y-3">

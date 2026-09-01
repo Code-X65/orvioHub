@@ -12,9 +12,10 @@ import { Header } from '@/components/landing/Header';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
+import { Skeleton } from '@/components/ui/skeleton';
+import { InventoryIcon } from '@/components/icons/InventoryIcon';
 import { toast } from 'sonner';
 import {
-  Package,
   Plus,
   ArrowRight,
   ExternalLink,
@@ -75,7 +76,7 @@ const APPS_REGISTRY: AppDefinition[] = [
     headline: 'Multi-branch warehouse stock, barcode POS checkout & store registers.',
     description: 'Track real-time stock across branches, manage receipts & purchase orders, run point-of-sale registers, and generate sales telemetry.',
     isActive: true,
-    icon: Package,
+    icon: InventoryIcon,
     features: [
       'Multi-warehouse & store branch support',
       'Barcode scanner & POS terminal checkout',
@@ -377,8 +378,8 @@ export const Dashboard: React.FC = () => {
             {/* Header */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-white/10">
               <div className="flex items-start sm:items-center gap-3.5">
-                <div className="w-11 h-11 rounded-xs bg-[#714b67] flex items-center justify-center text-white shrink-0 shadow-md">
-                  <Package className="w-6 h-6" />
+                <div className="w-12 h-12 rounded-xs bg-[#0c070a] border border-white/10 flex items-center justify-center shrink-0 shadow-md">
+                  <InventoryIcon className="w-9 h-9" />
                 </div>
                 <div>
                   <div className="flex items-center gap-2.5">
@@ -407,9 +408,34 @@ export const Dashboard: React.FC = () => {
 
             {/* Organizations Grid */}
             {isLoading ? (
-              <div className="py-12 flex flex-col items-center justify-center gap-2 text-slate-400">
-                <Spinner size="default" className="text-[#714b67]" />
-                <p className="text-xs">Loading organizations...</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {[1, 2, 3].map((i) => (
+                  <div
+                    key={i}
+                    className="p-5 rounded-sm bg-[#0c070a] border border-white/10 flex flex-col justify-between gap-4 animate-pulse"
+                  >
+                    <div className="space-y-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-3">
+                          <Skeleton className="w-9 h-9 rounded-xs" />
+                          <div className="space-y-1.5">
+                            <Skeleton className="w-28 h-4 rounded-xs" />
+                            <Skeleton className="w-20 h-3 rounded-xs" />
+                          </div>
+                        </div>
+                        <Skeleton className="w-14 h-4 rounded-xs" />
+                      </div>
+                      <div className="space-y-2 pt-3 border-t border-white/5">
+                        <Skeleton className="w-full h-3 rounded-xs" />
+                        <Skeleton className="w-3/4 h-3 rounded-xs" />
+                      </div>
+                    </div>
+                    <div className="pt-3 border-t border-white/5 flex items-center justify-between">
+                      <Skeleton className="w-24 h-4 rounded-xs" />
+                      <Skeleton className="w-28 h-8 rounded-xs bg-[#714b67]/30" />
+                    </div>
+                  </div>
+                ))}
               </div>
             ) : inventoryWorkspaces.length > 0 ? (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
