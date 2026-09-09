@@ -47,6 +47,9 @@ export interface User {
   theme?: 'dark' | 'light' | 'system';
   layoutDensity?: 'compact' | 'comfortable';
   twoFactorEnabled?: boolean;
+  planKey?: 'free_trial' | 'standard' | 'premium' | string;
+  subscriptionStatus?: string;
+  personalOnboardingCompleted?: boolean;
 }
 
 export interface Organization {

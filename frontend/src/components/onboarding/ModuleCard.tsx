@@ -9,6 +9,7 @@ export interface ModuleInfo {
   icon: LucideIcon | React.ComponentType<{ className?: string }>;
   category: string;
   isComingSoon?: boolean;
+  planRequirement?: string;
   requiredBy?: string[];
   requires?: string[];
   recommendedFor?: string[];
@@ -86,9 +87,16 @@ export const ModuleCard: React.FC<ModuleCardProps> = ({
         </p>
       </div>
 
-      {/* Category tag */}
+      {/* Category and Plan Tier tag */}
       <div className="mt-2.5 pt-2 border-t border-white/5 flex items-center justify-between text-[10px] text-slate-500">
-        <span className="capitalize">{module.category}</span>
+        <div className="flex items-center gap-1.5">
+          <span className="capitalize">{module.category}</span>
+          {module.planRequirement && (
+            <span className="text-[9px] font-semibold text-slate-300 bg-white/10 px-1 py-0.2 rounded-xs border border-white/10">
+              {module.planRequirement}
+            </span>
+          )}
+        </div>
         {isSelected && !isComingSoon && (
           <span className="text-[#c79dbd] font-semibold flex items-center gap-1">
             Active

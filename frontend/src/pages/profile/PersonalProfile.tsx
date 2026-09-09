@@ -6,6 +6,7 @@ import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { ProfileLayout } from '@/components/profile/ProfileLayout';
 import { AvatarCropperModal } from '@/components/profile/AvatarCropperModal';
+import { UserPlanBadge } from '@/components/profile/UserPlanBadge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -135,7 +136,10 @@ export const PersonalProfile: React.FC = () => {
             </div>
 
             <div>
-              <h4 className="text-sm font-semibold text-white">{user?.name || 'User'}</h4>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h4 className="text-sm font-semibold text-white">{user?.name || 'User'}</h4>
+                <UserPlanBadge planKey={user?.planKey} size="xs" />
+              </div>
               <p className="text-xs text-slate-400">{user?.email}</p>
               <p className="text-[11px] text-slate-500 mt-0.5">JPEG, PNG, or WEBP up to 5MB.</p>
             </div>

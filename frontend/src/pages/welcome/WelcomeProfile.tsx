@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { Header } from '@/components/landing/Header';
+import { UserPlanBadge } from '@/components/profile/UserPlanBadge';
 import { CustomSelect, type SelectOption } from '@/components/ui/custom-select';
 import { COUNTRY_DIAL_CODES } from '@/lib/countryCodes';
 import { Button } from '@/components/ui/button';
@@ -190,10 +191,11 @@ export const WelcomeProfile: React.FC = () => {
               {user?.firstName?.[0] || user?.name?.[0] || 'U'}
             </div>
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-sm font-bold text-white truncate">
                   {user?.firstName ? `${user.firstName} ${user.lastName || ''}` : user?.name || user?.email}
                 </span>
+                <UserPlanBadge planKey={user?.planKey} size="xs" />
                 <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0">
                   Account Ready
                 </span>

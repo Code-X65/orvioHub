@@ -1,15 +1,14 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/useAuthStore';
-import { getHomeUrl } from '@orviohub/shared';
-import { useHost } from '@/host/useHost';
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
 import { toast } from 'sonner';
 import { Building2, CheckCircle2, ArrowRight, Sparkles, ShieldCheck, Layers } from 'lucide-react';
 
 export const Complete: React.FC = () => {
-  const host = useHost();
+  const navigate = useNavigate();
   const { refreshSession, onboardingStatus, user } = useAuthStore();
   const [isLoading, setIsLoading] = useState(false);
 
@@ -23,18 +22,7 @@ export const Complete: React.FC = () => {
       await api.post('/onboarding/complete');
       toast.success('Onboarding complete! Welcome to Orviohub.');
       await refreshSession();
-
-      const token = localStorage.getItem('orvio_auth_token');
-      const refreshToken = localStorage.getItem('orvio_refresh_token');
-      const homeBase = getHomeUrl(host.environment);
-      try {
-        const homeUrl = new URL(homeBase);
-        if (token) homeUrl.searchParams.set('auth_token', token);
-        if (refreshToken) homeUrl.searchParams.set('refresh_token', refreshToken);
-        window.location.href = homeUrl.toString();
-      } catch {
-        window.location.href = homeBase;
-      }
+      navigate('/inventory/dashboard');
     } catch (error: any) {
       toast.error(error.message || 'Failed to complete onboarding.');
     } finally {

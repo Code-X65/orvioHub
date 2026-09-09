@@ -17,6 +17,7 @@ const MODULES_CATALOG: ModuleInfo[] = [
     desc: 'Multi-warehouse stock tracking, low-stock alerts, barcodes, and POS terminal ready.',
     icon: InventoryIcon,
     category: 'Operations',
+    planRequirement: 'Free & Standard',
     isComingSoon: false,
   },
   {
@@ -25,6 +26,7 @@ const MODULES_CATALOG: ModuleInfo[] = [
     desc: 'Centralized customer directory, contact history, and pipeline lead stages.',
     icon: Users,
     category: 'Core CRM',
+    planRequirement: 'Standard',
     isComingSoon: true,
   },
   {
@@ -33,6 +35,7 @@ const MODULES_CATALOG: ModuleInfo[] = [
     desc: 'Quotes, orders, deal stage velocity, and revenue forecasting.',
     icon: TrendingUp,
     category: 'Revenue',
+    planRequirement: 'Standard',
     isComingSoon: true,
   },
   {
@@ -41,6 +44,7 @@ const MODULES_CATALOG: ModuleInfo[] = [
     desc: 'Invoicing, expenses, general ledger, and financial reporting.',
     icon: PieChart,
     category: 'Accounting',
+    planRequirement: 'Standard',
     isComingSoon: true,
   },
   {
@@ -49,6 +53,7 @@ const MODULES_CATALOG: ModuleInfo[] = [
     desc: 'Employee directory, payroll records, leave tracking, and departments.',
     icon: Briefcase,
     category: 'Workforce',
+    planRequirement: 'Premium',
     isComingSoon: true,
   },
   {
@@ -57,6 +62,7 @@ const MODULES_CATALOG: ModuleInfo[] = [
     desc: 'Kanban boards, milestone tracking, team assignments, and time logs.',
     icon: ClipboardList,
     category: 'Productivity',
+    planRequirement: 'Standard',
     isComingSoon: true,
   },
 ];

@@ -6,9 +6,7 @@ import { z } from 'zod';
 import { api, API_BASE_URL } from '@/lib/api';
 import { AuthResponse } from '@/lib/types';
 import { useAuthStore } from '@/stores/useAuthStore';
-import { isValidReturnUrl } from '@/lib/domain';
-import { getHomeUrl } from '@orviohub/shared';
-import { useHost } from '@/host/useHost';
+import { isValidReturnUrl, getHomeUrl, getCrossSubdomainUrl, type ApplicationKey } from '@/lib/domain';
 import { AuthLayout } from './AuthLayout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -29,9 +27,12 @@ export const Login: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
-  const host = useHost();
 
-  const returnTo = searchParams.get('return_to') || searchParams.get('returnTo') || (location.state as any)?.from?.pathname;
+  const returnTo =
+    searchParams.get('redirect') ||
+    searchParams.get('return_to') ||
+    searchParams.get('returnTo') ||
+    (location.state as any)?.from?.pathname;
   const product = searchParams.get('product') || 'inventory';
 
   const {
@@ -65,17 +66,23 @@ export const Login: React.FC = () => {
     resolver: zodResolver(loginSchema),
   });
 
-  const handlePostLoginRedirect = async () => {
-    const token = localStorage.getItem('orvio_auth_token');
-    const refreshToken = localStorage.getItem('orvio_refresh_token');
+  const handlePostLoginRedirect = async (userData?: any, sessionData?: any) => {
+    // 1. Onboarding check: If personal onboarding is incomplete, redirect to /onboard/personal
+    if (userData && userData.personalOnboardingCompleted === false) {
+      window.location.href = getCrossSubdomainUrl('home', '/onboard/personal');
+      return;
+    }
 
+    // 2. Explicit returnTo / redirect param (must be valid safe subdomain URL)
     if (returnTo && isValidReturnUrl(returnTo)) {
       if (returnTo.startsWith('http://') || returnTo.startsWith('https://')) {
         try {
           const url = new URL(returnTo);
-          if (token) url.searchParams.set('auth_token', token);
-          if (refreshToken) url.searchParams.set('refresh_token', refreshToken);
-          window.location.href = url.toString();
+          if (url.origin === window.location.origin) {
+            navigate(url.pathname + url.search + url.hash, { replace: true });
+            return;
+          }
+          window.location.href = returnTo;
           return;
         } catch {
           window.location.href = returnTo;
@@ -86,16 +93,24 @@ export const Login: React.FC = () => {
       return;
     }
 
-    // Default post-login destination: Workspace Home (home.orviohub.localhost:4000 / home.orviohub.com)
-    const homeBase = getHomeUrl(host.environment);
-    try {
-      const homeUrl = new URL(homeBase);
-      if (token) homeUrl.searchParams.set('auth_token', token);
-      if (refreshToken) homeUrl.searchParams.set('refresh_token', refreshToken);
-      window.location.href = homeUrl.toString();
-    } catch {
-      window.location.href = homeBase;
+    // 3. Session continuity: Redirect to last visited page & subdomain if recorded
+    if (sessionData?.lastVisitedUrl && sessionData?.lastVisitedSubdomain) {
+      try {
+        const targetUrl = getCrossSubdomainUrl(
+          sessionData.lastVisitedSubdomain as ApplicationKey,
+          sessionData.lastVisitedUrl
+        );
+        if (isValidReturnUrl(targetUrl)) {
+          window.location.href = targetUrl;
+          return;
+        }
+      } catch {
+        // Fall back to home
+      }
     }
+
+    // 4. Fallback: Default to Home launcher / dashboard
+    window.location.href = getHomeUrl();
   };
 
   const onSubmit = async (data: LoginFormData) => {
@@ -116,7 +131,7 @@ export const Login: React.FC = () => {
 
       setAuthData(response, rememberMe);
       toast.success(`Welcome back, ${response.user?.name || 'there'}!`);
-      await handlePostLoginRedirect();
+      await handlePostLoginRedirect(response.user, response.session);
     } catch (error: any) {
       if (error?.code === 'ACCOUNT_LOCKED' || error?.message?.includes('temporarily locked') || error?.message?.includes('locked due to')) {
         toast.error(error.message || 'Account temporarily locked due to too many failed attempts.', {
@@ -148,7 +163,7 @@ export const Login: React.FC = () => {
 
       setAuthData(response, rememberMe);
       toast.success('Two-factor authentication verified.');
-      await handlePostLoginRedirect();
+      await handlePostLoginRedirect(response.user, (response as any).session);
     } catch (error: any) {
       toast.error(error.message || 'Invalid verification code. Please try again.');
     } finally {

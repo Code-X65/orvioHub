@@ -38,63 +38,59 @@ export const BranchesPage: React.FC = () => {
   const appKey = (searchParams.get('app') || 'inventory').toLowerCase();
   const appDisplayName = APP_NAMES[appKey] || (appKey.charAt(0).toUpperCase() + appKey.slice(1));
 
-  const { currentWorkspace, workspaces, fetchWorkspaces } = useWorkspaceStore();
-  const { branches, activeBranch, setActiveBranch, loadBranches, isLoading } = useBranchStore();
+  const { currentWorkspace, workspaces, fetchWorkspaces, isLoading: isWsLoading } = useWorkspaceStore();
+  const { branches, activeBranch, setActiveBranch, loadBranches, isLoading: isBranchesLoading } = useBranchStore();
 
   const [hasCheckedAutoSelect, setHasCheckedAutoSelect] = useState(false);
   const [isAppDropdownOpen, setIsAppDropdownOpen] = useState(false);
   const [isCreatingBranch, setIsCreatingBranch] = useState(false);
 
   useEffect(() => {
-    if (workspaces.length === 0) {
-      fetchWorkspaces().catch(() => {});
-    }
+    const init = async () => {
+      if (workspaces.length === 0) {
+        await fetchWorkspaces().catch(() => {});
+      }
+    };
+    init();
   }, [workspaces.length, fetchWorkspaces]);
 
   useEffect(() => {
+    let isMounted = true;
     if (currentWorkspace?.id) {
       loadBranches(currentWorkspace.id, appKey)
         .then(() => {
-          setHasCheckedAutoSelect(true);
+          if (isMounted) setHasCheckedAutoSelect(true);
         })
         .catch(() => {
-          setHasCheckedAutoSelect(true);
+          if (isMounted) setHasCheckedAutoSelect(true);
         });
+    } else if (!isWsLoading && workspaces.length === 0) {
+      if (isMounted) setHasCheckedAutoSelect(true);
     }
-  }, [currentWorkspace?.id, appKey, loadBranches]);
+    return () => {
+      isMounted = false;
+    };
+  }, [currentWorkspace?.id, isWsLoading, workspaces.length, appKey, loadBranches]);
 
   const handleSelectBranch = (branch: Branch) => {
     setActiveBranch(branch);
     const branchId = branch.id || branch._id || '';
+    const orgId = currentWorkspace?.id || '';
     const targetUrl = getCrossSubdomainUrl(
       appKey as ApplicationKey,
-      `/dashboard?branch=${encodeURIComponent(branchId)}`,
+      `/dashboard?branch=${encodeURIComponent(branchId)}${orgId ? `&org=${encodeURIComponent(orgId)}` : ''}`,
       true,
       env
     );
     window.location.href = targetUrl;
   };
 
-  // Auto-selection rule: If organization has exactly 1 branch, auto-select it and navigate to application
-  if (hasCheckedAutoSelect && branches.length === 1) {
-    const singleBranch = branches[0];
-    const branchId = singleBranch.id || singleBranch._id || '';
-    const targetUrl = getCrossSubdomainUrl(
-      appKey as ApplicationKey,
-      `/dashboard?branch=${encodeURIComponent(branchId)}`,
-      true,
-      env
-    );
-    window.location.replace(targetUrl);
-    return null;
+  // Redirect to org picker if no workspace is currently selected
+  if (hasCheckedAutoSelect && !isWsLoading && !currentWorkspace) {
+    return <Navigate to="/dashboard" replace />;
   }
 
-  // If no workspace is selected, redirect to root organization selector
-  if (!currentWorkspace && !isLoading) {
-    return <Navigate to="/" replace />;
-  }
-
-  if (isLoading && !hasCheckedAutoSelect) {
+  if (isBranchesLoading || (workspaces.length === 0 && isWsLoading) || !hasCheckedAutoSelect) {
     return (
       <div className="min-h-screen bg-black text-slate-100 flex flex-col">
         <Header />
@@ -117,9 +113,19 @@ export const BranchesPage: React.FC = () => {
         <div className="bg-[#120a11] border border-[#714b67]/30 rounded-2xl p-6 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2 text-xs text-slate-400">
-              <span className="font-semibold text-slate-200">{currentWorkspace?.name}</span>
+              <span
+                onClick={() => navigate('/dashboard')}
+                className="font-semibold text-slate-200 hover:text-white cursor-pointer transition-colors"
+              >
+                {currentWorkspace?.name}
+              </span>
               <span>→</span>
-              <span className="font-bold text-[#FDB02F]">{appDisplayName}</span>
+              <span
+                onClick={() => navigate('/applications')}
+                className="font-bold text-[#FDB02F] hover:text-[#fed476] cursor-pointer transition-colors"
+              >
+                {appDisplayName}
+              </span>
               <span className="text-[10px] font-bold text-slate-400 bg-white/5 px-2 py-0.5 rounded-full border border-white/10 ml-1">
                 Step 3 of 3: Branch Selection
               </span>

@@ -37,13 +37,27 @@ export interface PublicUser {
   createdAt?: number;
   updatedAt?: number;
   lastLoginAt?: number;
+  planKey?: string;
+  subscriptionStatus?: string;
+  personalOnboardingCompleted: boolean;
 }
 
-export function toPublicUser(user: any): PublicUser | null {
+export function toPublicUser(
+  user: any,
+  planOptions?: { planKey?: string; subscriptionStatus?: string }
+): PublicUser | null {
   if (!user) return null;
 
   const id = user.id || user._id;
   const avatar = user.avatarUrl || user.avatar || undefined;
+  // Users are free. Subscriptions belong to organizations.
+  const rawPlanKey = planOptions?.planKey || user.planKey || 'free_trial';
+  let resolvedSubscriptionStatus = planOptions?.subscriptionStatus || user.subscriptionStatus || 'trialing';
+  let resolvedPlanKey = rawPlanKey;
+  if (rawPlanKey !== 'free_trial' && resolvedSubscriptionStatus !== 'active') {
+    resolvedPlanKey = 'free_trial';
+    resolvedSubscriptionStatus = 'trialing';
+  }
 
   return {
     id: String(id),
@@ -82,5 +96,8 @@ export function toPublicUser(user: any): PublicUser | null {
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
     lastLoginAt: user.lastLoginAt,
+    planKey: resolvedPlanKey,
+    subscriptionStatus: resolvedSubscriptionStatus,
+    personalOnboardingCompleted: Boolean(user.personalOnboardingCompleted),
   };
 }

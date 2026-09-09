@@ -3,8 +3,6 @@ import { ArrowLeft, ArrowRight, Loader2, Sparkles, CheckCircle2 } from 'lucide-r
 import { InventoryIcon } from '@/components/icons/InventoryIcon';
 import { Button } from '@/components/ui/button';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
-import { useHost } from '@/host/useHost';
-import { getLauncherUrl } from '@orviohub/shared';
 import { api } from '@/lib/api';
 import { toast } from 'sonner';
 
@@ -18,9 +16,6 @@ export const ProductNotActivated: React.FC<ProductNotActivatedProps> = ({
   onActivated,
 }) => {
   const { currentWorkspace } = useWorkspaceStore();
-  const host = useHost();
-  const env = host.environment;
-  const launcherUrl = getLauncherUrl(env);
 
   const workspaceId = currentWorkspace?.id || localStorage.getItem('orvio_active_workspace_id');
   const workspaceName = currentWorkspace?.name || 'Your Organization';
@@ -94,7 +89,7 @@ export const ProductNotActivated: React.FC<ProductNotActivatedProps> = ({
           </div>
           <div className="flex items-center gap-2">
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-            <span>14-day full free trial with all features</span>
+            <span>30-day full free trial with all features</span>
           </div>
         </div>
 
@@ -112,7 +107,7 @@ export const ProductNotActivated: React.FC<ProductNotActivatedProps> = ({
           </Button>
 
           <a
-            href={launcherUrl}
+            href="/inventory/dashboard"
             className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors"
           >
             <ArrowLeft className="w-3.5 h-3.5" />

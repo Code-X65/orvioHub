@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../../stores/useAuthStore';
-import { getLoginUrl, getAccountsUrl, isAllowedReturnTo } from '@orviohub/shared';
+import { getLoginUrl, getHomeUrl, isAllowedReturnTo } from '@orviohub/shared';
 import { useHost } from '../../host/useHost';
 
 interface AuthGuardProps {
@@ -46,7 +46,7 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({
 
   // 1. Unauthenticated user trying to access a protected route
   if (requireAuth && !requireGuest && !isAuthenticated) {
-    // If on a dedicated product subdomain (e.g. inventory, launcher, home), redirect to central accounts login with returnTo
+    // If on a dedicated product subdomain (e.g. inventory, launcher, home), redirect to central accounts login with redirect
     if (host.application !== 'accounts' && host.application !== 'marketing') {
       const returnUrl = typeof window !== 'undefined' ? window.location.href : '';
       const loginUrl = getLoginUrl(returnUrl, host.environment);
@@ -67,7 +67,7 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({
       return <>{children}</>;
     }
 
-    const returnTo = urlParams.get('returnTo');
+    const returnTo = urlParams.get('redirect') || urlParams.get('returnTo') || urlParams.get('return_to');
     const token = localStorage.getItem('orvio_auth_token');
     const refreshToken = localStorage.getItem('orvio_refresh_token');
 
@@ -85,7 +85,8 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({
     }
 
     if (host.application === 'accounts') {
-      return <Navigate to="/profile" replace />;
+      window.location.href = getHomeUrl(host.environment);
+      return null;
     }
 
     return <Navigate to="/" replace />;
@@ -101,11 +102,34 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({
         location.pathname.startsWith('/organizations/new')) &&
       location.pathname !== '/verify-email'
     ) {
-      if (host.application !== 'accounts') {
-        window.location.href = `${getAccountsUrl(host.environment)}/verify-email`;
-        return null;
-      }
       return <Navigate to="/verify-email" replace />;
+    }
+
+    // Personal Onboarding Guard:
+    // If user has verified their email but has not completed personal onboarding,
+    // ensure they complete /onboard/personal before accessing dashboard or org wizard.
+    const isPersonalOnboardingRoute =
+      location.pathname === '/onboard/personal' ||
+      location.pathname === '/onboarding/personal';
+    const isInviteRoute =
+      location.pathname.startsWith('/invite') ||
+      location.pathname.startsWith('/invitations');
+    const isAuthUtilityRoute =
+      location.pathname === '/verify-email' ||
+      location.pathname === '/logout';
+
+    if (
+      user?.emailVerified &&
+      user?.personalOnboardingCompleted === false &&
+      !isPersonalOnboardingRoute &&
+      !isInviteRoute &&
+      !isAuthUtilityRoute
+    ) {
+      if (host.application === 'home' || host.application === 'launcher') {
+        return <Navigate to="/onboard/personal" replace />;
+      }
+      window.location.href = `${getHomeUrl(host.environment)}/onboard/personal`;
+      return null;
     }
 
     const isPlatformOnboardingSurface = host.application === 'launcher' || host.application === 'accounts';
@@ -113,10 +137,7 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({
 
     // If platform onboarding is already completed, prevent getting stuck in onboarding on platform surfaces
     if (onboardingStatus?.status === 'COMPLETED' && isOnboardingRoute) {
-      if (host.application === 'accounts') {
-        return <Navigate to="/profile" replace />;
-      }
-      return <Navigate to="/app" replace />;
+      return <Navigate to="/inventory/dashboard" replace />;
     }
 
     // Step progression guard: Prevent skipping ahead without an organization on platform surfaces

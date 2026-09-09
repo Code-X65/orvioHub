@@ -8,11 +8,7 @@ import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useHost } from '@/host/useHost';
-import {
-  getAccountsUrl,
-  getLauncherUrl,
-  getApplicationUrl,
-} from '@orviohub/shared';
+
 import {
   Boxes,
   ArrowRight,
@@ -111,12 +107,9 @@ export const AppProductLanding: React.FC = () => {
   const { appId } = useParams<{ appId: string }>();
   const navigate = useNavigate();
   const host = useHost();
-  const env = host.environment;
   const { user, isAuthenticated } = useAuthStore();
 
-  const launcherUrl = getLauncherUrl(env);
-  const accountsUrl = getAccountsUrl(env);
-  const marketingUrl = getApplicationUrl('marketing', env);
+
 
   const currentKey = (appId || (host.application === 'inventory' ? 'inventory' : host.application === 'taskmanagement' ? 'taskmanagement' : 'inventory')).toLowerCase();
   const meta: AppMeta = APP_REGISTRY[currentKey] || {
@@ -197,7 +190,7 @@ export const AppProductLanding: React.FC = () => {
         {/* Back Link */}
         <div className="mb-8">
           <a
-            href={launcherUrl}
+            href="/inventory/dashboard"
             className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
@@ -237,9 +230,9 @@ export const AppProductLanding: React.FC = () => {
                   <Button
                     onClick={() => {
                       if (isAuthenticated && user) {
-                        navigate('/dashboard');
+                        navigate('/inventory/dashboard');
                       } else {
-                        window.location.href = `${accountsUrl}/signup?product=${currentKey}`;
+                        navigate(`/signup?product=${currentKey}`);
                       }
                     }}
                     className="bg-[#714b67] hover:bg-[#86597a] active:bg-[#603f57] text-white font-semibold text-xs px-6 py-3 rounded-xs h-12 shadow-lg shadow-[#714b67]/25 flex items-center gap-2 cursor-pointer"
@@ -265,9 +258,9 @@ export const AppProductLanding: React.FC = () => {
                   <Button
                     variant="ghost"
                     onClick={() => {
-                      window.location.href = `${marketingUrl}/pricing`;
+                      navigate('/pricing');
                     }}
-                    className="text-xs text-slate-300 hover:text-white font-medium"
+                    className="text-xs text-slate-300 hover:text-white font-medium cursor-pointer"
                   >
                     <span>View Pricing Plans</span>
                   </Button>
@@ -306,9 +299,9 @@ export const AppProductLanding: React.FC = () => {
                 <Button
                   onClick={() => {
                     if (isAuthenticated && user) {
-                      navigate('/dashboard');
+                      navigate('/inventory/dashboard');
                     } else {
-                      window.location.href = `${accountsUrl}/signup?product=inventory`;
+                      navigate('/signup?product=inventory');
                     }
                   }}
                   variant="outline"
@@ -393,7 +386,7 @@ export const AppProductLanding: React.FC = () => {
               </div>
               <Button
                 onClick={() => {
-                  window.location.href = getApplicationUrl('inventory', env);
+                  navigate('/inventory/dashboard');
                 }}
                 className="bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-semibold px-4 py-2 rounded-xs whitespace-nowrap cursor-pointer"
               >

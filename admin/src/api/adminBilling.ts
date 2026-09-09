@@ -1,15 +1,35 @@
 import { convex } from "./convex";
 import { anyApi } from "convex/server";
 
+export interface PlanLimits {
+  maxOrganizations?: number;
+  maxAppsPerOrganization?: number | "unlimited";
+  maxBranchesPerApp?: number | "unlimited";
+  maxMembersPerOrganization?: number;
+  maxProductsPerWorkspace?: number;
+  maxTransactionsPerMonth?: number;
+  maxWorkspaces?: number;
+  maxAppsPerWorkspace?: number | "unlimited";
+  maxMembersPerWorkspace?: number;
+}
+
 export interface PlanRecord {
   _id?: string;
   id?: string;
   key: string;
   name: string;
-  monthlyPrice: number; // kobo
-  annualPrice?: number; // kobo
+  price?: {
+    monthly: number;
+    annual: number;
+  };
+  monthlyPrice: number; // kobo or naira
+  annualPrice?: number; // kobo or naira
   currency: string;
   isActive: boolean;
+  limits?: PlanLimits;
+  allowedApps?: string[];
+  allowedAppKeys?: string[];
+  trialDays?: number;
   createdAt?: number;
   updatedAt?: number;
 }
@@ -17,12 +37,15 @@ export interface PlanRecord {
 export interface SubscriptionRecord {
   _id?: string;
   id?: string;
+  organizationId?: string;
   workspaceId: string;
   planKey: string;
-  status: "active" | "cancelled" | "past_due";
+  status: "active" | "trialing" | "cancelled" | "canceled" | "past_due" | "expired";
   currentPeriodStart: number;
   currentPeriodEnd: number;
+  trialEndsAt?: number;
   cancelAtPeriodEnd: boolean;
+  organizationName?: string;
   workspaceName?: string;
   workspaceSlug?: string;
   ownerName?: string;
@@ -98,8 +121,13 @@ export const adminBillingApi = {
     planKey: string,
     updates: {
       name?: string;
+      price?: {
+        monthly: number;
+        annual: number;
+      };
       monthlyPrice?: number;
       annualPrice?: number;
+      limits?: PlanLimits;
       isActive?: boolean;
     }
   ) {
@@ -130,16 +158,26 @@ export const adminBillingApi = {
   async changeWorkspacePlan(
     workspaceId: string,
     planKey: string,
-    status?: "active" | "cancelled" | "past_due",
+    status?: "active" | "trialing" | "cancelled" | "canceled" | "past_due" | "expired",
     currentPeriodEnd?: number,
-    cancelAtPeriodEnd?: boolean
+    cancelAtPeriodEnd?: boolean,
+    trialEndsAt?: number
   ) {
     return await convex.mutation(anyApi.subscriptions.updatePlan, {
+      organizationId: workspaceId as any,
       workspaceId: workspaceId as any,
       planKey,
       status,
       currentPeriodEnd,
+      trialEndsAt,
       cancelAtPeriodEnd,
+    });
+  },
+
+  async extendTrial(organizationId: string, days: number = 14) {
+    return await convex.mutation(anyApi.subscriptions.extendTrial, {
+      organizationId: organizationId as any,
+      days,
     });
   },
 
@@ -202,6 +240,7 @@ export const adminBillingApi = {
 
   async recordManualPayment(data: {
     workspaceId: string;
+    organizationId?: string;
     planKey: string;
     amount: number; // in kobo
     currency?: string;
@@ -215,6 +254,7 @@ export const adminBillingApi = {
   }) {
     return await convex.mutation(anyApi.manualPayments.recordPayment, {
       workspaceId: data.workspaceId as any,
+      organizationId: (data.organizationId || data.workspaceId) as any,
       planKey: data.planKey,
       amount: data.amount,
       currency: data.currency || "NGN",
@@ -228,12 +268,16 @@ export const adminBillingApi = {
     });
   },
 
-  async listManualPayments(workspaceId: string): Promise<ManualPaymentRecord[]> {
+  async listManualPayments(id: string): Promise<ManualPaymentRecord[]> {
     try {
-      const payments = await convex.query(anyApi.manualPayments.listByWorkspace, {
-        workspaceId: workspaceId as any,
+      const payments = await convex.query(anyApi.manualPayments.listByOrganization, {
+        organizationId: id as any,
       });
-      if (Array.isArray(payments)) return payments as ManualPaymentRecord[];
+      if (Array.isArray(payments) && payments.length > 0) return payments as ManualPaymentRecord[];
+      const wsPayments = await convex.query(anyApi.manualPayments.listByWorkspace, {
+        workspaceId: id as any,
+      });
+      if (Array.isArray(wsPayments)) return wsPayments as ManualPaymentRecord[];
     } catch {
       // Fallback
     }

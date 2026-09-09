@@ -7,6 +7,9 @@ export const adminOrganizationsApi = {
     search?: string;
     statusFilter?: string;
     typeFilter?: string;
+    planFilter?: string;
+    branchFilter?: string;
+    onboardingFilter?: string;
     page?: number;
     pageSize?: number;
     sortBy?: string;
@@ -72,6 +75,23 @@ export const adminOrganizationsApi = {
     return await convex.mutation(anyApi.adminOrganizations.deleteOrganization, {
       sessionToken,
       workspaceId: workspaceId as any,
+    });
+  },
+
+  async extendTrial(sessionToken: string, workspaceId: string, days: number = 14) {
+    return await convex.mutation(anyApi.adminOrganizations.extendTrial, {
+      sessionToken,
+      workspaceId: workspaceId as any,
+      days,
+    });
+  },
+
+  async updateOrganizationPlan(sessionToken: string, workspaceId: string, planKey: string, status?: string) {
+    return await convex.mutation(anyApi.adminOrganizations.updateOrganizationPlan, {
+      sessionToken,
+      workspaceId: workspaceId as any,
+      planKey,
+      status,
     });
   },
 };

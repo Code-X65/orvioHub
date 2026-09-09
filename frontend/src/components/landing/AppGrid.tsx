@@ -1,6 +1,4 @@
 import React from 'react';
-import { useHost } from '@/host/useHost';
-import { getCrossSubdomainUrl } from '@/lib/domain';
 
 interface AppItem {
   id: string;
@@ -10,9 +8,7 @@ interface AppItem {
 }
 
 export const AppGrid: React.FC = () => {
-  const host = useHost();
-  const env = host.environment;
-  const launcherUrl = getCrossSubdomainUrl('launcher', '', true, env);
+  const launcherUrl = '/inventory/dashboard';
 
   const apps: AppItem[] = [
     {

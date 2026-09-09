@@ -77,8 +77,8 @@ const hostContextPluginAsync: FastifyPluginAsync = async (fastify: FastifyInstan
         // Default local development fallback
         request.hostContext = {
           environment: (process.env.NODE_ENV as any) === 'production' ? 'production' : 'development',
-          application: 'accounts',
-          hostname: 'accounts.orviohub.localhost',
+          application: 'marketing',
+          hostname: 'orviohub.localhost',
         };
         return;
       }

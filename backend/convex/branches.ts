@@ -1,4 +1,5 @@
 import { mutation, query } from "./_generated/server.js";
+import { Id } from "./_generated/dataModel.js";
 import { v } from "convex/values";
 
 function buildFormattedAddress(args: {
@@ -23,10 +24,13 @@ function buildFormattedAddress(args: {
 
 export const createBranch = mutation({
   args: {
-    workspaceId: v.id("workspaces"),
+    workspaceId: v.optional(v.id("workspaces")),
+    organizationId: v.optional(v.union(v.id("organizations"), v.id("workspaces"), v.string())),
+    applicationId: v.optional(v.id("applications")),
     name: v.string(),
     code: v.optional(v.string()),
     isPrimary: v.optional(v.boolean()),
+    isActive: v.optional(v.boolean()),
     // Structured Address
     country: v.optional(v.string()),
     state: v.optional(v.string()),
@@ -50,30 +54,169 @@ export const createBranch = mutation({
   handler: async (ctx, args) => {
     const now = Date.now();
 
-    // Check existing branches for this workspace
-    const existingBranches = await ctx.db
-      .query("branches")
-      .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
-      .collect();
+    // Resolve workspace and organization IDs
+    let resolvedWorkspaceId = args.workspaceId;
+    let resolvedOrgId: Id<"organizations"> | undefined = undefined;
+
+    if (args.organizationId) {
+      const directOrg = ctx.db.normalizeId("organizations", args.organizationId);
+      if (directOrg) {
+        resolvedOrgId = directOrg;
+      } else {
+        const wsId = ctx.db.normalizeId("workspaces", args.organizationId);
+        if (wsId) {
+          if (!resolvedWorkspaceId) resolvedWorkspaceId = wsId;
+          const ws = await ctx.db.get(wsId);
+          if (ws?.organizationId) resolvedOrgId = ws.organizationId;
+        }
+      }
+    }
+
+    if (!resolvedWorkspaceId && resolvedOrgId) {
+      const ws = await ctx.db
+        .query("workspaces")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", resolvedOrgId!))
+        .first();
+      if (ws) resolvedWorkspaceId = ws._id;
+    }
+
+    if (!resolvedOrgId && resolvedWorkspaceId) {
+      const ws = await ctx.db.get(resolvedWorkspaceId);
+      if (ws?.organizationId) resolvedOrgId = ws.organizationId;
+    }
+
+    // Resolve application ID
+    let resolvedAppId = args.applicationId;
+    if (!resolvedAppId) {
+      const app = await ctx.db
+        .query("applications")
+        .withIndex("by_key", (q) => q.eq("key", "inventory"))
+        .first();
+      if (app) resolvedAppId = app._id;
+    }
+
+    // Validate caller membership if callerUserId is provided
+    if (args.callerUserId && resolvedOrgId) {
+      const membership = await ctx.db
+        .query("organizationMemberships")
+        .withIndex("by_org_and_user", (q: any) =>
+          q.eq("organizationId", resolvedOrgId!).eq("userId", args.callerUserId!)
+        )
+        .first();
+      if (!membership) {
+        throw new Error("NOT_AN_ORGANIZATION_MEMBER");
+      }
+    }
+
+    // Validate that app is enabled and active for the organization
+    if (resolvedOrgId && resolvedAppId) {
+      const orgApp = await ctx.db
+        .query("orgApplications")
+        .withIndex("by_org_and_app", (q: any) =>
+          q.eq("organizationId", resolvedOrgId!).eq("applicationId", resolvedAppId!)
+        )
+        .first();
+      if (!orgApp || !orgApp.enabled || (orgApp.status && orgApp.status !== "trial" && orgApp.status !== "active")) {
+        throw new Error("APPLICATION_NOT_ACTIVATED");
+      }
+    }
+
+    // Check existing branches
+    let existingBranches: any[] = [];
+    if (resolvedOrgId) {
+      existingBranches = await ctx.db
+        .query("branches")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", resolvedOrgId!))
+        .collect();
+    } else if (resolvedWorkspaceId) {
+      existingBranches = await ctx.db
+        .query("branches")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", resolvedWorkspaceId!))
+        .collect();
+    }
 
     const activeExisting = existingBranches.filter(
-      (b) => b.status !== "deleted" && b.status !== "archived"
+      (b) => b.status !== "ARCHIVED" && b.status !== "deleted"
     );
+
+    // 1. Subscription & Plan limit check (scoped to org or workspace)
+    let subscription = null;
+    if (resolvedOrgId) {
+      subscription = await ctx.db
+        .query("subscriptions")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", resolvedOrgId!))
+        .first();
+    }
+    if (!subscription && resolvedWorkspaceId) {
+      subscription = await ctx.db
+        .query("subscriptions")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", resolvedWorkspaceId!))
+        .first();
+    }
+
+    if (subscription && subscription.status === "suspended") {
+      throw new Error(
+        "Cannot create branch: Organization subscription is suspended. Please upgrade or reactivate your subscription."
+      );
+    }
+
+    const planKey =
+      subscription?.planKey === "free"
+        ? "free_trial"
+        : subscription?.planKey || "free_trial";
+
+    // Enforce Rule 4: Limit branches on Free Trial orgs (1 branch per app)
+    if (planKey === "free_trial" || planKey === "free") {
+      const activeForApp = activeExisting.filter(
+        (b) => !resolvedAppId || !b.applicationId || b.applicationId === resolvedAppId
+      );
+      if (activeForApp.length >= 1) {
+        throw new Error(
+          "Free Trial organizations can only have 1 branch per application. Upgrade to Standard to add more branches."
+        );
+      }
+    }
+
+    const plan = await ctx.db
+      .query("plans")
+      .withIndex("by_key", (q) => q.eq("key", planKey))
+      .first();
+
+    const rawLimit = plan?.limits?.branches;
+    const maxBranches =
+      typeof rawLimit === "number"
+        ? rawLimit
+        : typeof rawLimit === "string" && rawLimit !== "unlimited"
+        ? parseInt(rawLimit, 10) || 3
+        : rawLimit === "unlimited"
+        ? Infinity
+        : 3;
+
+    if (activeExisting.length >= maxBranches) {
+      throw new Error(
+        `Cannot create branch: Plan limit reached (${maxBranches} branches). Upgrade to add more branches.`
+      );
+    }
 
     // Auto-generate code if missing
     let code = args.code?.trim().toUpperCase();
     if (!code) {
-      code = args.name.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4) || "BR01";
+      code =
+        args.name.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4) ||
+        `BR0${activeExisting.length + 1}`;
     }
 
-    // Check code uniqueness within workspace
-    const duplicateCode = activeExisting.find((b) => b.code?.toUpperCase() === code);
+    // Check code uniqueness
+    const duplicateCode = activeExisting.find(
+      (b) => b.code?.toUpperCase() === code
+    );
     if (duplicateCode) {
-      throw new Error(`Branch code '${code}' already exists in this workspace.`);
+      throw new Error(`Branch code '${code}' already exists.`);
     }
 
     // Determine primary status
-    const shouldBePrimary = args.isPrimary !== undefined ? args.isPrimary : activeExisting.length === 0;
+    const shouldBePrimary =
+      args.isPrimary !== undefined ? args.isPrimary : activeExisting.length === 0;
 
     if (shouldBePrimary) {
       for (const b of activeExisting) {
@@ -99,10 +242,14 @@ export const createBranch = mutation({
         : args.address);
 
     const branchId = await ctx.db.insert("branches", {
-      workspaceId: args.workspaceId,
+      workspaceId: resolvedWorkspaceId,
+      organizationId: resolvedOrgId,
+      applicationId: resolvedAppId,
+      productKey: "inventory",
       name: args.name.trim(),
       code,
       isPrimary: shouldBePrimary,
+      isActive: args.isActive !== undefined ? args.isActive : true,
       country: args.country || "Nigeria",
       state: args.state,
       stateCode: args.stateCode,
@@ -125,9 +272,9 @@ export const createBranch = mutation({
       updatedAt: now,
     });
 
-    if (args.callerUserId) {
+    if (args.callerUserId && resolvedWorkspaceId) {
       await ctx.db.insert("workspaceAuditLogs", {
-        workspaceId: args.workspaceId,
+        workspaceId: resolvedWorkspaceId,
         actorUserId: args.callerUserId,
         eventType: "workspace.branch_created",
         entityType: "branch",
@@ -158,6 +305,241 @@ export const getBranches = query({
       if (!a.isPrimary && b.isPrimary) return 1;
       return a.name.localeCompare(b.name);
     });
+  },
+});
+
+export const listBranches = query({
+  args: {
+    organizationId: v.optional(v.union(v.id("organizations"), v.id("workspaces"), v.string())),
+    applicationId: v.optional(v.id("applications")),
+    workspaceId: v.optional(v.id("workspaces")),
+  },
+  handler: async (ctx, args) => {
+    let branches: any[] = [];
+    let resolvedOrgId: Id<"organizations"> | undefined = undefined;
+    let resolvedWsId = args.workspaceId;
+
+    if (args.organizationId) {
+      const directOrg = ctx.db.normalizeId("organizations", args.organizationId);
+      if (directOrg) {
+        resolvedOrgId = directOrg;
+      } else {
+        const wsId = ctx.db.normalizeId("workspaces", args.organizationId);
+        if (wsId) {
+          if (!resolvedWsId) resolvedWsId = wsId;
+          const ws = await ctx.db.get(wsId);
+          if (ws?.organizationId) resolvedOrgId = ws.organizationId;
+        }
+      }
+    }
+
+    if (resolvedOrgId) {
+      branches = await ctx.db
+        .query("branches")
+        .withIndex("by_organizationId", (q) =>
+          q.eq("organizationId", resolvedOrgId!)
+        )
+        .collect();
+    } else if (resolvedWsId) {
+      branches = await ctx.db
+        .query("branches")
+        .withIndex("by_workspace", (q) =>
+          q.eq("workspaceId", resolvedWsId!)
+        )
+        .collect();
+    }
+
+    if (args.applicationId) {
+      branches = branches.filter(
+        (b) => !b.applicationId || b.applicationId === args.applicationId
+      );
+    }
+
+    const active = branches.filter(
+      (b) =>
+        b.status !== "deleted" &&
+        b.status !== "archived" &&
+        b.isActive !== false
+    );
+
+    return active.sort((a, b) => {
+      if (a.isPrimary && !b.isPrimary) return -1;
+      if (!a.isPrimary && b.isPrimary) return 1;
+      return a.name.localeCompare(b.name);
+    });
+  },
+});
+
+export const getBranchesForOrgApp = query({
+  args: {
+    organizationId: v.union(v.id("organizations"), v.id("workspaces"), v.string()),
+    applicationId: v.optional(v.id("applications")),
+    applicationKey: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    let resolvedOrgId: Id<"organizations"> | undefined = undefined;
+    const directOrg = ctx.db.normalizeId("organizations", args.organizationId);
+    if (directOrg) {
+      resolvedOrgId = directOrg;
+    } else {
+      const wsId = ctx.db.normalizeId("workspaces", args.organizationId);
+      if (wsId) {
+        const ws = await ctx.db.get(wsId);
+        if (ws?.organizationId) resolvedOrgId = ws.organizationId;
+      }
+    }
+
+    if (!resolvedOrgId) return [];
+
+    let resolvedAppId = args.applicationId;
+    if (!resolvedAppId) {
+      const appKey = args.applicationKey || "inventory";
+      const app = await ctx.db
+        .query("applications")
+        .withIndex("by_key", (q: any) => q.eq("key", appKey))
+        .first();
+      if (app) resolvedAppId = app._id;
+    }
+
+    let branches: any[] = [];
+    if (resolvedAppId) {
+      branches = await ctx.db
+        .query("branches")
+        .withIndex("by_org_and_app", (q: any) =>
+          q.eq("organizationId", resolvedOrgId!).eq("applicationId", resolvedAppId!)
+        )
+        .collect();
+    } else {
+      branches = await ctx.db
+        .query("branches")
+        .withIndex("by_organizationId", (q: any) =>
+          q.eq("organizationId", resolvedOrgId!)
+        )
+        .collect();
+    }
+
+    const active = branches.filter(
+      (b) =>
+        b.status !== "deleted" &&
+        b.status !== "archived" &&
+        b.isActive !== false
+    );
+
+    return active.sort((a, b) => {
+      if (a.isPrimary && !b.isPrimary) return -1;
+      if (!a.isPrimary && b.isPrimary) return 1;
+      return a.name.localeCompare(b.name);
+    });
+  },
+});
+
+export const autoCreateMainBranch = mutation({
+  args: {
+    organizationId: v.union(v.id("organizations"), v.id("workspaces"), v.string()),
+    applicationId: v.optional(v.id("applications")),
+    userId: v.optional(v.id("users")),
+    name: v.optional(v.string()),
+    address: v.optional(v.string()),
+    phone: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    let resolvedOrgId: Id<"organizations"> | undefined = undefined;
+    let ws = null;
+    const directOrg = ctx.db.normalizeId("organizations", args.organizationId);
+    if (directOrg) {
+      resolvedOrgId = directOrg;
+      ws = await ctx.db
+        .query("workspaces")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", directOrg))
+        .first();
+    } else {
+      const wsId = ctx.db.normalizeId("workspaces", args.organizationId);
+      if (wsId) {
+        ws = await ctx.db.get(wsId);
+        if (ws?.organizationId) resolvedOrgId = ws.organizationId;
+      }
+    }
+
+    if (!resolvedOrgId) throw new Error("ORGANIZATION_NOT_FOUND");
+    const org = await ctx.db.get(resolvedOrgId);
+    if (!org) throw new Error("ORGANIZATION_NOT_FOUND");
+
+    if (args.userId) {
+      const membership = await ctx.db
+        .query("organizationMemberships")
+        .withIndex("by_org_and_user", (q: any) =>
+          q.eq("organizationId", resolvedOrgId!).eq("userId", args.userId!)
+        )
+        .first();
+      if (!membership) {
+        throw new Error("NOT_AN_ORGANIZATION_MEMBER");
+      }
+    }
+
+    let resolvedAppId = args.applicationId;
+    if (!resolvedAppId) {
+      const app = await ctx.db
+        .query("applications")
+        .withIndex("by_key", (q: any) => q.eq("key", "inventory"))
+        .first();
+      if (app) resolvedAppId = app._id;
+    }
+
+    // Check if any active branch already exists for this org
+    const existing = await ctx.db
+      .query("branches")
+      .withIndex("by_organizationId", (q: any) =>
+        q.eq("organizationId", resolvedOrgId!)
+      )
+      .collect();
+
+    const activeExisting = existing.filter(
+      (b) => b.status !== "deleted" && b.status !== "archived" && b.isActive !== false
+    );
+
+    if (activeExisting.length > 0) {
+      const primary = activeExisting.find((b) => b.isPrimary) || activeExisting[0];
+      return { branchId: primary._id, isNew: false, branch: primary };
+    }
+
+    // Validate that application is active before creating the initial branch
+    if (resolvedOrgId && resolvedAppId) {
+      const orgApp = await ctx.db
+        .query("orgApplications")
+        .withIndex("by_org_and_app", (q: any) =>
+          q.eq("organizationId", resolvedOrgId!).eq("applicationId", resolvedAppId!)
+        )
+        .first();
+      if (!orgApp || !orgApp.enabled || (orgApp.status && orgApp.status !== "trial" && orgApp.status !== "active")) {
+        throw new Error("APPLICATION_NOT_ACTIVATED");
+      }
+    }
+
+    const now = Date.now();
+    const branchName = args.name?.trim() || "Main Branch";
+    const fullAddress = args.address || org.address || "";
+    const phone = args.phone || org.phone || "";
+
+    const branchId = await ctx.db.insert("branches", {
+      organizationId: resolvedOrgId,
+      applicationId: resolvedAppId,
+      workspaceId: ws?._id,
+      productKey: "inventory",
+      name: branchName,
+      code: "MAIN",
+      isPrimary: true,
+      isActive: true,
+      country: org.country || "Nigeria",
+      address: fullAddress,
+      formattedAddress: fullAddress,
+      phone,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const newBranch = await ctx.db.get(branchId);
+    return { branchId, isNew: true, branch: newBranch };
   },
 });
 
@@ -366,7 +748,7 @@ export const updateBranch = mutation({
 
     await ctx.db.patch(args.branchId, patch);
 
-    if (args.callerUserId) {
+    if (args.callerUserId && branch.workspaceId) {
       await ctx.db.insert("workspaceAuditLogs", {
         workspaceId: branch.workspaceId,
         actorUserId: args.callerUserId,

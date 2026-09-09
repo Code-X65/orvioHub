@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate, Navigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
-import { useHost } from '@/host/useHost';
-import { getLauncherUrl } from '@orviohub/shared';
 import { Header } from '@/components/landing/Header';
 import { Spinner } from '@/components/ui/spinner';
+import { UpgradeModal } from '@/components/billing/UpgradeModal';
+import { UserPlanBadge } from '@/components/profile/UserPlanBadge';
+import { PendingInvitesBanner } from '@/components/notifications/PendingInvitesBanner';
 import {
   Building2,
   Plus,
@@ -13,24 +14,44 @@ import {
   Sparkles,
   Layers,
   Store,
+  Zap,
+  Users,
+  Package,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { getCrossSubdomainUrl } from '@/lib/domain';
+import { api } from '@/lib/api';
 
 export const HomePage: React.FC = () => {
   const navigate = useNavigate();
-  const host = useHost();
-  const env = host.environment;
   const { user } = useAuthStore();
-  const { workspaces, currentWorkspace, fetchWorkspaces, selectWorkspace, isLoading } = useWorkspaceStore();
+  const { workspaces, currentWorkspace, fetchWorkspaces, selectWorkspace, isLoading, isSwitching } = useWorkspaceStore();
 
-  const [hasCheckedAutoSelect, setHasCheckedAutoSelect] = useState(false);
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [myOrgs, setMyOrgs] = useState<any[]>([]);
+  const [upgradeModalWs, setUpgradeModalWs] = useState<{ id: string; name: string; planKey: string; slug?: string } | null>(null);
 
   useEffect(() => {
-    fetchWorkspaces().then(() => {
-      setHasCheckedAutoSelect(true);
-    }).catch(() => {
-      setHasCheckedAutoSelect(true);
-    });
+    let isMounted = true;
+    Promise.all([
+      fetchWorkspaces().catch(() => []),
+      api.get<any[]>('/organizations/my-organizations').catch(() => []),
+    ])
+      .then(([_, orgs]) => {
+        if (isMounted) {
+          if (Array.isArray(orgs)) {
+            setMyOrgs(orgs);
+          }
+          setIsLoaded(true);
+        }
+      })
+      .catch(() => {
+        if (isMounted) setIsLoaded(true);
+      });
+
+    return () => {
+      isMounted = false;
+    };
   }, [fetchWorkspaces]);
 
   const handleSelectWorkspace = async (workspaceId: string) => {
@@ -42,16 +63,25 @@ export const HomePage: React.FC = () => {
     }
   };
 
-  // Auto-selection rule: If user belongs to exactly 1 organization, auto-select and proceed
-  if (hasCheckedAutoSelect && workspaces.length === 1) {
-    const singleWs = workspaces[0].workspace;
-    if (!currentWorkspace || currentWorkspace.id !== singleWs.id) {
-      selectWorkspace(singleWs.id);
-    }
-    return <Navigate to="/applications" replace />;
-  }
+  const handleActivateInventory = (e: React.MouseEvent, workspaceId: string) => {
+    e.stopPropagation();
+    try {
+      localStorage.setItem('orvio_active_workspace_id', workspaceId);
+      selectWorkspace(workspaceId).catch(() => {});
+    } catch {}
+    window.location.href = getCrossSubdomainUrl('inventory', `/onboard/activate?org=${workspaceId}`);
+  };
 
-  if (isLoading && !hasCheckedAutoSelect) {
+  const handleOpenInventory = (e: React.MouseEvent, workspaceId: string) => {
+    e.stopPropagation();
+    try {
+      localStorage.setItem('orvio_active_workspace_id', workspaceId);
+      selectWorkspace(workspaceId).catch(() => {});
+    } catch {}
+    window.location.href = getCrossSubdomainUrl('inventory', `/dashboard?org=${workspaceId}`);
+  };
+
+  if (!isLoaded || isLoading || isSwitching) {
     return (
       <div className="min-h-screen bg-black text-slate-100 flex flex-col">
         <Header />
@@ -63,7 +93,7 @@ export const HomePage: React.FC = () => {
     );
   }
 
-  const launcherNewOrgUrl = `${getLauncherUrl(env)}/workspaces/new`;
+  const launcherNewOrgUrl = '/onboard/organization';
 
   return (
     <div className="min-h-screen bg-black text-slate-100 flex flex-col selection:bg-[#714b67] selection:text-white">
@@ -74,41 +104,88 @@ export const HomePage: React.FC = () => {
         <div className="space-y-2 pb-6 border-b border-white/5">
           <div className="inline-flex items-center gap-1.5 text-[11px] font-bold text-[#FDB02F] uppercase tracking-wider">
             <Sparkles className="w-3.5 h-3.5" />
-            <span>Multi-Tenant Enterprise Hub</span>
+            <span>Personal Dashboard</span>
           </div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-            Welcome back{user?.name ? `, ${user.name.split(' ')[0]}` : ''}
-          </h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+              Welcome{user?.name ? `, ${user.name.split(' ')[0]}` : ''}
+            </h1>
+            <UserPlanBadge planKey={user?.planKey} size="sm" />
+          </div>
           <p className="text-xs sm:text-sm text-slate-400">
-            Select an organization to access its connected applications and operational branches.
+            {workspaces.length === 0
+              ? 'Your personal Orviohub account is active. You can create your own business or join an organization via invitation.'
+              : 'Select an organization to access its connected applications and operational branches.'}
           </p>
         </div>
 
-        {/* Organizations Grid */}
+        {/* Real-time In-Dashboard Pending Invitations */}
+        <PendingInvitesBanner />
+
+        {/* Organizations Grid or Personal Zero-State */}
         {workspaces.length === 0 ? (
-          <div className="p-12 text-center rounded-2xl bg-[#120b10] border border-white/10 space-y-5 max-w-lg mx-auto">
-            <div className="w-14 h-14 rounded-2xl bg-[#714b67]/20 border border-[#714b67]/40 flex items-center justify-center mx-auto text-[#FDB02F]">
-              <Building2 className="w-7 h-7" />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto">
+            {/* Card 1: Create Organization */}
+            <div className="p-8 rounded-2xl bg-gradient-to-br from-[#1d101b] via-[#120b10] to-black border border-[#714b67]/40 shadow-xl shadow-[#714b67]/10 flex flex-col justify-between space-y-6">
+              <div className="space-y-4">
+                <div className="w-14 h-14 rounded-2xl bg-[#714b67]/25 border border-[#714b67]/50 flex items-center justify-center text-[#FDB02F] shadow-md">
+                  <Building2 className="w-7 h-7" />
+                </div>
+                <div className="space-y-1.5">
+                  <h2 className="text-xl font-bold text-white tracking-tight">Create your first business</h2>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Set up your business name, currency, branches, and start managing inventory, POS checkouts, and staff with a 30-day Free Trial or Standard Plan.
+                  </p>
+                </div>
+              </div>
+              <a
+                href={launcherNewOrgUrl}
+                className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/30 transition-all hover:scale-[1.02]"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Create Business & Continue</span>
+              </a>
             </div>
-            <div className="space-y-1.5">
-              <h2 className="text-lg font-bold text-white">No Organizations Found</h2>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                You do not have any registered organizations yet. Create an organization to start managing inventory, tasks, and branch operations.
-              </p>
+
+            {/* Card 2: Join via Invitation */}
+            <div className="p-8 rounded-2xl bg-[#120b10] border border-white/10 flex flex-col justify-between space-y-6">
+              <div className="space-y-4">
+                <div className="w-14 h-14 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center text-slate-300 shadow-md">
+                  <Users className="w-7 h-7" />
+                </div>
+                <div className="space-y-1.5">
+                  <h2 className="text-xl font-bold text-white tracking-tight">Joining an existing business?</h2>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    If your employer, partner, or business associate invited you, click the invitation link in your email to accept and immediately access their workspace.
+                  </p>
+                </div>
+              </div>
+              <div className="p-4 rounded-xl bg-white/[0.03] border border-white/5 text-[11px] text-slate-400 leading-relaxed">
+                💡 <span className="text-slate-300 font-semibold">Note:</span> Your account is already verified. Any invitation sent to <span className="text-white font-medium">{user?.email || 'your email'}</span> can be accepted in one click.
+              </div>
             </div>
-            <a
-              href={launcherNewOrgUrl}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xs bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/25 transition-all"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Create First Organization</span>
-            </a>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {workspaces.map(({ workspace, role, enabledProducts }) => {
-              const plan = (workspace.type || 'free').toUpperCase();
+              const planKey = (workspace.planId || workspace.type || 'free').toLowerCase();
+              const planDisplay = planKey.toUpperCase();
               const isSelected = currentWorkspace?.id === workspace.id;
+
+              const orgDetail = myOrgs.find(
+                (o) =>
+                  o.organization?._id === workspace.id ||
+                  o.organization?._id === (workspace as any).organizationId
+              );
+
+              const isInventoryActive = orgDetail
+                ? orgDetail.inventoryActive
+                : enabledProducts?.some(
+                    (p) => p.productKey === 'inventory' && p.status === 'active'
+                  ) ?? false;
+              const hasActiveApps = orgDetail
+                ? orgDetail.hasActiveApps
+                : (enabledProducts && enabledProducts.length > 0);
 
               return (
                 <div
@@ -127,9 +204,49 @@ export const HomePage: React.FC = () => {
                       <div className="w-12 h-12 rounded-xl bg-[#714b67]/25 border border-[#714b67]/40 flex items-center justify-center text-white font-bold text-lg shadow-md group-hover:scale-105 transition-transform">
                         {workspace.name.charAt(0).toUpperCase()}
                       </div>
-                      <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider bg-[#714b67]/20 text-[#f3e1ed] border border-[#714b67]/40">
-                        {plan} PLAN
-                      </span>
+                      <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                        {isInventoryActive ? (
+                          <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider border bg-emerald-500/15 text-emerald-300 border-emerald-500/30">
+                            Inventory Active
+                          </span>
+                        ) : !hasActiveApps ? (
+                          <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full tracking-wider border bg-white/5 text-slate-400 border-white/10">
+                            No applications activated
+                          </span>
+                        ) : (
+                          <span
+                            className={cn(
+                              'text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider border',
+                              planKey === 'premium'
+                                ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                : planKey === 'standard'
+                                ? 'bg-purple-500/15 text-purple-300 border-purple-500/30'
+                                : 'bg-white/10 text-slate-300 border-white/20'
+                            )}
+                          >
+                            {planDisplay} PLAN
+                          </span>
+                        )}
+
+                        {isInventoryActive && planKey !== 'premium' && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setUpgradeModalWs({
+                                id: workspace.id,
+                                name: workspace.name,
+                                planKey,
+                                slug: workspace.slug,
+                              });
+                            }}
+                            className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#714b67] hover:bg-[#86597a] text-white transition-colors cursor-pointer shadow-sm"
+                          >
+                            <Zap className="w-3 h-3 text-amber-300" />
+                            <span>Upgrade</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     {/* Org Name & Details */}
@@ -147,19 +264,41 @@ export const HomePage: React.FC = () => {
                     <div className="pt-3 border-t border-white/5 flex items-center gap-4 text-xs text-slate-400">
                       <div className="flex items-center gap-1.5">
                         <Layers className="w-3.5 h-3.5 text-[#FDB02F]" />
-                        <span>{enabledProducts?.length || 0} Apps</span>
+                        <span>{orgDetail ? orgDetail.activeAppsCount : (enabledProducts?.length || 0)} Apps</span>
                       </div>
                       <div className="flex items-center gap-1.5">
                         <Store className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Multi-Branch</span>
+                        <span>{orgDetail ? `${orgDetail.branchCount} Branches` : 'Multi-Branch'}</span>
                       </div>
                     </div>
                   </div>
 
-                  {/* Enter Org CTA Button */}
-                  <div className="pt-3 border-t border-white/5 flex items-center justify-between text-xs font-semibold text-[#f3e1ed] group-hover:text-white">
-                    <span>View Applications</span>
-                    <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
+                  {/* Enter Org & Action CTA Button */}
+                  <div className="pt-3 border-t border-white/5 flex items-center justify-between gap-2">
+                    {isInventoryActive ? (
+                      <button
+                        type="button"
+                        onClick={(e) => handleOpenInventory(e, workspace.id)}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-md shadow-[#714b67]/20 transition-all hover:scale-[1.02] cursor-pointer"
+                      >
+                        <Package className="w-3.5 h-3.5" />
+                        <span>Open Inventory</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={(e) => handleActivateInventory(e, workspace.id)}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-gradient-to-r from-[#714b67] to-[#86597a] hover:from-[#86597a] hover:to-[#9c688e] text-white text-xs font-bold shadow-md shadow-[#714b67]/25 transition-all hover:scale-[1.02] cursor-pointer"
+                      >
+                        <Sparkles className="w-3.5 h-3.5 text-[#FDB02F]" />
+                        <span>Activate Inventory</span>
+                      </button>
+                    )}
+
+                    <div className="flex items-center gap-1 text-xs font-semibold text-slate-400 group-hover:text-white transition-colors">
+                      <span>Applications</span>
+                      <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-1" />
+                    </div>
                   </div>
                 </div>
               );
@@ -183,6 +322,21 @@ export const HomePage: React.FC = () => {
           </div>
         )}
       </main>
+
+      {/* Upgrade Modal */}
+      {upgradeModalWs && (
+        <UpgradeModal
+          isOpen={!!upgradeModalWs}
+          workspaceId={upgradeModalWs.id}
+          workspaceSlug={upgradeModalWs.slug}
+          currentPlanKey={upgradeModalWs.planKey}
+          onClose={() => setUpgradeModalWs(null)}
+          onSuccess={() => {
+            setUpgradeModalWs(null);
+            fetchWorkspaces();
+          }}
+        />
+      )}
     </div>
   );
 };

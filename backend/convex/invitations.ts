@@ -81,6 +81,9 @@ export const createInvitations = mutation({
           v.literal("OWNER"),
           v.literal("ADMIN"),
           v.literal("MANAGER"),
+          v.literal("SALES_ATTENDANT"),
+          v.literal("STOCK_MANAGER"),
+          v.literal("ACCOUNTANT"),
           v.literal("MEMBER")
         ),
         token: v.string(),
@@ -101,8 +104,50 @@ export const createInvitations = mutation({
       throw new Error("ORGANIZATION_ACCESS_DENIED");
     }
 
+    // 2. Subscription & Plan limit check
+    const workspaces = await ctx.db
+      .query("workspaces")
+      .collect();
+    const orgWorkspace = workspaces.find((w) => w.organizationId === args.organizationId);
+
+    if (orgWorkspace) {
+      const subscription = await ctx.db
+        .query("subscriptions")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", orgWorkspace._id))
+        .first();
+
+      if (subscription && subscription.status === "suspended") {
+        throw new Error("Cannot invite members: Organization subscription is suspended. Please upgrade or reactivate.");
+      }
+
+      const planKey = subscription?.planKey === "free" ? "free_trial" : (subscription?.planKey || "free_trial");
+      const plan = await ctx.db
+        .query("plans")
+        .withIndex("by_key", (q) => q.eq("key", planKey))
+        .first();
+
+      const maxMembers = plan?.limits?.members || 10;
+      const existingMemberships = await ctx.db
+        .query("organizationMemberships")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", args.organizationId))
+        .filter((q) => q.eq(q.field("status"), "ACTIVE"))
+        .collect();
+
+      if (existingMemberships.length + args.invitations.length > maxMembers) {
+        throw new Error(
+          `Cannot invite member: Plan limit reached (${maxMembers} members). Upgrade to add more members.`
+        );
+      }
+    }
+
     const now = Date.now();
     const created = [];
+
+    // Pre-fetch org and inviter for notification content
+    const organization = await ctx.db.get(args.organizationId);
+    const inviter = await ctx.db.get(args.userId);
+    const orgName = organization?.name || "an organization";
+    const inviterName = inviter?.name || "A teammate";
 
     for (const inv of args.invitations) {
       const email = inv.email.toLowerCase();
@@ -142,6 +187,29 @@ export const createInvitations = mutation({
           expiresAt: inv.expiresAt,
           invitedBy: args.userId,
         });
+
+        // Create in-dashboard notification for existing user (re-invite)
+        if (existingUser) {
+          await ctx.db.insert("notifications", {
+            userId: existingUser._id,
+            type: "org_invite",
+            title: `You've been invited to join ${orgName}`,
+            body: `${inviterName} invited you as ${inv.role}.`,
+            data: {
+              inviteId: existingInvite._id,
+              inviteType: "organization",
+              organizationId: args.organizationId,
+              organizationName: orgName,
+              role: inv.role,
+              inviterName,
+            },
+            severity: "INFO",
+            channel: "IN_APP",
+            status: "UNREAD",
+            createdAt: now,
+          });
+        }
+
         created.push({ id: existingInvite._id, email, role: inv.role, token: inv.token });
         continue;
       }
@@ -156,6 +224,28 @@ export const createInvitations = mutation({
         expiresAt: inv.expiresAt,
         createdAt: now,
       });
+
+      // Create in-dashboard notification for existing user
+      if (existingUser) {
+        await ctx.db.insert("notifications", {
+          userId: existingUser._id,
+          type: "org_invite",
+          title: `You've been invited to join ${orgName}`,
+          body: `${inviterName} invited you as ${inv.role}.`,
+          data: {
+            inviteId,
+            inviteType: "organization",
+            organizationId: args.organizationId,
+            organizationName: orgName,
+            role: inv.role,
+            inviterName,
+          },
+          severity: "INFO",
+          channel: "IN_APP",
+          status: "UNREAD",
+          createdAt: now,
+        });
+      }
 
       // Audit log
       await ctx.db.insert("auditLogs", {

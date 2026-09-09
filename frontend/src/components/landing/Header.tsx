@@ -1,27 +1,41 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ChevronDown, Menu, X, ArrowRight, User, LogOut, Globe } from 'lucide-react';
+import { ChevronDown, Menu, X, ArrowRight, User, LogOut, Globe, Plus } from 'lucide-react';
 import { useAuthStore } from '@/stores/useAuthStore';
-import { useHost } from '@/host/useHost';
-import { getAccountsUrl } from '@orviohub/shared';
-import { getCrossSubdomainUrl } from '@/lib/domain';
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { OrivioLogo } from '../brand/OrivioLogo';
+import { UserPlanBadge } from '../profile/UserPlanBadge';
+import { NotificationBell } from '../notifications/NotificationBell';
+import {
+  getMarketingUrl,
+  getLoginUrl,
+  getSignupUrl,
+  getAccountsUrl,
+  getHomeUrl,
+  getInventoryUrl,
+} from '@/lib/domain';
 
 export const Header: React.FC = () => {
-  const host = useHost();
-  const env = host.environment;
-  const isMarketing = host.application === 'marketing';
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
   const { user, isAuthenticated, isInitialized, refreshSession, logout } = useAuthStore();
+  const { workspaces, fetchWorkspaces } = useWorkspaceStore();
 
   useEffect(() => {
     if (!isInitialized) {
       refreshSession();
     }
   }, [isInitialized, refreshSession]);
+
+  useEffect(() => {
+    if (isAuthenticated && workspaces.length === 0) {
+      fetchWorkspaces('inventory').catch(() => {});
+    }
+  }, [isAuthenticated, fetchWorkspaces, workspaces.length]);
+
+  const hasOrganization = Boolean(workspaces && workspaces.length > 0);
 
   // Click outside listener for profile menu
   useEffect(() => {
@@ -41,20 +55,16 @@ export const Header: React.FC = () => {
   const handleSignOut = async () => {
     setProfileDropdownOpen(false);
     await logout();
-    const returnUrl = isMarketing ? homeUrl : (typeof window !== 'undefined' ? window.location.origin : '');
-    window.location.href = `${accountsUrl}/login?logged_out=true&returnTo=${encodeURIComponent(returnUrl)}`;
+    window.location.href = `${getLoginUrl()}?logged_out=true`;
   };
 
-  const marketingUrl = getCrossSubdomainUrl('marketing', '', false, env);
-  const accountsUrl = getAccountsUrl(env);
-  const homeUrl = getCrossSubdomainUrl('home', '', true, env);
-  const launcherUrl = getCrossSubdomainUrl('launcher', '', true, env);
-
-  const defaultReturnUrl = isMarketing ? homeUrl : (typeof window !== 'undefined' ? window.location.href : '');
-  const loginUrl = `${accountsUrl}/login?returnTo=${encodeURIComponent(defaultReturnUrl)}`;
-  const signupUrl = `${accountsUrl}/signup?returnTo=${encodeURIComponent(defaultReturnUrl)}`;
-  const myAccountUrl = getCrossSubdomainUrl('accounts', '/profile/personal', true, env);
-  const pricingUrl = isMarketing ? '/pricing' : `${marketingUrl}/pricing`;
+  const marketingUrl = getMarketingUrl();
+  const loginUrl = getLoginUrl();
+  const signupUrl = getSignupUrl();
+  const myAccountUrl = `${getAccountsUrl()}/profile/personal`;
+  const launcherUrl = getHomeUrl();
+  const inventoryUrl = getInventoryUrl();
+  const pricingUrl = `${getMarketingUrl()}/pricing`;
 
   return (
     <header className="sticky top-0 z-50 w-full bg-black/90 backdrop-blur-xl border-b border-white/5 transition-all duration-200">
@@ -81,16 +91,16 @@ export const Header: React.FC = () => {
             {activeDropdown === 'solutions' && (
               <div className="absolute top-full left-0 mt-1 w-64 p-3 rounded-sm bg-[#0e0e11] border border-white/10 shadow-2xl backdrop-blur-xl animate-in fade-in slide-in-from-top-2 duration-150">
                 <a href={launcherUrl} className="block p-2.5 rounded-sm hover:bg-white/5 text-slate-300 hover:text-white transition">
-                  <p className="font-semibold text-xs text-white">All Applications</p>
+                  <p className="font-semibold text-xs text-white">Workspaces</p>
+                  <p className="text-[11px] text-slate-400">View and manage all your organizations</p>
+                </a>
+                <a href={inventoryUrl} className="block p-2.5 rounded-sm hover:bg-white/5 text-slate-300 hover:text-white transition">
+                  <p className="font-semibold text-xs text-white">Inventory Management</p>
+                  <p className="text-[11px] text-slate-400">Multi-branch stock, POS checkout & registers</p>
+                </a>
+                <a href="/products" className="block p-2.5 rounded-sm hover:bg-white/5 text-slate-300 hover:text-white transition">
+                  <p className="font-semibold text-xs text-white">All Business Modules</p>
                   <p className="text-[11px] text-slate-400">Explore our modular SaaS suite</p>
-                </a>
-                <a href="/products" className="block p-2.5 rounded-sm hover:bg-white/5 text-slate-300 hover:text-white transition">
-                  <p className="font-semibold text-xs text-white">For SMEs & Retail</p>
-                  <p className="text-[11px] text-slate-400">Inventory, POS, Accounting & Payments</p>
-                </a>
-                <a href="/products" className="block p-2.5 rounded-sm hover:bg-white/5 text-slate-300 hover:text-white transition">
-                  <p className="font-semibold text-xs text-white">For Enterprises</p>
-                  <p className="text-[11px] text-slate-400">Multi-branch and high-volume operations</p>
                 </a>
               </div>
             )}
@@ -163,8 +173,10 @@ export const Header: React.FC = () => {
 
           {/* User authenticated vs guest buttons */}
           {isAuthenticated && user ? (
-            <div className="relative" ref={profileMenuRef}>
-              <button
+            <div className="flex items-center gap-3">
+              <NotificationBell />
+              <div className="relative" ref={profileMenuRef}>
+                <button
                 type="button"
                 onClick={() => setProfileDropdownOpen((prev) => !prev)}
                 className="flex items-center gap-2.5 pl-2 pr-3 py-1.5 rounded-sm bg-white/5 border border-white/10 hover:border-white/20 transition-all text-xs text-white"
@@ -179,13 +191,25 @@ export const Header: React.FC = () => {
               {profileDropdownOpen && (
                 <div className="absolute right-0 mt-2 w-56 rounded-sm bg-[#0e0e11] border border-white/10 shadow-2xl p-2 z-50 animate-in fade-in slide-in-from-top-2">
                   <div className="px-3 py-2 border-b border-white/10">
-                    <p className="font-bold text-white text-xs truncate">{user.name}</p>
+                    <div className="flex items-center justify-between gap-1.5 mb-1">
+                      <p className="font-bold text-white text-xs truncate">{user.name}</p>
+                      <UserPlanBadge planKey={user.planKey} size="xs" />
+                    </div>
                     <p className="text-[10px] text-slate-400 truncate">{user.email}</p>
                   </div>
                   <div className="py-1">
-                    <a href={homeUrl} className="flex items-center gap-2 px-3 py-2 text-xs text-slate-300 hover:text-white hover:bg-white/5 rounded-sm transition">
-                      Launch Workspace
+                    <a href={launcherUrl} className="flex items-center gap-2 px-3 py-2 text-xs text-slate-300 hover:text-white hover:bg-white/5 rounded-sm transition">
+                      Workspaces
                     </a>
+                    {hasOrganization ? (
+                      <a href={inventoryUrl} className="flex items-center gap-2 px-3 py-2 text-xs text-slate-300 hover:text-white hover:bg-white/5 rounded-sm transition">
+                        Inventory App
+                      </a>
+                    ) : (
+                      <a href={`${launcherUrl}/onboard`} className="flex items-center gap-2 px-3 py-2 text-xs text-[#c79dbd] hover:text-white hover:bg-[#714b67]/20 rounded-sm transition font-medium">
+                        <Plus className="w-3.5 h-3.5 text-[#c79dbd]" /> Set up Organization
+                      </a>
+                    )}
                     <a href={myAccountUrl} className="flex items-center gap-2 px-3 py-2 text-xs text-slate-300 hover:text-white hover:bg-white/5 rounded-sm transition">
                       <User className="w-3.5 h-3.5" /> Account Settings
                     </a>
@@ -202,6 +226,7 @@ export const Header: React.FC = () => {
                 </div>
               )}
             </div>
+          </div>
           ) : (
             <>
               <a
@@ -222,8 +247,9 @@ export const Header: React.FC = () => {
           )}
         </div>
 
-        {/* Mobile Menu Button */}
-        <div className="flex lg:hidden items-center gap-3">
+        {/* Mobile Menu Button & Notifications */}
+        <div className="flex lg:hidden items-center gap-2">
+          {isAuthenticated && user && <NotificationBell />}
           <button
             type="button"
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}

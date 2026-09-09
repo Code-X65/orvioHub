@@ -23,6 +23,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { UserPlanBadge } from '@/components/profile/UserPlanBadge';
 
 interface CrossOrgMember {
   userId: string;
@@ -473,11 +474,12 @@ export const OrganizationSettings: React.FC = () => {
                       {user?.name?.slice(0, 2).toUpperCase() || 'ME'}
                     </div>
                     <div>
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="text-xs font-bold text-white">{user?.name}</span>
                         <span className="text-[9px] px-1.5 py-0.2 rounded-xs bg-white/10 text-[#f0d8e8] font-semibold">
                           You
                         </span>
+                        <UserPlanBadge planKey={user?.planKey} size="xs" />
                       </div>
                       <span className="text-[11px] text-slate-400">{user?.email}</span>
                     </div>
@@ -504,7 +506,10 @@ export const OrganizationSettings: React.FC = () => {
                             {(m.user?.name || m.name || 'U').slice(0, 2).toUpperCase()}
                           </div>
                           <div>
-                            <span className="text-xs font-bold text-white block">{m.user?.name || m.name}</span>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-xs font-bold text-white">{m.user?.name || m.name}</span>
+                              <UserPlanBadge planKey={m.user?.planKey} size="xs" />
+                            </div>
                             <span className="text-[11px] text-slate-400">{m.user?.email || m.email}</span>
                           </div>
                         </div>

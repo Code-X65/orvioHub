@@ -1,5 +1,6 @@
 import { mutation, query } from "./_generated/server.js";
 import { v } from "convex/values";
+import { DEFAULT_PLANS } from "./plans.js";
 
 // Helper to authenticate admin
 async function verifyAdminSession(ctx: any, sessionToken?: string) {
@@ -95,11 +96,15 @@ export const listUsers = query({
     const offset = (page - 1) * pageSize;
     const paginated = users.slice(offset, offset + pageSize);
 
-    // Enrich with workspace count, ownership, and auth identities
-    const [memberships, workspaces, identities] = await Promise.all([
+    // Enrich with workspace count, ownership, auth identities, subscriptions, and usage
+    const [memberships, workspaces, identities, subscriptions, plans, branches, workspaceProducts] = await Promise.all([
       ctx.db.query("workspaceMemberships").collect(),
       ctx.db.query("workspaces").collect(),
       ctx.db.query("authIdentities").collect(),
+      ctx.db.query("subscriptions").collect(),
+      ctx.db.query("plans").collect(),
+      ctx.db.query("branches").collect(),
+      ctx.db.query("workspaceProducts").collect(),
     ]);
 
     const membershipCounts: Record<string, number> = {};
@@ -117,6 +122,8 @@ export const listUsers = query({
       }
     }
 
+    const defaultPlan = DEFAULT_PLANS.find((p) => p.key === "free") || DEFAULT_PLANS[0];
+
     const items = paginated.map((u: any) => {
       const providers = identityMap[u._id] || [];
       if (providers.length === 0) {
@@ -131,6 +138,55 @@ export const listUsers = query({
         userType = "ORG_MEMBER";
       }
 
+      // Find user subscription
+      let sub = subscriptions.find((s: any) => s.userId === u._id);
+      const userWorkspaces = workspaces.filter((w: any) => w.ownerId === u._id && w.status === "active");
+      if (!sub && userWorkspaces.length > 0) {
+        sub = subscriptions.find((s: any) => userWorkspaces.some((w: any) => w._id === s.workspaceId));
+      }
+
+      const rawSubPlan = sub?.planKey === "free_trial" ? "free" : (sub?.planKey || "free");
+      const isPaidTier = rawSubPlan === "standard" || rawSubPlan === "premium";
+      const hasPayment = Boolean(sub?.paystackSubscriptionId || sub?.lastPaymentDate);
+      const isPaidActive = isPaidTier && sub?.status === "active" && hasPayment;
+
+      const planKey = (isPaidTier && !isPaidActive) ? "free" : rawSubPlan;
+      const subStatus = (isPaidTier && !isPaidActive) ? "trialing" : (sub?.status || "trialing");
+
+      const matchedPlan = plans.find((p: any) => p.key === planKey || (planKey === "free" && p.key === "free_trial")) ||
+        DEFAULT_PLANS.find((p) => p.key === planKey) ||
+        defaultPlan;
+
+      const limits = matchedPlan.limits || defaultPlan.limits;
+      const maxOrgs = limits.maxOrganizations ?? limits.maxWorkspaces ?? limits.orgs ?? 1;
+      const maxApps = limits.maxAppsPerOrganization ?? limits.maxAppsPerWorkspace ?? limits.apps ?? 1;
+      const maxBranches = limits.maxBranchesPerApp ?? limits.branches ?? 1;
+      const maxMembers = limits.maxMembersPerOrganization ?? limits.maxMembersPerWorkspace ?? limits.members ?? 2;
+      const maxProducts = limits.maxProductsPerWorkspace ?? limits.products ?? 500;
+      const maxTransactions = limits.maxTransactionsPerMonth ?? limits.transactions ?? 500;
+
+      const workspaceIds = new Set(userWorkspaces.map((w: any) => w._id));
+      const activeAppsCount = workspaceProducts.filter((wp: any) => workspaceIds.has(wp.workspaceId) && wp.status === "active").length;
+      const activeBranchesCount = branches.filter((b: any) => workspaceIds.has(b.workspaceId) && b.status === "active").length;
+      const activeMembersCount = memberships.filter((m: any) => workspaceIds.has(m.workspaceId) && m.status === "active").length;
+
+      // Free trial quota tracking across owned workspaces
+      let activeTrialOrgId: string | undefined;
+      let activeTrialOrgName: string | undefined;
+      let paidOrgsCount = 0;
+
+      for (const w of userWorkspaces) {
+        const wSub = subscriptions.find((s: any) => s.workspaceId === w._id || s.organizationId === w.organizationId);
+        const pKey = (wSub?.planKey || w.planId || "free_trial").toLowerCase();
+        const isTrial = pKey === "free_trial" || pKey === "free" || wSub?.status === "trial" || wSub?.status === "trialing";
+        if (isTrial && !activeTrialOrgId) {
+          activeTrialOrgId = w._id;
+          activeTrialOrgName = w.name;
+        } else if (!isTrial) {
+          paidOrgsCount++;
+        }
+      }
+
       return {
         id: u._id,
         email: u.email,
@@ -139,9 +195,37 @@ export const listUsers = query({
         status: u.status || "ACTIVE",
         userType,
         providers,
-        organizationCount: membershipCounts[u._id] || 0,
+        organizationCount: userWorkspaces.length || membershipCounts[u._id] || 0,
         lastLoginAt: u.lastLoginAt,
         createdAt: u.createdAt,
+        freeTrialQuota: {
+          hasActiveTrialOrg: !!activeTrialOrgId,
+          activeTrialOrgId,
+          activeTrialOrgName,
+          totalOwnedOrgs: userWorkspaces.length,
+          totalPaidOrgs: paidOrgsCount,
+        },
+        subscription: {
+          planKey,
+          status: subStatus,
+          pendingPlanKey: sub?.pendingPlanKey || (isPaidTier && !isPaidActive ? rawSubPlan : undefined),
+        },
+        entitlements: {
+          maxOrganizations: maxOrgs,
+          maxAppsPerOrganization: maxApps,
+          maxBranchesPerApp: maxBranches,
+          maxMembersPerOrganization: maxMembers,
+          maxProductsPerWorkspace: maxProducts,
+          maxTransactionsPerMonth: maxTransactions,
+        },
+        usage: {
+          workspaces: userWorkspaces.length,
+          apps: activeAppsCount,
+          branches: activeBranchesCount,
+          members: activeMembersCount,
+          products: 0,
+          transactions: 0,
+        },
       };
     });
 
@@ -182,16 +266,42 @@ export const getUserDetails = query({
       .withIndex("by_userId", (q) => q.eq("userId", args.userId))
       .collect();
 
-    // 3. Organization / Workspace Memberships
+    // 3. Organization / Workspace Memberships & Plans
     const memberships = await ctx.db
       .query("workspaceMemberships")
       .withIndex("by_user", (q) => q.eq("userId", args.userId))
       .collect();
 
+    const now = Date.now();
     const workspaceDetails = [];
+    let activeTrialOrgId: string | undefined;
+    let activeTrialOrgName: string | undefined;
+    let totalOwnedOrgs = 0;
+    let totalPaidOrgs = 0;
+
     for (const m of memberships) {
       const ws: any = await ctx.db.get(m.workspaceId);
       if (ws) {
+        const sub = await ctx.db
+          .query("subscriptions")
+          .withIndex("by_workspace", (q) => q.eq("workspaceId", ws._id))
+          .first();
+
+        const planKey = (sub?.planKey || ws.planId || "free_trial").toLowerCase();
+        const isTrial = planKey === "free_trial" || planKey === "free" || sub?.status === "trial" || sub?.status === "trialing";
+        const trialEndsAt = sub?.trialEndsAt || sub?.trialEnd || (isTrial ? (sub?.currentPeriodEnd || (ws.createdAt + 30 * 86_400_000)) : undefined);
+        const daysRemaining = trialEndsAt ? Math.max(0, Math.ceil((trialEndsAt - now) / (1000 * 60 * 60 * 24))) : null;
+
+        if (ws.ownerId === args.userId) {
+          totalOwnedOrgs++;
+          if (isTrial && !activeTrialOrgId) {
+            activeTrialOrgId = ws._id;
+            activeTrialOrgName = ws.name;
+          } else if (!isTrial) {
+            totalPaidOrgs++;
+          }
+        }
+
         workspaceDetails.push({
           membershipId: m._id,
           workspaceId: ws._id,
@@ -199,6 +309,12 @@ export const getUserDetails = query({
           slug: ws.slug,
           role: m.role,
           status: m.status,
+          planKey,
+          isTrial,
+          trialEndsAt,
+          daysRemaining,
+          subscriptionStatus: sub?.status || "active",
+          isOwner: ws.ownerId === args.userId,
           joinedAt: m.createdAt,
         });
       }
@@ -228,6 +344,13 @@ export const getUserDetails = query({
         timezone: user.timezone,
         createdAt: user.createdAt,
         lastLoginAt: user.lastLoginAt,
+      },
+      freeTrialQuota: {
+        hasActiveTrialOrg: !!activeTrialOrgId,
+        activeTrialOrgId,
+        activeTrialOrgName,
+        totalOwnedOrgs,
+        totalPaidOrgs,
       },
       identities: identities.map((id: any) => ({
         id: id._id,
@@ -516,4 +639,103 @@ export const impersonateUser = mutation({
     };
   },
 });
+
+export const getUserUsage = query({
+  args: {
+    userId: v.id("users"),
+    sessionToken: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    if (args.sessionToken) {
+      await verifyAdminSession(ctx, args.sessionToken);
+    }
+
+    const user = await ctx.db.get(args.userId);
+    if (!user) throw new Error("User not found");
+
+    let sub = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_user", (q: any) => q.eq("userId", args.userId))
+      .first();
+
+    const userWorkspaces = await ctx.db
+      .query("workspaces")
+      .withIndex("by_owner", (q: any) => q.eq("ownerId", args.userId))
+      .filter((q: any) => q.eq(q.field("status"), "active"))
+      .collect();
+
+    if (!sub && userWorkspaces.length > 0) {
+      for (const ws of userWorkspaces) {
+        const wsSub = await ctx.db
+          .query("subscriptions")
+          .withIndex("by_workspace", (q: any) => q.eq("workspaceId", ws._id))
+          .first();
+        if (wsSub && wsSub.status === "active") {
+          sub = wsSub;
+          break;
+        }
+      }
+    }
+
+    const planKey = sub?.planKey === "free_trial" ? "free" : (sub?.planKey || "free");
+    const defaultPlan = DEFAULT_PLANS.find((p) => p.key === "free") || DEFAULT_PLANS[0];
+
+    let plan = await ctx.db
+      .query("plans")
+      .withIndex("by_key", (q: any) => q.eq("key", planKey))
+      .first();
+
+    if (!plan && planKey === "free") {
+      plan = await ctx.db
+        .query("plans")
+        .withIndex("by_key", (q: any) => q.eq("key", "free_trial"))
+        .first();
+    }
+
+    const limits = plan?.limits || defaultPlan.limits;
+    const maxOrgs = limits.maxOrganizations ?? limits.maxWorkspaces ?? limits.orgs ?? 1;
+    const maxApps = limits.maxAppsPerOrganization ?? limits.maxAppsPerWorkspace ?? limits.apps ?? 1;
+    const maxBranches = limits.maxBranchesPerApp ?? limits.branches ?? 1;
+    const maxMembers = limits.maxMembersPerOrganization ?? limits.maxMembersPerWorkspace ?? limits.members ?? 2;
+    const maxProducts = limits.maxProductsPerWorkspace ?? limits.products ?? 500;
+    const maxTransactions = limits.maxTransactionsPerMonth ?? limits.transactions ?? 500;
+
+    const workspaceIds = new Set(userWorkspaces.map((w: any) => w._id));
+
+    const [branches, workspaceProducts, memberships] = await Promise.all([
+      ctx.db.query("branches").collect(),
+      ctx.db.query("workspaceProducts").collect(),
+      ctx.db.query("workspaceMemberships").collect(),
+    ]);
+
+    const activeAppsCount = workspaceProducts.filter((wp: any) => workspaceIds.has(wp.workspaceId) && wp.status === "active").length;
+    const activeBranchesCount = branches.filter((b: any) => workspaceIds.has(b.workspaceId) && b.status === "active").length;
+    const activeMembersCount = memberships.filter((m: any) => workspaceIds.has(m.workspaceId) && m.status === "active").length;
+
+    return {
+      userId: args.userId,
+      email: user.email,
+      name: user.name,
+      planKey,
+      subscription: sub,
+      entitlements: {
+        maxOrganizations: maxOrgs,
+        maxAppsPerOrganization: maxApps,
+        maxBranchesPerApp: maxBranches,
+        maxMembersPerOrganization: maxMembers,
+        maxProductsPerWorkspace: maxProducts,
+        maxTransactionsPerMonth: maxTransactions,
+      },
+      usage: {
+        workspaces: userWorkspaces.length,
+        apps: activeAppsCount,
+        branches: activeBranchesCount,
+        members: activeMembersCount,
+        products: 0,
+        transactions: 0,
+      },
+    };
+  },
+});
+
 

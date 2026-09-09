@@ -20,6 +20,8 @@ import {
   EyeOff,
   ArrowRight,
   ShieldCheck,
+  Phone,
+  Globe,
 } from 'lucide-react';
 
 const signupSchema = z
@@ -27,6 +29,8 @@ const signupSchema = z
     firstName: z.string().min(1, 'First name is required'),
     lastName: z.string().min(1, 'Last name is required'),
     email: z.string().email('Please enter a valid work email address'),
+    country: z.string().min(1, 'Country is required'),
+    phone: z.string().optional(),
     password: z
       .string()
       .min(8, 'Password must be at least 8 characters')
@@ -54,7 +58,7 @@ export const Signup: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const selectedProduct = searchParams.get('product') || 'inventory';
-  const returnTo = searchParams.get('return_to') || searchParams.get('returnTo') || '/app';
+  const returnTo = searchParams.get('return_to') || searchParams.get('returnTo') || '/workspaces';
 
   const [isLoading, setIsLoading] = useState(false);
   const [socialLoading, setSocialLoading] = useState<'google' | 'facebook' | 'apple' | null>(null);
@@ -65,10 +69,13 @@ export const Signup: React.FC = () => {
     register,
     handleSubmit,
     watch,
-    formState: { errors },
+    formState: { errors, isValid },
   } = useForm<SignupFormData>({
     resolver: zodResolver(signupSchema),
+    mode: 'onChange',
     defaultValues: {
+      country: 'Nigeria',
+      phone: '',
       agreeTerms: true,
       acknowledgePrivacy: true,
       marketingConsent: false,
@@ -87,6 +94,8 @@ export const Signup: React.FC = () => {
         lastName: data.lastName.trim(),
         displayName: name,
         email: data.email.trim().toLowerCase(),
+        country: data.country || 'Nigeria',
+        phone: data.phone?.trim() || undefined,
         password: data.password,
         passwordConfirmation: data.passwordConfirmation,
         acceptTerms: data.agreeTerms,
@@ -252,6 +261,53 @@ export const Signup: React.FC = () => {
             {errors.email && <p className="text-[11px] text-rose-400">{errors.email.message}</p>}
           </div>
 
+          {/* Country & Phone Number */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <div className="space-y-1">
+              <Label htmlFor="country" className="text-xs font-medium text-slate-300">
+                Country
+              </Label>
+              <div className="relative">
+                <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+                <select
+                  id="country"
+                  {...register('country')}
+                  className={`w-full pl-9 pr-3 h-10 bg-[#0e0a0d] border border-white/10 text-white rounded-xs text-xs focus:ring-1 focus:ring-[#714b67] focus:outline-none ${
+                    errors.country ? 'border-rose-500/80' : ''
+                  }`}
+                  disabled={isLoading || !!socialLoading}
+                >
+                  <option value="Nigeria">Nigeria</option>
+                  <option value="Ghana">Ghana</option>
+                  <option value="Kenya">Kenya</option>
+                  <option value="Rwanda">Rwanda</option>
+                  <option value="South Africa">South Africa</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+              {errors.country && <p className="text-[11px] text-rose-400">{errors.country.message}</p>}
+            </div>
+
+            <div className="space-y-1">
+              <Label htmlFor="phone" className="text-xs font-medium text-slate-300 flex items-center justify-between">
+                <span>Phone number</span>
+                <span className="text-[10px] text-slate-500 font-normal">Optional</span>
+              </Label>
+              <div className="relative">
+                <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+                <Input
+                  id="phone"
+                  type="tel"
+                  placeholder="+234 801 234 5678"
+                  {...register('phone')}
+                  className="pl-9 h-10 bg-[#0e0a0d] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs focus:ring-1 focus:ring-[#714b67]"
+                  disabled={isLoading || !!socialLoading}
+                />
+              </div>
+              {errors.phone && <p className="text-[11px] text-rose-400">{errors.phone.message}</p>}
+            </div>
+          </div>
+
           {/* Password */}
           <div className="space-y-1">
             <Label htmlFor="password" className="text-xs font-medium text-slate-300">
@@ -365,8 +421,8 @@ export const Signup: React.FC = () => {
           {/* Primary Submit Button */}
           <Button
             type="submit"
-            className="w-full h-11 mt-2 bg-[#714b67] hover:bg-[#86597a] active:bg-[#603f57] text-white rounded-xs font-semibold text-xs shadow-lg shadow-[#714b67]/25 transition-all flex items-center justify-center gap-2 cursor-pointer"
-            disabled={isLoading || !!socialLoading}
+            className="w-full h-11 mt-2 bg-[#714b67] hover:bg-[#86597a] active:bg-[#603f57] text-white rounded-xs font-semibold text-xs shadow-lg shadow-[#714b67]/25 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={isLoading || !!socialLoading || !isValid}
           >
             {isLoading ? (
               <Spinner size="sm" className="text-white" />

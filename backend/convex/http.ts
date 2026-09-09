@@ -131,4 +131,40 @@ http.route({
   handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
 });
 
+// Paystack Webhook Handler
+http.route({
+  path: "/paystack/webhook",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    try {
+      const body = await request.json();
+      const event = body.event;
+      const data = body.data;
+
+      await ctx.runMutation(api.paystackWebhook.handleWebhook, {
+        event,
+        data,
+      });
+
+      return new Response(JSON.stringify({ received: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", ...corsHeaders },
+      });
+    } catch (err: any) {
+      console.error("Paystack webhook error:", err);
+      return new Response(JSON.stringify({ error: err.message || "Webhook processing failed" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json", ...corsHeaders },
+      });
+    }
+  }),
+});
+
+http.route({
+  path: "/paystack/webhook",
+  method: "OPTIONS",
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+});
+
 export default http;
+

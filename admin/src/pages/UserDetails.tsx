@@ -178,8 +178,8 @@ export const UserDetails: React.FC = () => {
           const res = await adminUsersApi.impersonateUser(sessionToken!, user.id, "Support Investigation");
           if (res?.sessionToken) {
             const isProd = window.location.hostname.endsWith("orviohub.com");
-            const targetHost = isProd ? "https://home.orviohub.com" : "http://home.orviohub.localhost:4000";
-            window.open(`${targetHost}/dashboard?auth_token=${res.sessionToken}&refreshToken=${res.refreshToken}`, "_blank");
+            const targetHost = isProd ? "https://orviohub.com" : "http://localhost:3000";
+            window.open(`${targetHost}/inventory/dashboard?auth_token=${res.sessionToken}&refreshToken=${res.refreshToken}`, "_blank");
           }
         } finally {
           setActionLoading(false);
@@ -267,7 +267,20 @@ export const UserDetails: React.FC = () => {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-xs">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
+          <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800">
+            <span className="text-slate-500 block text-[10px] uppercase font-bold">Free Trial Quota</span>
+            {data?.freeTrialQuota?.hasActiveTrialOrg ? (
+              <span className="font-semibold text-purple-400 flex items-center gap-1 mt-0.5 text-[11px]">
+                <span className="w-1.5 h-1.5 rounded-full bg-purple-400"></span> In Use ({data.freeTrialQuota.activeTrialOrgName || "1 Org"})
+              </span>
+            ) : (
+              <span className="font-semibold text-emerald-400 flex items-center gap-1 mt-0.5 text-[11px]">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> Eligible (0 in use)
+              </span>
+            )}
+          </div>
+
           <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800">
             <span className="text-slate-500 block text-[10px] uppercase font-bold">Email Status</span>
             {user.emailVerified ? (
@@ -288,7 +301,7 @@ export const UserDetails: React.FC = () => {
             </span>
           </div>
 
-          <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 col-span-2 sm:col-span-1">
+          <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800">
             <span className="text-slate-500 block text-[10px] uppercase font-bold">Last Login</span>
             <span className="font-semibold text-slate-200 mt-0.5 block">
               {user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleDateString() : "Never"}
@@ -301,9 +314,12 @@ export const UserDetails: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Workspace Memberships */}
         <div className="p-6 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-4 shadow-xl">
-          <div className="flex items-center gap-2">
-            <Building className="w-4 h-4 text-brand-400" />
-            <h3 className="text-sm font-bold text-white">Associated Organizations ({workspaces.length})</h3>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Building className="w-4 h-4 text-brand-400" />
+              <h3 className="text-sm font-bold text-white">Associated Organizations ({workspaces.length})</h3>
+            </div>
+            <span className="text-[10px] text-slate-500">Max 1 Free Trial Org Allowed</span>
           </div>
 
           {workspaces.length === 0 ? (
@@ -315,20 +331,34 @@ export const UserDetails: React.FC = () => {
                   key={ws.membershipId}
                   className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between text-xs hover:border-slate-700 transition"
                 >
-                  <div>
-                    <Link
-                      to={`/organizations/${ws.workspaceId}`}
-                      className="font-bold text-white hover:text-brand-400 transition"
-                    >
-                      {ws.name}
-                    </Link>
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <Link
+                        to={`/organizations/${ws.workspaceId}`}
+                        className="font-bold text-white hover:text-brand-400 transition"
+                      >
+                        {ws.name}
+                      </Link>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                        ws.isTrial
+                          ? "bg-purple-500/10 text-purple-300 border border-purple-500/20"
+                          : "bg-blue-500/10 text-blue-300 border border-blue-500/20"
+                      }`}>
+                        {ws.isTrial ? "Free Trial" : (ws.planKey || "Standard")}
+                      </span>
+                    </div>
                     <p className="text-[11px] text-slate-500 font-mono">slug: {ws.slug}</p>
+                    {ws.isTrial && ws.daysRemaining !== null && (
+                      <p className="text-[10px] text-amber-400 font-medium">
+                        ⏱ {ws.daysRemaining} days remaining in trial
+                      </p>
+                    )}
                   </div>
-                  <div className="text-right">
-                    <span className="px-2 py-0.5 rounded-md bg-brand-500/10 text-brand-300 font-bold text-[10px] border border-brand-500/20">
+                  <div className="text-right space-y-1">
+                    <span className="px-2 py-0.5 rounded-md bg-brand-500/10 text-brand-300 font-bold text-[10px] border border-brand-500/20 inline-block">
                       {ws.role}
                     </span>
-                    <span className="text-[10px] text-slate-500 block mt-1">
+                    <span className="text-[10px] text-slate-500 block">
                       Joined: {ws.joinedAt ? new Date(ws.joinedAt).toLocaleDateString() : "—"}
                     </span>
                   </div>

@@ -462,6 +462,13 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
           await dataService.revokeAllOtherSessions(request.user.id, currentSessionId);
         }
 
+        await dataService.logAuthEvent({
+          eventType: 'password_changed',
+          userId: request.user.id,
+          ipAddress: request.ip,
+          userAgent: request.headers['user-agent'],
+        });
+
         await dataService.logAudit({
           actorUserId: request.user.id,
           eventType: AUDIT_EVENTS.USER_PASSWORD_CHANGED,
@@ -1279,6 +1286,22 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
           error: {
             code: 'TOO_MANY_REQUESTS',
             message: 'Too many OTP requests for this phone number. Please wait 1 hour before trying again.',
+          },
+        });
+      }
+
+      // Check if this phone number is already verified by a different user
+      const alreadyTaken = await dataService.isPhoneRegistered(
+        validation.normalized,
+        request.user.id
+      );
+
+      if (alreadyTaken) {
+        return reply.status(409).send({
+          success: false,
+          error: {
+            code: 'PHONE_ALREADY_REGISTERED',
+            message: 'This phone number is already linked to another account. Please use a different number.',
           },
         });
       }

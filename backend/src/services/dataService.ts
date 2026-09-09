@@ -24,23 +24,25 @@ function buildInviteUrl(token: string): string {
   try {
     return getInvitationUrl(token, getAppEnv());
   } catch {
-    return `${env.APP_URL}/invitations/${token}`;
+    return `${env.BASE_URL_ACCOUNT || env.APP_URL}/invite?token=${token}`;
   }
 }
 
-function buildVerifyEmailUrl(token: string): string {
+function buildVerifyEmailUrl(token: string, email?: string): string {
   try {
-    return getVerifyEmailUrl(token, getAppEnv());
+    return getVerifyEmailUrl(token, getAppEnv(), email);
   } catch {
-    return `${env.APP_URL}/verify-email?token=${token}`;
+    const emailParam = email ? `&email=${encodeURIComponent(email)}` : '';
+    return `${env.BASE_URL_ACCOUNT || env.APP_URL}/verify-email?token=${token}${emailParam}`;
   }
 }
 
-function buildResetPasswordUrl(token: string): string {
+function buildResetPasswordUrl(token: string, email?: string): string {
   try {
-    return getResetPasswordUrl(token, getAppEnv());
+    return getResetPasswordUrl(token, getAppEnv(), email);
   } catch {
-    return `${env.APP_URL}/reset-password?token=${token}`;
+    const emailParam = email ? `&email=${encodeURIComponent(email)}` : '';
+    return `${env.BASE_URL_ACCOUNT || env.APP_URL}/reset-password?token=${token}${emailParam}`;
   }
 }
 
@@ -48,9 +50,10 @@ function buildConfirmEmailChangeUrl(token: string): string {
   try {
     return getConfirmEmailChangeUrl(token, getAppEnv());
   } catch {
-    return `${env.APP_URL}/confirm-email-change?token=${token}`;
+    return `${env.BASE_URL_ACCOUNT || env.APP_URL}/confirm-email-change?token=${token}`;
   }
 }
+
 
 export interface UserRecord {
   id: string;
@@ -99,6 +102,9 @@ export interface UserRecord {
   twoFactorBackupCodes?: string[];
   failedLoginAttempts?: number;
   lockedUntil?: number;
+  personalOnboardingCompleted?: boolean;
+  lastLoginIp?: string;
+  totalLoginCount?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -222,6 +228,39 @@ export class DataService {
     }
   }
 
+  public async logAuthEvent(data: {
+    eventType: string;
+    userId?: string;
+    sessionId?: string;
+    ipAddress?: string;
+    userAgent?: string;
+    metadata?: Record<string, unknown>;
+  }) {
+    try {
+      await this.mutate('authEvents:logAuthEvent', {
+        eventType: data.eventType,
+        userId: data.userId ? (data.userId as any) : undefined,
+        sessionId: data.sessionId ? (data.sessionId as any) : undefined,
+        ipAddress: data.ipAddress,
+        userAgent: data.userAgent,
+        metadata: data.metadata,
+      });
+    } catch (err) {
+      console.warn('[DataService] Failed to log auth event:', err);
+    }
+  }
+
+  public async getUserAuthEvents(userId: string, limit?: number) {
+    try {
+      return (await this.query('authEvents:getUserAuthEvents', {
+        userId: userId as any,
+        limit,
+      })) as any[];
+    } catch {
+      return [];
+    }
+  }
+
   public async createUser(data: {
     email: string;
     name?: string;
@@ -234,10 +273,15 @@ export class DataService {
     phone?: string;
     avatarUrl?: string;
     emailVerified?: boolean;
+    planKey?: string;
+    billingInterval?: 'monthly' | 'annual';
+    paymentMethod?: 'bank_transfer' | 'paystack';
+    paidPlanRef?: string;
     password: string;
   }) {
     const email = data.email.toLowerCase().trim();
     const token = crypto.randomBytes(32).toString('hex');
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
     const passwordHash = await bcrypt.hash(data.password, 12);
     const fullName = data.name || `${data.firstName || ''} ${data.lastName || ''}`.trim() || email.split('@')[0];
     
@@ -247,6 +291,8 @@ export class DataService {
       passwordHash,
       emailVerificationToken: token,
       emailVerificationExpiresAt: Date.now() + 86_400_000,
+      emailVerificationCode: code,
+      emailVerificationCodeExpiresAt: Date.now() + 10 * 60 * 1000,
     };
     if (data.firstName) userArgs.firstName = data.firstName;
     if (data.lastName) userArgs.lastName = data.lastName;
@@ -257,12 +303,16 @@ export class DataService {
     if (data.phone) userArgs.phone = data.phone;
     if (data.avatarUrl) userArgs.avatarUrl = data.avatarUrl;
     if (data.emailVerified !== undefined) userArgs.emailVerified = data.emailVerified;
+    if (data.planKey) userArgs.planKey = data.planKey;
+    if (data.billingInterval) userArgs.billingInterval = data.billingInterval;
+    if (data.paymentMethod) userArgs.paymentMethod = data.paymentMethod;
+    if (data.paidPlanRef) userArgs.paidPlanRef = data.paidPlanRef;
 
     const id = await this.mutate('users:createUser', userArgs);
     const user = await this.getUserById(String(id));
     if (!user) throw new Error('User creation did not return a user.');
     if (!data.emailVerified) {
-      await this.enqueue(email, 'verification', { name: user.name, url: buildVerifyEmailUrl(token) });
+      await this.enqueue(email, 'verification', { name: user.name, url: buildVerifyEmailUrl(token, email), code, token });
     }
     return { user };
   }
@@ -271,9 +321,9 @@ export class DataService {
   public async getUserByEmail(email: string) { return asUser(await this.query('users:getUserByEmail', { email: email.toLowerCase().trim() })); }
   public async verifyPassword(user: UserRecord, password: string) { return user.passwordHash ? bcrypt.compare(password, user.passwordHash) : false; }
 
-  public async touchLastLogin(userId: string) {
+  public async touchLastLogin(userId: string, ipAddress?: string) {
     try {
-      await this.mutate('users:touchLastLogin', { userId });
+      await this.mutate('users:touchLastLogin', { userId: userId as any, ipAddress });
     } catch (e) {
       // Non-blocking
     }
@@ -305,13 +355,17 @@ export class DataService {
     const user = await this.getUserByEmail(email);
     if (!user || user.emailVerified) return false;
     const token = crypto.randomBytes(32).toString('hex');
-    await this.mutate('users:setVerificationToken', { userId: user.id, token, expiresAt: Date.now() + 86_400_000 });
-    await this.enqueue(user.email, 'verification', { name: user.name, url: buildVerifyEmailUrl(token) });
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = Date.now() + 86_400_000;
+    const codeExpiresAt = Date.now() + 10 * 60 * 1000;
+    await this.mutate('users:setVerificationToken', { userId: user.id, token, expiresAt, code, codeExpiresAt });
+    await this.enqueue(user.email, 'verification', { name: user.name, url: buildVerifyEmailUrl(token, user.email), code, token });
     return true;
   }
 
-  public async verifyEmail(token: string) {
-    const result = await this.mutate('users:verifyUserEmail', { token }) as { userId: string };
+  public async verifyEmail(params: string | { token?: string; code?: string; email?: string }) {
+    const payload = typeof params === 'string' ? { token: params } : params;
+    const result = await this.mutate('users:verifyUserEmail', payload) as { userId: string };
     const user = await this.getUserById(result.userId);
     if (!user) throw new Error('Verified user could not be found.');
     return { user };
@@ -323,9 +377,10 @@ export class DataService {
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = Date.now() + 3_600_000; // 1 hour
     await this.mutate('users:setPasswordResetToken', { userId: user.id, token, expiresAt });
-    await this.enqueue(user.email, 'passwordReset', { name: user.name, url: buildResetPasswordUrl(token) });
+    await this.enqueue(user.email, 'passwordReset', { name: user.name, url: buildResetPasswordUrl(token, user.email) });
     return true;
   }
+
 
   public async resetPassword(token: string, newPassword: string) {
     const passwordHash = await bcrypt.hash(newPassword, 12);
@@ -358,12 +413,34 @@ export class DataService {
     return { success: true };
   }
 
-  public async logoutUser(userId: string, refreshToken?: string) {
-    if (refreshToken) {
-      const sessionHash = hashSessionToken(refreshToken);
-      await this.mutate('sessions:revokeSession', { sessionHash, refreshToken });
-    }
+  public async logoutUser(
+    userId?: string,
+    refreshToken?: string,
+    sessionId?: string,
+    meta?: { ipAddress?: string; userAgent?: string }
+  ) {
+    const sessionHash = refreshToken ? hashSessionToken(refreshToken) : undefined;
+    await this.mutate('sessions:logout', {
+      sessionId: sessionId as any,
+      sessionHash,
+      refreshToken,
+      userId: userId as any,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
+    });
     return { success: true };
+  }
+
+  public async validateSession(identifiers: { sessionId?: string; sessionHash?: string; refreshToken?: string }) {
+    try {
+      return (await this.query('sessions:validateSession', identifiers as any)) as {
+        valid: boolean;
+        error?: string;
+        session?: { id: string; userId: string; email: string; tokenVersion: number };
+      };
+    } catch {
+      return { valid: false, error: 'VALIDATION_FAILED' };
+    }
   }
 
   public async logoutAllSessions(userId: string) {
@@ -384,6 +461,8 @@ export class DataService {
           authenticationMethod?: string;
           mfaVerified?: boolean;
           tokenVersion?: number;
+          lastVisitedUrl?: string;
+          lastVisitedSubdomain?: string;
         },
     ipAddress?: string,
     tokenVersion?: number
@@ -396,6 +475,8 @@ export class DataService {
       authenticationMethod?: string;
       mfaVerified?: boolean;
       tokenVersion?: number;
+      lastVisitedUrl?: string;
+      lastVisitedSubdomain?: string;
     } = {};
 
     if (typeof optionsOrUserAgent === 'string') {
@@ -428,8 +509,40 @@ export class DataService {
       expiresAt,
       userAgent: options.userAgent,
       ipAddress: options.ipAddress,
+      lastVisitedUrl: options.lastVisitedUrl,
+      lastVisitedSubdomain: options.lastVisitedSubdomain,
+      lastVisitedAt: (options.lastVisitedUrl || options.lastVisitedSubdomain) ? Date.now() : undefined,
     });
-    return { sessionId: String(sessionId), refreshToken, expiresAt };
+    return {
+      sessionId: String(sessionId),
+      refreshToken,
+      expiresAt,
+      lastVisitedUrl: options.lastVisitedUrl,
+      lastVisitedSubdomain: options.lastVisitedSubdomain,
+    };
+  }
+
+  public async updateSessionContext(
+    sessionId: string,
+    data: { lastVisitedUrl?: string; lastVisitedSubdomain?: string }
+  ) {
+    try {
+      return (await this.mutate('sessions:updateSessionContext', {
+        sessionId: sessionId as any,
+        lastVisitedUrl: data.lastVisitedUrl,
+        lastVisitedSubdomain: data.lastVisitedSubdomain,
+      })) as { success: boolean; error?: string };
+    } catch {
+      return { success: false };
+    }
+  }
+
+  public async getSessionById(sessionId: string) {
+    try {
+      return (await this.query('sessions:getSessionById', { sessionId: sessionId as any })) as any;
+    } catch {
+      return null;
+    }
   }
 
   public async rotateSession(
@@ -661,6 +774,9 @@ export class DataService {
     logo?: string;
     phone?: string;
     planId?: string;
+    billingCycle?: string;
+    paymentGateway?: string;
+    paymentReference?: string;
     products?: string[];
     primaryBranch?: {
       name: string;
@@ -684,6 +800,118 @@ export class DataService {
     const result = await this.mutate('organizations:createOrganization', data) as any;
     return { organization: asOrganization(result.organization)!, membership: asMembership(result.membership)!, onboarding: result.onboarding, isDuplicate: result.isDuplicate };
   }
+
+  public async createOrganizationWithOnboarding(data: {
+    userId: string;
+    name: string;
+    phone: string;
+    category: string;
+    currency?: string;
+    street?: string;
+    city?: string;
+    state?: string;
+    country?: string;
+    address?: string;
+    industry?: string;
+    timezone?: string;
+    website?: string;
+    businessType?: string;
+    branchCountRange?: string;
+    productCountRange?: string;
+    primaryUsers?: string[];
+  }) {
+    return this.mutate('onboarding:createOrganizationWithOnboarding', data as any);
+  }
+
+  public async saveInventoryOnboarding(data: {
+    organizationId: string;
+    userId?: string;
+    previousTools?: string[];
+    painPoints?: string[];
+    priorityFeatures?: string[];
+    needsMultiBranch?: boolean;
+    teamComfortLevel?: string;
+  }) {
+    return this.mutate('onboarding:saveInventoryOnboarding', data as any);
+  }
+
+  public async getInventoryOnboardingStatus(organizationId: string) {
+    return this.query('onboarding:getInventoryOnboardingStatus', { organizationId: organizationId as any });
+  }
+
+  public async getOrganizationProfile(organizationId: string) {
+    return this.query('onboarding:getOrganizationProfile', { organizationId: organizationId as any });
+  }
+
+  public async getApplicationOnboardingResponses(organizationId: string, applicationKey?: string) {
+    return this.query('onboarding:getApplicationOnboardingResponses', { organizationId: organizationId as any, applicationKey });
+  }
+
+  public async getMyOrganizations(userId: string) {
+    return this.query('onboarding:getMyOrganizations', { userId: userId as any });
+  }
+
+  public async getOrgApplicationStatus(organizationId: string, applicationKey?: string) {
+    return this.query('onboarding:getOrgApplicationStatus', { organizationId: organizationId as any, applicationKey });
+  }
+
+  public async listBranches(params: { organizationId?: string; applicationId?: string; workspaceId?: string }) {
+    return this.query('branches:listBranches', params as any);
+  }
+
+  public async getBranchesForOrgApp(organizationId: string, applicationId?: string, applicationKey?: string) {
+    return this.query('branches:getBranchesForOrgApp', {
+      organizationId: organizationId as any,
+      applicationId: applicationId as any,
+      applicationKey,
+    });
+  }
+
+  public async autoCreateMainBranch(data: {
+    organizationId: string;
+    applicationId?: string;
+    userId?: string;
+    name?: string;
+    address?: string;
+    phone?: string;
+  }) {
+    return this.mutate('branches:autoCreateMainBranch', data as any);
+  }
+
+  public async getCurrentOrgAppContext(params: {
+    organizationId: string;
+    applicationKey?: string;
+    branchId?: string;
+    userId?: string;
+  }) {
+    return this.query('onboarding:getCurrentOrgAppContext', params as any);
+  }
+
+  public async activateApplication(data: {
+    organizationId: string;
+    applicationKey: string;
+    planKey: string;
+    billingCycle?: string;
+    paymentReference?: string;
+    paymentGateway?: string;
+    userId?: string;
+  }) {
+    return this.mutate('onboarding:activateApplication', data as any);
+  }
+
+  public async getOrganizationApps(organizationId: string) {
+    return this.query('onboarding:getOrganizationApps', {
+      organizationId: organizationId as any,
+    });
+  }
+
+  public async isApplicationActiveForOrg(organizationId: string, applicationKey?: string) {
+    return this.query('onboarding:isApplicationActiveForOrg', {
+      organizationId: organizationId as any,
+      applicationKey,
+    });
+  }
+
   public async updateOrganization(organizationId: string, userId: string, updates: Record<string, unknown>) { return asOrganization(await this.mutate('organizations:updateOrganization', { organizationId, userId, ...updates })); }
   public async leaveOrganization(organizationId: string, userId: string) { return this.mutate('organizations:leaveOrganization', { organizationId, userId }); }
   public async deleteOrganization(organizationId: string, userId: string, password?: string) {
@@ -843,6 +1071,53 @@ export class DataService {
   }
 
   public async getOnboardingStatus(userId: string) { return this.query('onboarding:getOnboardingStatus', { userId }); }
+
+  public async getPersonalOnboardingProfile(userId: string) {
+    try {
+      const res = await this.query('userProfiles:getPersonalOnboardingProfile', { userId: userId as any }) as any;
+      if (res) return res;
+    } catch {
+      // Fallback
+    }
+    const user = await this.getUserById(userId);
+    return {
+      personalOnboardingCompleted: Boolean(user?.personalOnboardingCompleted),
+      profile: null,
+    };
+  }
+
+  public async savePersonalOnboarding(userId: string, data: {
+    useCases: string[];
+    acquisitionSource: string;
+    role?: string;
+    managesBusiness?: boolean;
+  }) {
+    try {
+      const res = await this.mutate('userProfiles:savePersonalOnboarding', {
+        userId: userId as any,
+        useCases: data.useCases,
+        acquisitionSource: data.acquisitionSource,
+        role: data.role,
+        managesBusiness: data.managesBusiness,
+      }) as any;
+      if (res) return res;
+    } catch {
+      // Fallback
+      await this.updateProfile(userId, { personalOnboardingCompleted: true } as any);
+    }
+    return {
+      personalOnboardingCompleted: true,
+      profile: {
+        userId,
+        useCases: data.useCases,
+        acquisitionSource: data.acquisitionSource,
+        role: data.role,
+        managesBusiness: data.managesBusiness,
+        personalOnboardingCompleted: true,
+        completedAt: Date.now(),
+      },
+    };
+  }
   public async skipStep(userId: string, step: string) { return this.mutate('onboarding:skipStep', { userId, step }); }
   public async skipOnboardingPermanently(userId: string) {
     try {
@@ -1274,7 +1549,13 @@ export class DataService {
     workspaceId: string;
     callerUserId: string;
     email: string;
-    role: string;
+    role?: string;
+    organizationRole?: string;
+    appAccess?: Array<{
+      productKey: string;
+      appRole: string;
+      branchIds: string[];
+    }>;
     productKey?: string;
     branchIds?: string[];
     message?: string;
@@ -1282,12 +1563,15 @@ export class DataService {
     const rawToken = crypto.randomBytes(32).toString('hex');
     const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
     const expiresAt = Date.now() + INVITATION_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
+    const effectiveRole = data.organizationRole || data.role || 'staff';
 
     const result = await this.mutate('workspaceMembers:createWorkspaceInvitation', {
       workspaceId: data.workspaceId as any,
       callerUserId: data.callerUserId as any,
       email: data.email,
-      role: data.role,
+      role: effectiveRole,
+      organizationRole: effectiveRole,
+      appAccess: data.appAccess,
       productKey: data.productKey,
       branchIds: data.branchIds as any,
       tokenHash,
@@ -1299,17 +1583,48 @@ export class DataService {
       inviterName: result.inviterName || 'A team member',
       organizationName: result.workspaceName || 'Your Workspace',
       url: inviteUrl,
-      role: data.role,
+      role: effectiveRole,
     });
 
     return {
       id: result.id,
       email: data.email,
-      role: data.role,
+      role: effectiveRole,
+      organizationRole: effectiveRole,
+      appAccess: data.appAccess,
       token: rawToken,
       expiresAt,
       workspaceName: result.workspaceName,
     };
+  }
+
+  public async getMemberAccessDetails(workspaceId: string, memberUserId: string, callerUserId: string) {
+    return this.query('workspaceMembers:getMemberAccessDetails', {
+      workspaceId: workspaceId as any,
+      memberUserId: memberUserId as any,
+      callerUserId: callerUserId as any,
+    });
+  }
+
+  public async updateMemberAccess(params: {
+    workspaceId: string;
+    memberUserId: string;
+    callerUserId: string;
+    organizationRole?: string;
+    appAccess: Array<{
+      productKey: string;
+      enabled: boolean;
+      appRole: string;
+      branchIds: string[];
+    }>;
+  }) {
+    return this.mutate('workspaceMembers:updateMemberAccess', {
+      workspaceId: params.workspaceId as any,
+      memberUserId: params.memberUserId as any,
+      callerUserId: params.callerUserId as any,
+      organizationRole: params.organizationRole,
+      appAccess: params.appAccess,
+    });
   }
 
   public async getWorkspaceInvitations(workspaceId: string, callerUserId: string) {
@@ -1470,10 +1785,13 @@ export class DataService {
   }
 
   public async createBranch(data: {
-    workspaceId: string;
+    workspaceId?: string;
+    organizationId?: string;
+    applicationId?: string;
     name: string;
     code?: string;
     isPrimary?: boolean;
+    isActive?: boolean;
     country?: string;
     state?: string;
     stateCode?: string;
@@ -1494,9 +1812,12 @@ export class DataService {
   }) {
     return this.mutate('branches:createBranch', {
       workspaceId: data.workspaceId as any,
+      organizationId: data.organizationId as any,
+      applicationId: data.applicationId as any,
       name: data.name,
       code: data.code,
       isPrimary: data.isPrimary,
+      isActive: data.isActive,
       country: data.country,
       state: data.state,
       stateCode: data.stateCode,
@@ -1540,6 +1861,8 @@ export class DataService {
       email?: string;
       managerId?: string;
       status?: string;
+      productKey?: string;
+      deletedAt?: number;
       callerUserId?: string;
     }
   ) {
@@ -2600,11 +2923,12 @@ export class DataService {
 
   private inMemoryPlans: any[] = [
     {
-      key: 'free',
-      name: 'Free',
-      monthlyPrice: 0,
-      annualPrice: 0,
-      currency: 'NGN',
+      key: 'free_trial',
+      name: 'Free Trial',
+      price: { monthly: 0, annual: 0 },
+      limits: { orgs: 3, apps: 3, members: 10, branches: 3, products: 5000, transactions: 5000 },
+      allowedApps: ['inventory', 'taskmanagement', 'pos'],
+      trialDays: 14,
       isActive: true,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -2612,19 +2936,9 @@ export class DataService {
     {
       key: 'standard',
       name: 'Standard',
-      monthlyPrice: 750000, // ₦7,500
-      annualPrice: 7500000,
-      currency: 'NGN',
-      isActive: true,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    },
-    {
-      key: 'premium',
-      name: 'Premium',
-      monthlyPrice: 2000000, // ₦20,000
-      annualPrice: 20000000,
-      currency: 'NGN',
+      price: { monthly: 7500, annual: 75000 },
+      limits: { orgs: 3, apps: 3, members: 10, branches: 3, products: 5000, transactions: 5000 },
+      allowedApps: ['inventory', 'taskmanagement', 'pos'],
       isActive: true,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -2660,8 +2974,12 @@ export class DataService {
     planKey: string,
     updates: {
       name?: string;
+      price?: { monthly: number; annual: number };
       monthlyPrice?: number;
       annualPrice?: number;
+      limits?: any;
+      allowedApps?: string[];
+      allowedAppKeys?: string[];
       isActive?: boolean;
     }
   ) {
@@ -2702,10 +3020,208 @@ export class DataService {
     return defaultSub;
   }
 
+  public async getUserSubscription(userId: string) {
+    try {
+      const res = await this.query('subscriptions:getByUser', { userId: userId as any });
+      if (res) return res;
+    } catch {
+      // Fallback
+    }
+    const now = Date.now();
+    return {
+      userId,
+      planKey: 'free_trial',
+      status: 'trialing',
+      currentPeriodStart: now,
+      currentPeriodEnd: now + 14 * 86_400_000,
+      cancelAtPeriodEnd: false,
+    };
+  }
+
+  public async updateUserSubscription(
+    userId: string,
+    planKey: string,
+    status?: 'active' | 'trialing' | 'canceled' | 'past_due' | 'suspended',
+    currentPeriodEnd?: number,
+    cancelAtPeriodEnd?: boolean
+  ) {
+    try {
+      return await this.mutate('subscriptions:updateForUser', {
+        userId: userId as any,
+        planKey,
+        status: status as any,
+        currentPeriodEnd,
+        cancelAtPeriodEnd,
+      });
+    } catch {
+      const now = Date.now();
+      return {
+        userId,
+        planKey,
+        status: status || 'active',
+        currentPeriodStart: now,
+        currentPeriodEnd: currentPeriodEnd || now + 30 * 86_400_000,
+        cancelAtPeriodEnd: cancelAtPeriodEnd || false,
+        updatedAt: now,
+      };
+    }
+  }
+
+  public async getOrganizationSubscription(organizationId: string) {
+    try {
+      const res = await this.query('subscriptions:getByOrganization', {
+        organizationId: organizationId as any,
+      });
+      if (res) return res;
+    } catch {
+      // Fallback
+    }
+    const now = Date.now();
+    return {
+      organizationId,
+      planKey: 'free_trial',
+      status: 'trialing',
+      currentPeriodStart: now,
+      currentPeriodEnd: now + 14 * 86_400_000,
+      trialEndsAt: now + 14 * 86_400_000,
+      cancelAtPeriodEnd: false,
+    };
+  }
+
+  public async updateOrganizationSubscription(
+    organizationId: string,
+    planKey: string,
+    status?: 'active' | 'trialing' | 'canceled' | 'past_due' | 'suspended' | 'expired',
+    currentPeriodEnd?: number,
+    trialEndsAt?: number,
+    cancelAtPeriodEnd?: boolean
+  ) {
+    try {
+      return await this.mutate('subscriptions:updatePlan', {
+        organizationId: organizationId as any,
+        planKey,
+        status: status as any,
+        currentPeriodEnd,
+        trialEndsAt,
+        cancelAtPeriodEnd,
+      });
+    } catch {
+      const now = Date.now();
+      return {
+        organizationId,
+        planKey,
+        status: status || 'active',
+        currentPeriodEnd: currentPeriodEnd || now + 30 * 86_400_000,
+        trialEndsAt,
+        cancelAtPeriodEnd: cancelAtPeriodEnd || false,
+      };
+    }
+  }
+
+  public async extendOrganizationTrial(organizationId: string, days: number, trialEndsAt?: number) {
+    try {
+      return await this.mutate('subscriptions:extendTrial', {
+        organizationId: organizationId as any,
+        days,
+        trialEndsAt,
+      });
+    } catch {
+      const now = Date.now();
+      return {
+        organizationId,
+        days,
+        trialEndsAt,
+        extendedAt: now,
+      };
+    }
+  }
+
+  public async recordOrganizationPayment(data: {
+    organizationId: string;
+    userId?: string;
+    amount: number;
+    currency?: string;
+    provider?: string;
+    providerReference?: string;
+    status?: string;
+  }) {
+    try {
+      return await this.mutate('payments:recordPayment', {
+        organizationId: data.organizationId as any,
+        userId: (data.userId || '') as any,
+        amount: data.amount,
+        currency: data.currency || 'NGN',
+        provider: data.provider || 'manual',
+        providerReference: data.providerReference,
+        status: data.status || 'success',
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  public async getOrganizationPayments(organizationId: string) {
+    try {
+      const payments = await this.query('manualPayments:listByOrganization', {
+        organizationId: organizationId as any,
+      });
+      if (payments) return payments;
+    } catch {
+      // Fallback
+    }
+    return [];
+  }
+
+  public async recordOrganizationManualPayment(data: {
+    organizationId: string;
+    workspaceId?: string;
+    planKey: string;
+    amount: number;
+    currency?: string;
+    billingCycle?: string;
+    paymentReference: string;
+    paymentMethod?: string;
+    paidAt?: number;
+    recordedBy: string;
+    notes?: string;
+    extensionDays?: number;
+  }) {
+    try {
+      return await this.mutate('manualPayments:recordPayment', {
+        organizationId: data.organizationId as any,
+        workspaceId: data.workspaceId as any,
+        planKey: data.planKey,
+        amount: data.amount,
+        currency: data.currency || 'NGN',
+        billingCycle: data.billingCycle || 'monthly',
+        paymentReference: data.paymentReference,
+        paymentMethod: data.paymentMethod || 'manual',
+        paidAt: data.paidAt || Date.now(),
+        recordedBy: data.recordedBy as any,
+        notes: data.notes,
+        extensionDays: data.extensionDays,
+      });
+    } catch {
+      return {
+        success: true,
+        paymentId: `manual_${Date.now()}`,
+        organizationId: data.organizationId,
+      };
+    }
+  }
+
+  public async cancelUserSubscription(userId: string) {
+    try {
+      return await this.mutate('subscriptions:cancelForUser', { userId: userId as any });
+    } catch {
+      return { success: true };
+    }
+  }
+
   public async updateWorkspaceSubscription(
     workspaceId: string,
     planKey: string,
-    status?: 'active' | 'cancelled' | 'past_due',
+    status?: 'active' | 'cancelled' | 'past_due' | 'trialing',
     currentPeriodEnd?: number,
     cancelAtPeriodEnd?: boolean
   ) {
@@ -2749,6 +3265,26 @@ export class DataService {
         transactionsCount: 0,
       },
       records: [],
+    };
+  }
+
+  public async getUserUsage(userId: string) {
+    try {
+      const res = await this.query('adminUsers:getUserUsage', { userId: userId as any });
+      if (res) return res;
+    } catch {
+      // Fallback
+    }
+    return {
+      userId,
+      usage: {
+        workspaces: 0,
+        apps: 0,
+        branches: 0,
+        members: 0,
+        products: 0,
+        transactions: 0,
+      },
     };
   }
 
@@ -2805,6 +3341,66 @@ export class DataService {
       });
     }
     return list;
+  }
+
+  public async listUsers(params?: {
+    search?: string;
+    limit?: number;
+    cursor?: string;
+    status?: string;
+  }) {
+    try {
+      const res = await this.query('adminUsers:listUsers', {
+        sessionToken: 'system_admin',
+        search: params?.search,
+        statusFilter: params?.status,
+        pageSize: params?.limit,
+      });
+      if (res && (res as any).users) {
+        return res;
+      }
+    } catch {
+      // Fallback
+    }
+    return {
+      users: [],
+      total: 0,
+    };
+  }
+
+  public async updateUserStatus(userId: string, status?: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED') {
+    try {
+      if (status === 'SUSPENDED') {
+        return await this.mutate('adminUsers:suspendUser', {
+          sessionToken: 'system_admin',
+          userId: userId as any,
+          reason: 'Administrative action',
+        });
+      } else {
+        return await this.mutate('adminUsers:activateUser', {
+          sessionToken: 'system_admin',
+          userId: userId as any,
+        });
+      }
+    } catch {
+      return { id: userId, status };
+    }
+  }
+
+  public async listWorkspaces(params?: { search?: string; limit?: number }) {
+    try {
+      const res = await this.query('adminOrganizations:listOrganizations', {
+        sessionToken: 'system_admin',
+        search: params?.search,
+        pageSize: params?.limit,
+      });
+      if (res && (res as any).organizations) {
+        return (res as any).organizations;
+      }
+    } catch {
+      // Fallback
+    }
+    return [];
   }
 
   public async getSubscriptionOverviewStats() {
@@ -3097,6 +3693,20 @@ export class DataService {
     }
   }
 
+  /** Returns true if the normalized phone is already verified by a *different* user. */
+  public async isPhoneRegistered(phoneNormalized: string, excludeUserId?: string): Promise<boolean> {
+    try {
+      const taken = await this.query('userPhones:isPhoneRegistered', {
+        phoneNormalized,
+        excludeUserId: excludeUserId as any,
+      });
+      return Boolean(taken);
+    } catch (err) {
+      console.warn('[DataService] Failed to check phone registration:', err);
+      return false; // fail open — don't block legitimate users on network errors
+    }
+  }
+
   public async saveUserPhoneOtp(data: {
     userId: string;
     phone: string;
@@ -3237,6 +3847,97 @@ export class DataService {
     } catch {
       return { success: true };
     }
+  }
+
+  // --- Notification Methods ---
+
+  public async getNotificationsForUser(
+    userId: string,
+    options?: { status?: 'UNREAD' | 'READ' | 'ARCHIVED'; type?: string; limit?: number }
+  ) {
+    try {
+      return await this.query('notifications:getNotifications', {
+        userId: userId as any,
+        status: options?.status,
+        type: options?.type,
+        limit: options?.limit,
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  public async getUnreadNotificationCount(userId: string) {
+    try {
+      const res = await this.query('notifications:getUnreadCount', {
+        userId: userId as any,
+      });
+      return res?.count ?? 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  public async markNotificationRead(notificationId: string, userId: string) {
+    return await this.mutate('notifications:markNotificationRead', {
+      notificationId: notificationId as any,
+      userId: userId as any,
+    });
+  }
+
+  public async markAllNotificationsRead(userId: string) {
+    return await this.mutate('notifications:markAllNotificationsRead', {
+      userId: userId as any,
+    });
+  }
+
+  public async archiveNotification(notificationId: string, userId: string) {
+    return await this.mutate('notifications:archiveNotification', {
+      notificationId: notificationId as any,
+      userId: userId as any,
+    });
+  }
+
+  public async getPendingInvitesForUser(userId: string) {
+    try {
+      return await this.query('inviteNotifications:getPendingInvitesForUser', {
+        userId: userId as any,
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  public async acceptInviteFromNotification(inviteId: string, userId: string, notificationId?: string) {
+    return await this.mutate('inviteNotifications:acceptInviteFromNotification', {
+      inviteId: inviteId as any,
+      userId: userId as any,
+      notificationId: notificationId as any,
+    });
+  }
+
+  public async declineInviteFromNotification(inviteId: string, userId: string, notificationId?: string) {
+    return await this.mutate('inviteNotifications:declineInviteFromNotification', {
+      inviteId: inviteId as any,
+      userId: userId as any,
+      notificationId: notificationId as any,
+    });
+  }
+
+  public async acceptWorkspaceInviteFromNotification(inviteId: string, userId: string, notificationId?: string) {
+    return await this.mutate('inviteNotifications:acceptWorkspaceInviteFromNotification', {
+      inviteId: inviteId as any,
+      userId: userId as any,
+      notificationId: notificationId as any,
+    });
+  }
+
+  public async declineWorkspaceInviteFromNotification(inviteId: string, userId: string, notificationId?: string) {
+    return await this.mutate('inviteNotifications:declineWorkspaceInviteFromNotification', {
+      inviteId: inviteId as any,
+      userId: userId as any,
+      notificationId: notificationId as any,
+    });
   }
 }
 

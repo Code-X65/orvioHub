@@ -22,6 +22,69 @@ export const onboardingRoutes: FastifyPluginAsync = async (fastify) => {
   // All onboarding routes require authentication
   fastify.addHook('preHandler', fastify.authenticate);
 
+  // GET /api/v1/onboarding/personal (Get personal onboarding status & profile)
+  fastify.get(
+    '/personal',
+    {
+      schema: {
+        tags: ['Onboarding'],
+        summary: 'Get current user personal onboarding status and answers',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const data = await dataService.getPersonalOnboardingProfile(request.user.id);
+      return reply.send({
+        success: true,
+        data,
+      });
+    }
+  );
+
+  // POST /api/v1/onboarding/personal (Submit personal onboarding answers)
+  fastify.post(
+    '/personal',
+    {
+      schema: {
+        tags: ['Onboarding'],
+        summary: 'Submit personal onboarding answers and complete personal setup',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          properties: {
+            useCases: { type: 'array', items: { type: 'string' } },
+            use_cases: { type: 'array', items: { type: 'string' } },
+            acquisitionSource: { type: 'string' },
+            acquisition_source: { type: 'string' },
+            role: { type: 'string' },
+            managesBusiness: { type: 'boolean' },
+            manages_business: { type: 'boolean' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = request.body as any;
+      const useCases = body.useCases || body.use_cases || ['exploring'];
+      const acquisitionSource = body.acquisitionSource || body.acquisition_source || 'direct';
+      const role = body.role;
+      const managesBusiness = body.managesBusiness !== undefined ? body.managesBusiness : body.manages_business;
+
+      const result = await dataService.savePersonalOnboarding(request.user.id, {
+        useCases: Array.isArray(useCases) ? useCases : [String(useCases)],
+        acquisitionSource: String(acquisitionSource),
+        role: role ? String(role) : undefined,
+        managesBusiness: managesBusiness !== undefined ? Boolean(managesBusiness) : undefined,
+      });
+
+      return reply.send({
+        success: true,
+        data: result,
+        message: 'Personal onboarding completed successfully.',
+      });
+    }
+  );
+
   // GET /api/v1/onboarding (Get active onboarding flow & data)
   fastify.get(
     '/',

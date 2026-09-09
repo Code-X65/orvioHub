@@ -5,7 +5,7 @@ import { Check, Sparkles, ArrowRight, ChevronDown, CreditCard, ShieldCheck, Zap 
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useHost } from '@/host/useHost';
-import { getAccountsUrl, getHomeUrl, getLauncherUrl, getApiUrl } from '@orviohub/shared';
+import { getApiUrl } from '@orviohub/shared';
 
 type BillingCycle = 'monthly' | 'annual';
 
@@ -102,15 +102,15 @@ export const PricingPage: React.FC = () => {
   };
 
   const handlePlanClick = (plan: string) => {
+    const targetPlan = plan === 'free' ? 'free_trial' : plan;
     if (isAuthenticated && user) {
-      if (plan === 'free') {
-        // Already on free – just open their workspace
-        window.location.href = getHomeUrl(env);
+      if (plan === 'free' || plan === 'free_trial') {
+        window.location.href = '/inventory/dashboard';
       } else {
-        window.location.href = `${getLauncherUrl(env)}?upgrade=${plan}&cycle=${billingCycle}`;
+        window.location.href = `/settings/billing?upgrade=${plan}&cycle=${billingCycle}`;
       }
     } else {
-      window.location.href = `${getAccountsUrl(env)}/signup?plan=${plan}&cycle=${billingCycle}`;
+      window.location.href = `/signup?plan=${targetPlan}&cycle=${billingCycle}`;
     }
   };
 
@@ -263,7 +263,7 @@ export const PricingPage: React.FC = () => {
               variant="outline"
               className="w-full h-11 mt-8 bg-[#160f14] hover:bg-[#22151f] border-white/10 text-white rounded-xs font-semibold text-xs transition-all cursor-pointer"
             >
-              {isAuthenticated && user ? 'Open Workspace' : 'Get Started Free'}
+              {isAuthenticated && user ? 'Open Workspace' : 'Start Free Trial'}
             </Button>
           </div>
 

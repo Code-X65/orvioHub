@@ -3,7 +3,6 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { api } from '@/lib/api';
 import { AuthResponse } from '@/lib/types';
-import { getHomeUrl } from '@orviohub/shared';
 import { useHost } from '@/host/useHost';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -71,15 +70,7 @@ export const AuthCallback: React.FC = () => {
 
           // Route according to onboarding status
           if (meResponse.onboarding?.status === 'COMPLETED') {
-            const homeBase = getHomeUrl(host.environment);
-            try {
-              const homeUrl = new URL(homeBase);
-              if (tokenParam) homeUrl.searchParams.set('auth_token', tokenParam);
-              if (refreshTokenParam) homeUrl.searchParams.set('refresh_token', refreshTokenParam);
-              window.location.href = homeUrl.toString();
-            } catch {
-              window.location.href = homeBase;
-            }
+            navigate('/inventory/dashboard', { replace: true });
             return;
           } else {
             const step = meResponse.onboarding?.currentStep;

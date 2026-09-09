@@ -12,7 +12,9 @@ import { WorkspaceSwitcher } from '@/components/workspace/WorkspaceSwitcher';
 import { ProductCard, ProductCardData } from '../components/ProductCard';
 import { JoinWaitlistModal } from '../components/JoinWaitlistModal';
 import { ProductActivationModal } from '../components/ProductActivationModal';
+import { BranchSelectorModal, BranchOption } from '../components/BranchSelectorModal';
 import { ApplicationKey } from '@orviohub/shared';
+import { toast } from 'sonner';
 
 const FALLBACK_VISIBLE_PRODUCTS: ProductCardData[] = [
   {
@@ -97,16 +99,19 @@ const FALLBACK_VISIBLE_PRODUCTS: ProductCardData[] = [
   },
 ];
 
-const PLAN_LIMITS: Record<string, { maxApps: number | string; maxMembers: number; maxBranches: number; label: string }> = {
-  free: { maxApps: 1, maxMembers: 2, maxBranches: 1, label: 'Free' },
-  standard: { maxApps: 3, maxMembers: 10, maxBranches: 3, label: 'Standard' },
-  premium: { maxApps: 'Unlimited', maxMembers: 50, maxBranches: 10, label: 'Premium' },
+import { UpgradeModal } from '@/components/billing/UpgradeModal';
+
+const PLAN_LIMITS: Record<string, { maxApps: number | string; maxMembers: number; maxBranches: number; maxWorkspaces: number; label: string; allowedApps: string[] }> = {
+  free: { maxApps: 1, maxMembers: 2, maxBranches: 1, maxWorkspaces: 1, label: 'Free', allowedApps: ['inventory', 'tasks', 'taskmanagement', 'pos'] },
+  free_trial: { maxApps: 1, maxMembers: 2, maxBranches: 1, maxWorkspaces: 1, label: 'Free Trial', allowedApps: ['inventory', 'tasks', 'taskmanagement', 'pos'] },
+  standard: { maxApps: 3, maxMembers: 10, maxBranches: 3, maxWorkspaces: 3, label: 'Standard', allowedApps: ['inventory', 'tasks', 'taskmanagement', 'pos', 'booking', 'gym'] },
+  premium: { maxApps: 'Unlimited', maxMembers: 50, maxBranches: 10, maxWorkspaces: 10, label: 'Premium', allowedApps: ['inventory', 'tasks', 'taskmanagement', 'pos', 'booking', 'gym', 'crm', 'analytics', 'invoicing', 'hr'] },
 };
 
 export const ProductCatalog: React.FC = () => {
   const host = useHost();
   const env = host.environment;
-  const { isAuthenticated } = useAuthStore();
+  const { user: _user, isAuthenticated } = useAuthStore();
   const { currentWorkspace, products: activatedProducts, workspaces, fetchWorkspaces } = useWorkspaceStore();
 
   const [products, setProducts] = useState<ProductCardData[]>(FALLBACK_VISIBLE_PRODUCTS);
@@ -117,6 +122,8 @@ export const ProductCatalog: React.FC = () => {
   const [selectedWaitlistProduct, setSelectedWaitlistProduct] = useState<ProductCardData | null>(null);
   const [selectedActivationProduct, setSelectedActivationProduct] = useState<ProductCardData | null>(null);
   const [joinedWaitlists, setJoinedWaitlists] = useState<Record<string, boolean>>({});
+  const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
+  const [upgradeReason, setUpgradeReason] = useState<string | undefined>(undefined);
 
   const fetchProducts = async () => {
     setIsLoading(true);
@@ -203,7 +210,66 @@ export const ProductCatalog: React.FC = () => {
   };
 
   const handleOpenActivation = (product: ProductCardData) => {
+    const maxApps = typeof planInfo.maxApps === 'number' ? planInfo.maxApps : 999;
+    const isAlreadyActive = activeProductKeys.has(product.key.toLowerCase());
+    const appKey = product.key.toLowerCase();
+    const isAllowedOnPlan = planInfo.allowedApps.includes(appKey);
+
+    if (!isAllowedOnPlan) {
+      setUpgradeReason('app_limit');
+      setUpgradeModalOpen(true);
+      return;
+    }
+
+    if (!isAlreadyActive && activeProductKeys.size >= maxApps) {
+      setUpgradeReason('app_limit');
+      setUpgradeModalOpen(true);
+      return;
+    }
+
     setSelectedActivationProduct(product);
+  };
+
+  const [branchModalProduct, setBranchModalProduct] = useState<ProductCardData | null>(null);
+  const [branchOptions, setBranchOptions] = useState<BranchOption[]>([]);
+
+  const handleLaunchApp = async (product: ProductCardData) => {
+    const ctaHref = getCrossSubdomainUrl(
+      product.key as ApplicationKey,
+      '/dashboard',
+      true,
+      env
+    );
+
+    const supportsBranches = product.key === 'inventory' || product.key === 'pos';
+    if (!supportsBranches) {
+      window.location.href = ctaHref;
+      return;
+    }
+
+    try {
+      const res = await api.get<{ branches: BranchOption[] }>(
+        `/workspaces/${currentWorkspace?.id}/branches?productKey=${product.key}`
+      );
+      const branches = res.branches || [];
+
+      if (branches.length === 0) {
+        toast.error(
+          `No active branch assigned for ${product.name}. Please contact your organization administrator.`
+        );
+        return;
+      }
+
+      if (branches.length === 1) {
+        window.location.href = `${ctaHref}?branchId=${branches[0].id}`;
+        return;
+      }
+
+      setBranchOptions(branches);
+      setBranchModalProduct(product);
+    } catch {
+      window.location.href = ctaHref;
+    }
   };
 
   return (
@@ -246,7 +312,9 @@ export const ProductCatalog: React.FC = () => {
               <Users className="w-3.5 h-3.5 text-blue-400" />
               <span>
                 Members Limit:{' '}
-                <strong className="text-white">{planInfo.maxMembers}</strong>
+                <strong className="text-white">
+                  {planInfo.maxMembers}
+                </strong>
               </span>
             </div>
 
@@ -254,7 +322,9 @@ export const ProductCatalog: React.FC = () => {
               <Store className="w-3.5 h-3.5 text-emerald-400" />
               <span>
                 Branches Limit:{' '}
-                <strong className="text-white">{planInfo.maxBranches}</strong>
+                <strong className="text-white">
+                  {planInfo.maxBranches}
+                </strong>
               </span>
             </div>
 
@@ -349,6 +419,11 @@ export const ProductCatalog: React.FC = () => {
               true,
               env
             );
+            const appKey = product.key.toLowerCase();
+            const isAllowedOnPlan = planInfo.allowedApps.includes(appKey);
+            const maxApps = typeof planInfo.maxApps === 'number' ? planInfo.maxApps : 999;
+            const isAtAppLimit = !isActivatedInWorkspace && activeProductKeys.size >= maxApps;
+            const needsUpgrade = !isAllowedOnPlan || isAtAppLimit;
 
             // If user is authenticated with active workspace:
             if (isAuthenticated && currentWorkspace) {
@@ -358,11 +433,17 @@ export const ProductCatalog: React.FC = () => {
                   product={product}
                   type={isActivatedInWorkspace ? 'active' : 'available'}
                   isActivated={isActivatedInWorkspace}
-                  ctaText={isActivatedInWorkspace ? 'Open Application' : `+ Activate for ${currentWorkspace.name}`}
+                  ctaText={
+                    isActivatedInWorkspace
+                      ? 'Open Application'
+                      : needsUpgrade
+                      ? '⬆ Upgrade Plan to Activate'
+                      : `+ Activate for ${currentWorkspace.name}`
+                  }
                   ctaHref={isActivatedInWorkspace ? ctaHref : undefined}
                   onCtaClick={
                     isActivatedInWorkspace
-                      ? () => (window.location.href = ctaHref)
+                      ? () => handleLaunchApp(product)
                       : () => handleOpenActivation(product)
                   }
                 />
@@ -399,6 +480,25 @@ export const ProductCatalog: React.FC = () => {
         </div>
       )}
 
+      {/* Branch Selector Modal */}
+      {branchModalProduct && (
+        <BranchSelectorModal
+          isOpen={Boolean(branchModalProduct)}
+          appName={branchModalProduct.name}
+          branches={branchOptions}
+          onSelectBranch={(branch) => {
+            const ctaHref = getCrossSubdomainUrl(
+              branchModalProduct.key as ApplicationKey,
+              '/dashboard',
+              true,
+              env
+            );
+            window.location.href = `${ctaHref}?branchId=${branch.id}`;
+          }}
+          onClose={() => setBranchModalProduct(null)}
+        />
+      )}
+
       {/* Product Activation Modal */}
       {selectedActivationProduct && (
         <ProductActivationModal
@@ -421,6 +521,16 @@ export const ProductCatalog: React.FC = () => {
           onSuccess={handleWaitlistSuccess}
         />
       )}
+
+      {/* Upgrade Entitlement Modal */}
+      <UpgradeModal
+        isOpen={upgradeModalOpen}
+        workspaceId={currentWorkspace?.id || ''}
+        workspaceSlug={currentWorkspace?.slug || 'store'}
+        currentPlanKey={activePlanKey}
+        triggerReason={upgradeReason}
+        onClose={() => setUpgradeModalOpen(false)}
+      />
     </div>
   );
 };

@@ -1,15 +1,8 @@
 import React from 'react';
 import { ArrowRight, Rocket } from 'lucide-react';
-import { useHost } from '@/host/useHost';
-import { getAccountsUrl } from '@orviohub/shared';
-import { getCrossSubdomainUrl } from '@/lib/domain';
 
 export const CallToAction: React.FC = () => {
-  const host = useHost();
-  const env = host.environment;
-  const accountsUrl = getAccountsUrl(env);
-  const homeUrl = getCrossSubdomainUrl('home', '', true, env);
-  const signupUrl = `${accountsUrl}/signup?returnTo=${encodeURIComponent(homeUrl)}`;
+  const signupUrl = '/signup';
 
   return (
     <section className="w-full max-w-[1440px] mx-auto px-6 sm:px-8 lg:px-12 py-8">
@@ -42,7 +35,7 @@ export const CallToAction: React.FC = () => {
             href={signupUrl}
             className="w-full md:w-auto inline-flex items-center justify-center gap-2.5 px-7 py-3.5 rounded-sm bg-[#714B67] hover:bg-[#86597A] text-white text-sm font-semibold shadow-xl shadow-[#714B67]/30 hover:scale-[1.02] active:scale-[0.98] transition-all"
           >
-            <span>Get started free</span>
+            <span>Start free trial</span>
             <ArrowRight className="w-4 h-4" />
           </a>
         </div>

@@ -11,6 +11,7 @@ import {
   Loader2,
   Sparkles,
   ShieldCheck,
+  AlertTriangle,
 } from "lucide-react";
 import { useAuth } from "../hooks/useAuth";
 import { adminDashboardApi } from "../api/adminDashboard";
@@ -169,6 +170,118 @@ export const Dashboard: React.FC = () => {
           icon={Clock}
           variant="amber"
         />
+      </div>
+
+      {/* Free Trial & Growth Operations Section */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-5 h-5 text-amber-400" />
+            <h2 className="text-lg font-bold text-white tracking-tight">Free Trial & Growth Operations (30-Day Policy)</h2>
+          </div>
+          <Link to="/subscriptions" className="text-xs font-semibold text-brand-400 hover:text-brand-300 flex items-center gap-1">
+            <span>Manage All Subscriptions</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </Link>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+          <StatCard
+            label="Active 30-Day Trials"
+            value={stats.activeTrialsCount || 0}
+            subtext="Current trial organizations"
+            icon={Sparkles}
+            variant="brand"
+          />
+
+          <StatCard
+            label="Expiring Soon (≤ 7 Days)"
+            value={stats.expiringTrialsCount || 0}
+            subtext="Requires outreach/conversion"
+            icon={AlertTriangle}
+            variant="amber"
+          />
+
+          <StatCard
+            label="Trial Conversion Rate"
+            value={`${stats.trialConversionRate || 0}%`}
+            subtext={`${stats.convertedTrialsCount || 0} converted to Standard`}
+            icon={TrendingUp}
+            variant="emerald"
+          />
+
+          <StatCard
+            label="Expired / Churned"
+            value={stats.expiredTrialsCount || 0}
+            subtext="30-day trials un-renewed"
+            icon={Clock}
+            variant="indigo"
+          />
+        </div>
+
+        {/* Expiring Trials Action Table */}
+        {data?.expiringTrials && data.expiringTrials.length > 0 && (
+          <div className="p-5 rounded-2xl bg-gradient-to-br from-amber-950/20 via-slate-900 to-slate-900 border border-amber-500/20 shadow-xl space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-400" />
+                <h3 className="text-xs font-bold uppercase tracking-wider text-amber-300">
+                  Urgent: Trials Expiring In Next 7 Days ({data.expiringTrials.length})
+                </h3>
+              </div>
+              <span className="text-[11px] text-slate-400">1 App / 1 Branch Trial Quota Active</span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs text-slate-300">
+                <thead className="bg-slate-950/60 text-slate-400 uppercase text-[10px] font-bold">
+                  <tr>
+                    <th className="py-2.5 px-3 rounded-l-lg">Organization</th>
+                    <th className="py-2.5 px-3">Owner Details</th>
+                    <th className="py-2.5 px-3">Expires</th>
+                    <th className="py-2.5 px-3">Days Left</th>
+                    <th className="py-2.5 px-3 text-right rounded-r-lg">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {data.expiringTrials.map((t: any) => (
+                    <tr key={t.id} className="hover:bg-slate-800/30 transition">
+                      <td className="py-2.5 px-3 font-semibold text-white">
+                        <Link to={`/organizations/${t.organizationId}`} className="hover:text-brand-300">
+                          {t.organizationName}
+                        </Link>
+                      </td>
+                      <td className="py-2.5 px-3">
+                        <span className="text-slate-200 block">{t.ownerName}</span>
+                        <span className="text-[11px] text-slate-500">{t.ownerEmail}</span>
+                      </td>
+                      <td className="py-2.5 px-3 text-slate-400 font-mono text-[11px]">
+                        {new Date(t.trialEndsAt).toLocaleDateString()}
+                      </td>
+                      <td className="py-2.5 px-3">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          t.daysRemaining <= 2
+                            ? "bg-red-500/20 text-red-400 border border-red-500/30 animate-pulse"
+                            : "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                        }`}>
+                          {t.daysRemaining} {t.daysRemaining === 1 ? "day" : "days"} left
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 text-right">
+                        <Link
+                          to={`/organizations/${t.organizationId}`}
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-brand-400 hover:text-brand-300 bg-brand-500/10 hover:bg-brand-500/20 px-2.5 py-1 rounded-lg border border-brand-500/20 transition"
+                        >
+                          Manage Org →
+                        </Link>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Main Analysis Grid */}

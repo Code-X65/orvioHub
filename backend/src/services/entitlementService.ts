@@ -11,56 +11,31 @@ export interface EntitlementCheckResult {
 
 export class EntitlementService {
   /**
-   * User Story 2.2: Workspace Creation Limits
-   * Free: 1, Standard: 3, Premium: 10
+   * User Story 2.2: Workspace/Organization Creation
+   * Personal accounts are free; billing is per-organization.
+   * Users can create multiple organizations freely; each organization has its own subscription.
    */
   public async checkWorkspaceCreationEntitlement(userId: string): Promise<EntitlementCheckResult> {
     const userWorkspaces = await dataService.getUserWorkspaces(userId);
     const ownedWorkspaces = (userWorkspaces || []).filter(
       (w: any) => w.isOwner || w.role?.toLowerCase() === 'owner'
     );
-    const count = ownedWorkspaces.length;
 
-    // Determine highest active subscription plan across user's owned workspaces
-    let userHighestPlan: PlanTier = 'free';
-    for (const ws of ownedWorkspaces) {
-      const wsId = (ws as any).workspace?.id || (ws as any).workspaceId || (ws as any).id;
-      if (wsId) {
-        const sub = await dataService.getWorkspaceSubscription(wsId);
-        if (sub && sub.status === 'active') {
-          const plan = (sub.planKey || 'free').toLowerCase() as PlanTier;
-          if (plan === 'premium') {
-            userHighestPlan = 'premium';
-            break;
-          } else if (plan === 'standard') {
-            userHighestPlan = 'standard';
-          }
-        }
-      }
-    }
+    let ownedOrgsCount = 0;
+    try {
+      const memberships = await dataService.getUserMemberships(userId);
+      ownedOrgsCount = (memberships || []).filter(
+        (m: any) => m.membership?.role === 'OWNER'
+      ).length;
+    } catch {}
 
-    const limits = getPlanLimits(userHighestPlan);
-    const maxWorkspaces = limits.maxWorkspaces;
-
-    if (count >= maxWorkspaces) {
-      const planName = userHighestPlan.charAt(0).toUpperCase() + userHighestPlan.slice(1);
-      const nextPlan = userHighestPlan === 'free' ? 'Standard' : 'Premium';
-      return {
-        allowed: false,
-        current: count,
-        limit: maxWorkspaces,
-        planKey: userHighestPlan,
-        error: `Your ${planName} plan includes ${maxWorkspaces} workspace${
-          maxWorkspaces > 1 ? 's' : ''
-        }. Upgrade to ${nextPlan} to create more.`,
-      };
-    }
+    const count = Math.max(ownedWorkspaces.length, ownedOrgsCount);
 
     return {
       allowed: true,
       current: count,
-      limit: maxWorkspaces,
-      planKey: userHighestPlan,
+      limit: 999999,
+      planKey: 'free',
     };
   }
 
@@ -73,21 +48,54 @@ export class EntitlementService {
     productKey?: string
   ): Promise<EntitlementCheckResult> {
     const sub = await dataService.getWorkspaceSubscription(workspaceId);
-    const planKey = (sub?.planKey || 'free').toLowerCase() as PlanTier;
+    let planKey = (sub?.planKey || 'free').toLowerCase() as PlanTier;
+    if (planKey === ('free_trial' as any)) planKey = 'free';
     const limits = getPlanLimits(planKey);
 
+    // 1. Check if app is in allowed apps for plan
+    if (productKey) {
+      const targetNorm = productKey.toLowerCase();
+      const isAllowed = limits.allowedApps.some((app) => {
+        const norm = app.toLowerCase();
+        return (
+          norm === targetNorm ||
+          (norm === 'tasks' && targetNorm === 'taskmanagement') ||
+          (norm === 'taskmanagement' && targetNorm === 'tasks')
+        );
+      });
+      if (!isAllowed) {
+        return {
+          allowed: false,
+          current: 0,
+          limit: limits.maxAppsPerOrganization,
+          planKey,
+          error: 'App not included in your plan',
+        };
+      }
+    }
+
+    // 2. Check active app count against maxAppsPerOrganization
     const activeCount = await dataService.countActiveWorkspaceProducts(workspaceId);
 
-    if (activeCount >= limits.maxAppsPerWorkspace) {
+    if (limits.maxAppsPerOrganization < 999999 && activeCount >= limits.maxAppsPerOrganization) {
+      if (planKey === 'free') {
+        return {
+          allowed: false,
+          current: activeCount,
+          limit: limits.maxAppsPerOrganization,
+          planKey,
+          error: 'Free Trial organizations can only activate 1 application. Upgrade to Standard to activate more applications.',
+        };
+      }
       const planName = planKey.charAt(0).toUpperCase() + planKey.slice(1);
       const nextPlan = planKey === 'free' ? 'Standard' : 'Premium';
       return {
         allowed: false,
         current: activeCount,
-        limit: limits.maxAppsPerWorkspace,
+        limit: limits.maxAppsPerOrganization,
         planKey,
-        error: `${planName} plan includes ${limits.maxAppsPerWorkspace} application${
-          limits.maxAppsPerWorkspace > 1 ? 's' : ''
+        error: `${planName} plan includes ${limits.maxAppsPerOrganization} application${
+          limits.maxAppsPerOrganization > 1 ? 's' : ''
         }. Upgrade to ${nextPlan} to activate more.`,
       };
     }
@@ -95,7 +103,7 @@ export class EntitlementService {
     return {
       allowed: true,
       current: activeCount,
-      limit: limits.maxAppsPerWorkspace,
+      limit: limits.maxAppsPerOrganization,
       planKey,
     };
   }
@@ -108,34 +116,51 @@ export class EntitlementService {
     workspaceId: string,
     callerUserId?: string
   ): Promise<EntitlementCheckResult> {
-    const sub = await dataService.getWorkspaceSubscription(workspaceId);
-    const planKey = (sub?.planKey || 'free').toLowerCase() as PlanTier;
+    let targetWorkspaceId = workspaceId;
+    try {
+      const orgWorkspaces = await dataService.getOrganizationWorkspaces(workspaceId);
+      const primaryWs = orgWorkspaces.find((w: any) => w.isDefault) || orgWorkspaces[0];
+      if (primaryWs) {
+        targetWorkspaceId = primaryWs._id || primaryWs.id;
+      }
+    } catch {}
+
+    const sub = await dataService.getWorkspaceSubscription(targetWorkspaceId);
+    let planKey = (sub?.planKey || 'free').toLowerCase() as PlanTier;
+    if (planKey === ('free_trial' as any)) planKey = 'free';
+
     const limits = getPlanLimits(planKey);
 
     let currentCount = 0;
     try {
-      const members = await dataService.getWorkspaceMembers(workspaceId, callerUserId || '');
+      const members = await dataService.getWorkspaceMembers(targetWorkspaceId, callerUserId || '');
       currentCount = Array.isArray(members) ? members.length : 0;
     } catch {
-      currentCount = 1;
+      try {
+        const orgMembers = await dataService.getOrganizationMembers(workspaceId, callerUserId || '');
+        currentCount = Array.isArray(orgMembers) ? orgMembers.length : 0;
+      } catch {
+        currentCount = 1;
+      }
     }
 
-    if (currentCount >= limits.maxMembers) {
+    const maxMembers = limits.maxMembersPerOrganization ?? limits.maxMembers;
+    if (currentCount >= maxMembers) {
       const planName = planKey.charAt(0).toUpperCase() + planKey.slice(1);
       const nextPlan = planKey === 'free' ? 'Standard' : 'Premium';
       return {
         allowed: false,
         current: currentCount,
-        limit: limits.maxMembers,
+        limit: maxMembers,
         planKey,
-        error: `${planName} plan allows ${limits.maxMembers} members. Upgrade to ${nextPlan} for more.`,
+        error: `${planName} plan allows ${maxMembers} members. Upgrade to ${nextPlan} for more.`,
       };
     }
 
     return {
       allowed: true,
       current: currentCount,
-      limit: limits.maxMembers,
+      limit: maxMembers,
       planKey,
     };
   }
@@ -278,6 +303,156 @@ export class EntitlementService {
       hasExceededLimits,
       warningMessage,
       subscription: sub,
+    };
+  }
+
+  /**
+   * Branch Creation Limits
+   * Free: 1, Standard: 3, Premium: 10 per app
+   */
+  public async checkBranchCreationEntitlement(
+    workspaceIdOrUserId: string,
+    callerUserIdOrWorkspaceId?: string,
+    productKey?: string
+  ): Promise<EntitlementCheckResult> {
+    let workspaceId = workspaceIdOrUserId;
+    let callerUserId = callerUserIdOrWorkspaceId;
+
+    if (
+      workspaceIdOrUserId &&
+      callerUserIdOrWorkspaceId &&
+      workspaceIdOrUserId.startsWith('user_') &&
+      !callerUserIdOrWorkspaceId.startsWith('user_')
+    ) {
+      workspaceId = callerUserIdOrWorkspaceId;
+      callerUserId = workspaceIdOrUserId;
+    }
+
+    const sub = await dataService.getWorkspaceSubscription(workspaceId);
+    let planKey = (sub?.planKey || 'free').toLowerCase() as PlanTier;
+    if (planKey === ('free_trial' as any)) planKey = 'free';
+
+    const limits = getPlanLimits(planKey);
+
+    let currentCount = 0;
+    try {
+      const branches = await dataService.getBranches(workspaceId, callerUserId, productKey);
+      currentCount = Array.isArray(branches) ? branches.length : 0;
+    } catch {
+      currentCount = 0;
+    }
+
+    const maxBranches = limits.maxBranchesPerApp || 1;
+    if (currentCount >= maxBranches) {
+      if (planKey === 'free') {
+        return {
+          allowed: false,
+          current: currentCount,
+          limit: maxBranches,
+          planKey,
+          error: 'Free Trial organizations can only have 1 branch per application. Upgrade to Standard to add more branches.',
+        };
+      }
+      const planName = planKey.charAt(0).toUpperCase() + planKey.slice(1);
+      const nextPlan = planKey === 'free' ? 'Standard' : 'Premium';
+      return {
+        allowed: false,
+        current: currentCount,
+        limit: maxBranches,
+        planKey,
+        error: `${planName} plan allows ${maxBranches} operating branch${
+          maxBranches > 1 ? 'es' : ''
+        }. Upgrade to ${nextPlan} to create more branches.`,
+      };
+    }
+
+    return {
+      allowed: true,
+      current: currentCount,
+      limit: maxBranches,
+      planKey,
+    };
+  }
+
+  /**
+   * User-Level Entitlements based on Active Subscription
+   */
+  public async getUserEntitlements(userId: string) {
+    const sub = await dataService.getUserSubscription(userId);
+    const planKey = (sub?.planKey || 'free_trial').toLowerCase() as PlanTier;
+    const limits = getPlanLimits(planKey);
+
+    return {
+      userId,
+      planKey,
+      status: sub?.status || 'active',
+      limits,
+      subscription: sub,
+    };
+  }
+
+  /**
+   * Aggregated User Usage vs Limits across all owned workspaces
+   */
+  public async getUserUsage(userId: string) {
+    const userEntitlements = await this.getUserEntitlements(userId);
+    const limits = userEntitlements.limits;
+
+    const ownedWorkspaces = ((await dataService.getUserWorkspaces(userId)) || []).filter(
+      (w: any) => w.isOwner || w.role?.toLowerCase() === 'owner'
+    );
+    const workspacesCount = ownedWorkspaces.length;
+
+    let totalAppsCount = 0;
+    let totalBranchesCount = 0;
+    let totalMembersCount = 0;
+    let totalProductsCount = 0;
+
+    for (const ws of ownedWorkspaces) {
+      const wsId = (ws as any).workspace?.id || (ws as any).id || (ws as any).workspaceId;
+      if (wsId) {
+        try {
+          totalAppsCount += await dataService.countActiveWorkspaceProducts(wsId);
+        } catch {}
+        try {
+          const branches = await dataService.getBranches(wsId, userId);
+          totalBranchesCount += Array.isArray(branches) ? branches.length : 0;
+        } catch {}
+        try {
+          const members = await dataService.getWorkspaceMembers(wsId, userId);
+          totalMembersCount += Array.isArray(members) ? members.length : 1;
+        } catch {}
+        try {
+          const prods = await dataService.getInventoryProducts(wsId);
+          totalProductsCount += Array.isArray(prods) ? prods.length : 0;
+        } catch {}
+      }
+    }
+
+    const calcMetric = (current: number, limit: number) => {
+      const percent = limit > 0 ? Math.min(100, Math.round((current / limit) * 100)) : 0;
+      return {
+        current,
+        limit,
+        percent,
+        isApproaching: percent >= 80 && percent < 100,
+        isReached: percent >= 100,
+      };
+    };
+
+    return {
+      userId,
+      planKey: userEntitlements.planKey,
+      status: userEntitlements.status,
+      limits,
+      metrics: {
+        workspaces: calcMetric(workspacesCount, limits.maxWorkspaces),
+        apps: calcMetric(totalAppsCount, limits.maxAppsPerWorkspace),
+        branches: calcMetric(totalBranchesCount, limits.maxBranchesPerApp),
+        members: calcMetric(totalMembersCount, limits.maxMembers),
+        products: calcMetric(totalProductsCount, limits.maxProducts),
+        transactions: calcMetric(0, limits.maxTransactions),
+      },
     };
   }
 }

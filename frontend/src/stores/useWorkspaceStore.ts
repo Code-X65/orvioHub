@@ -62,6 +62,8 @@ interface WorkspaceState {
 }
 
 const ACTIVE_WS_STORAGE_KEY = 'orvio_active_workspace_id';
+let inFlightFetch: Promise<UserWorkspaceEntry[]> | null = null;
+let inFlightKey: string = '';
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   currentWorkspace: null,
@@ -74,31 +76,49 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   error: null,
 
   fetchWorkspaces: async (productKey?: string, search?: string) => {
-    set({ isLoading: true, error: null });
-    try {
-      const params = new URLSearchParams();
-      if (productKey) params.append('product', productKey);
-      if (search) params.append('search', search);
-
-      const qs = params.toString() ? `?${params.toString()}` : '';
-      const response = await api.get<{ workspaces?: UserWorkspaceEntry[]; data?: { workspaces: UserWorkspaceEntry[] } }>(`/workspaces${qs}`);
-      const workspaces = response.workspaces || response.data?.workspaces || [];
-      set({ workspaces, isLoading: false });
-
-      // If no active workspace is selected, try restoring from localStorage or select first
-      if (!get().currentWorkspace && workspaces.length > 0) {
-        const savedId = localStorage.getItem(ACTIVE_WS_STORAGE_KEY);
-        const target = workspaces.find((w) => w.workspace.id === savedId) || workspaces[0];
-        if (target) {
-          get().selectWorkspace(target.workspace.id, productKey).catch(() => {});
-        }
-      }
-
-      return workspaces;
-    } catch (err: any) {
-      set({ isLoading: false, error: err.message || 'Failed to fetch workspaces' });
-      return [];
+    const key = `${productKey || ''}::${search || ''}`;
+    if (inFlightFetch && inFlightKey === key) {
+      return inFlightFetch;
     }
+
+    // Only set full isLoading state if we don't have workspaces loaded yet
+    if (get().workspaces.length === 0) {
+      set({ isLoading: true, error: null });
+    }
+
+    inFlightKey = key;
+    inFlightFetch = (async () => {
+      try {
+        const params = new URLSearchParams();
+        if (productKey) params.append('product', productKey);
+        if (search) params.append('search', search);
+
+        const qs = params.toString() ? `?${params.toString()}` : '';
+        const response = await api.get<{ workspaces?: UserWorkspaceEntry[]; data?: { workspaces: UserWorkspaceEntry[] } }>(`/workspaces${qs}`);
+        const workspaces = response.workspaces || response.data?.workspaces || [];
+        set({ workspaces });
+
+        // If no active workspace is selected, try restoring from localStorage or select first
+        if (!get().currentWorkspace && workspaces.length > 0) {
+          const savedId = localStorage.getItem(ACTIVE_WS_STORAGE_KEY);
+          const target = workspaces.find((w) => w.workspace.id === savedId) || workspaces[0];
+          if (target) {
+            await get().selectWorkspace(target.workspace.id, productKey).catch(() => {});
+          }
+        }
+
+        set({ isLoading: false });
+        return workspaces;
+      } catch (err: any) {
+        set({ isLoading: false, error: err.message || 'Failed to fetch workspaces' });
+        return [];
+      } finally {
+        inFlightFetch = null;
+        inFlightKey = '';
+      }
+    })();
+
+    return inFlightFetch;
   },
 
   selectWorkspace: async (workspaceId: string, productKey?: string) => {

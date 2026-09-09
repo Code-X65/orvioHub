@@ -95,10 +95,17 @@ export const Subscriptions: React.FC = () => {
             Standard (₦7.5k)
           </span>
         );
+      case "free_trial":
+      case "free":
+        return (
+          <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-purple-500/10 text-purple-400 border border-purple-500/20">
+            Free Trial (30d)
+          </span>
+        );
       default:
         return (
           <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-slate-800 text-slate-400 border border-slate-700">
-            Free (₦0)
+            {planKey}
           </span>
         );
     }
@@ -113,20 +120,44 @@ export const Subscriptions: React.FC = () => {
             Active
           </span>
         );
-      case "past_due":
+      case "trialing":
         return (
           <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20 flex items-center gap-1.5 w-fit">
             <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+            Trialing
+          </span>
+        );
+      case "past_due":
+        return (
+          <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20 flex items-center gap-1.5 w-fit">
+            <span className="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
             Past Due
+          </span>
+        );
+      case "expired":
+        return (
+          <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-800 text-slate-400 border border-slate-700 flex items-center gap-1.5 w-fit">
+            <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+            Expired
           </span>
         );
       default:
         return (
-          <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20 flex items-center gap-1.5 w-fit">
-            <span className="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
-            Cancelled
+          <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-800 text-slate-400 border border-slate-700 flex items-center gap-1.5 w-fit">
+            <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+            {status}
           </span>
         );
+    }
+  };
+
+  const handleExtendTrial = async (orgId: string) => {
+    try {
+      await adminBillingApi.extendTrial(orgId, 14);
+      alert("Trial period extended by 14 days successfully.");
+      fetchData();
+    } catch (err: any) {
+      alert(err.message || "Failed to extend trial.");
     }
   };
 
@@ -251,9 +282,9 @@ export const Subscriptions: React.FC = () => {
               className="px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 text-xs focus:ring-2 focus:ring-emerald-500/40 outline-none"
             >
               <option value="all">All Plans</option>
-              <option value="free">Free</option>
-              <option value="standard">Standard</option>
-              <option value="premium">Premium</option>
+              <option value="free_trial">Free Trial (30d)</option>
+              <option value="standard">Standard (₦7.5k)</option>
+              <option value="premium">Premium (₦20k)</option>
             </select>
           </div>
 
@@ -264,9 +295,11 @@ export const Subscriptions: React.FC = () => {
             className="px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 text-xs focus:ring-2 focus:ring-emerald-500/40 outline-none"
           >
             <option value="all">All Statuses</option>
-            <option value="active">Active</option>
+            <option value="trial">Free Trial (Active)</option>
+            <option value="active">Active (Paid)</option>
             <option value="past_due">Past Due</option>
             <option value="cancelled">Cancelled</option>
+            <option value="expired">Expired</option>
           </select>
         </div>
       </div>
@@ -310,18 +343,18 @@ export const Subscriptions: React.FC = () => {
                     daysLeft >= 0;
 
                   return (
-                    <tr key={sub.workspaceId} className="hover:bg-slate-800/30 transition">
-                      {/* Workspace */}
+                    <tr key={sub.workspaceId || sub._id} className="hover:bg-slate-800/30 transition">
+                      {/* Organization / Workspace */}
                       <td className="py-3.5 px-4">
                         <Link
-                          to={`/organizations/${sub.workspaceId}`}
+                          to={`/organizations/${sub.organizationId || sub.workspaceId}`}
                           className="font-bold text-white hover:text-emerald-400 transition flex items-center gap-1.5"
                         >
-                          {sub.workspaceName || "Workspace"}
+                          {sub.organizationName || sub.workspaceName || "Organization"}
                           <ExternalLink className="w-3 h-3 text-slate-500" />
                         </Link>
                         <p className="text-[11px] text-slate-500 font-mono">
-                          {sub.workspaceSlug || sub.workspaceId}
+                          {sub.workspaceSlug || sub.organizationId || sub.workspaceId}
                         </p>
                       </td>
 
@@ -341,7 +374,9 @@ export const Subscriptions: React.FC = () => {
                       <td className="py-3.5 px-4">
                         <div className="flex items-center gap-2">
                           <span className="font-medium text-slate-200">
-                            {formatDate(sub.currentPeriodEnd)}
+                            {sub.status === 'trialing' && sub.trialEndsAt
+                              ? `Trial: ${formatDate(sub.trialEndsAt)}`
+                              : formatDate(sub.currentPeriodEnd)}
                           </span>
                           {isExpiringSoon && (
                             <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20 flex items-center gap-1">
@@ -355,12 +390,20 @@ export const Subscriptions: React.FC = () => {
                       {/* Actions */}
                       <td className="py-3.5 px-4 text-right">
                         <div className="flex items-center justify-end gap-2">
+                          {(sub.status === 'trialing' || sub.planKey === 'free_trial') && (
+                            <button
+                              onClick={() => handleExtendTrial(sub.organizationId || sub.workspaceId)}
+                              className="px-2.5 py-1.5 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 text-xs font-semibold border border-purple-500/20 transition cursor-pointer"
+                            >
+                              +14d Trial
+                            </button>
+                          )}
                           <button
                             onClick={() =>
                               setPaymentModalState({
                                 isOpen: true,
                                 workspaceId: sub.workspaceId,
-                                workspaceName: sub.workspaceName || "Workspace",
+                                workspaceName: sub.organizationName || sub.workspaceName || "Organization",
                                 currentPlanKey: sub.planKey,
                               })
                             }
@@ -370,7 +413,7 @@ export const Subscriptions: React.FC = () => {
                             Record Payment
                           </button>
                           <Link
-                            to={`/organizations/${sub.workspaceId}`}
+                            to={`/organizations/${sub.organizationId || sub.workspaceId}`}
                             className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700 transition"
                           >
                             Details

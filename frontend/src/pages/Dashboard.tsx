@@ -1,13 +1,8 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { api } from '@/lib/api';
-import { useHost } from '@/host/useHost';
-import {
-  getApplicationUrl,
-  getAccountsUrl,
-  getLauncherUrl,
-  type ApplicationKey,
-} from '@orviohub/shared';
+
 import { Header } from '@/components/landing/Header';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -33,11 +28,13 @@ import {
   Sparkles,
   ShieldCheck,
   ArrowUpRight,
+  Settings,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ResumeSetupBanner } from '@/components/onboarding/ResumeSetupBanner';
 import { UsageLimitBanner } from '@/components/billing/UsageLimitBanner';
 import { UpgradeModal } from '@/components/billing/UpgradeModal';
+import { PendingInvitesBanner } from '@/components/notifications/PendingInvitesBanner';
 
 interface WorkspaceItem {
   workspace: {
@@ -131,8 +128,7 @@ const APPS_REGISTRY: AppDefinition[] = [
 ];
 
 export const Dashboard: React.FC = () => {
-  const host = useHost();
-  const env = host.environment;
+  const navigate = useNavigate();
   const { user, memberships, setActiveOrganizationId, setMemberships } = useAuthStore();
 
   const [workspaces, setWorkspaces] = useState<WorkspaceItem[]>([]);
@@ -162,6 +158,11 @@ export const Dashboard: React.FC = () => {
       const res = await api.get<{ data?: { workspaces: WorkspaceItem[] }; workspaces?: WorkspaceItem[] }>('/workspaces');
       const list = res.data?.workspaces || res.workspaces || [];
       setWorkspaces(list);
+
+      // Set active organization context if none is active yet
+      if (list.length > 0) {
+        setActiveOrganizationId(list[0].workspace.id);
+      }
 
       if (list.length > 0 && memberships.length === 0) {
         setMemberships(
@@ -228,8 +229,7 @@ export const Dashboard: React.FC = () => {
 
   const handleResumeSetup = () => {
     const targetProduct = onboardingProgress?.product || 'inventory';
-    const launcherBase = getLauncherUrl(env);
-    window.location.href = `${launcherBase}/workspaces/new?product=${encodeURIComponent(targetProduct)}`;
+    navigate(`/workspaces/new?product=${encodeURIComponent(targetProduct)}`);
   };
 
   const handleLaunchApp = async (workspaceId: string, productKey: string = 'inventory') => {
@@ -237,20 +237,23 @@ export const Dashboard: React.FC = () => {
     try {
       await api.post(`/workspaces/${workspaceId}/select`, { productKey });
       setActiveOrganizationId(workspaceId);
-      const appUrl = getApplicationUrl(productKey as ApplicationKey, env);
-      window.location.href = `${appUrl}/dashboard`;
+      if (productKey === 'inventory' || productKey === 'pos') {
+        navigate('/inventory/dashboard');
+      } else if (productKey === 'taskmanagement') {
+        navigate('/tasks');
+      } else {
+        navigate('/inventory/dashboard');
+      }
     } catch {
       setActiveOrganizationId(workspaceId);
-      const appUrl = getApplicationUrl(productKey as ApplicationKey, env);
-      window.location.href = `${appUrl}/dashboard`;
+      navigate('/inventory/dashboard');
     } finally {
       setLaunchingOrgId(null);
     }
   };
 
   const handleCreateOrgForApp = (appKey: string) => {
-    const launcherBase = getLauncherUrl(env);
-    window.location.href = `${launcherBase}/workspaces/new?product=${encodeURIComponent(appKey)}`;
+    navigate(`/workspaces/new?product=${encodeURIComponent(appKey)}`);
   };
 
   const handleJoinWaitlist = async (appKey: string, appName: string) => {
@@ -278,6 +281,20 @@ export const Dashboard: React.FC = () => {
   const firstName = user?.firstName || user?.name?.split(' ')[0] || 'there';
   const totalOrgsCount = workspaces.length;
 
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-black text-slate-100 flex flex-col selection:bg-[#714b67] selection:text-white">
+        <Header />
+        <div className="flex-1 flex flex-col items-center justify-center space-y-4 py-20">
+          <Spinner size="lg" className="text-[#714b67]" />
+          <p className="text-xs text-slate-400 font-medium tracking-wide">
+            Loading your workspaces...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen flex flex-col bg-black text-slate-100 selection:bg-[#714b67] selection:text-white relative overflow-x-hidden">
       {/* Top Universal Navigation Header */}
@@ -294,19 +311,19 @@ export const Dashboard: React.FC = () => {
           <div className="space-y-3">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-xs bg-[#714b67]/20 border border-[#714b67]/40 text-xs font-semibold text-[#f0d8e8]">
               <Sparkles className="w-3.5 h-3.5 text-[#c79dbd]" />
-              <span>Workspaces & App Launcher</span>
+              <span>Workspaces</span>
             </div>
             <h1 className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight">
               Welcome back, {firstName}
             </h1>
             <p className="text-xs sm:text-sm text-slate-400 max-w-xl leading-relaxed">
-              Manage and access your business organizations categorized by application. Select an organization to launch into its operational dashboard.
+              View and manage all your business workspaces. Select an organization to launch into its operational dashboard or configure organization settings.
             </p>
           </div>
 
           <div className="flex items-center gap-3">
             <a
-              href={`${getAccountsUrl(env)}/profile/personal`}
+              href="/profile/personal"
               className="h-10 px-4 border border-white/10 hover:border-white/20 bg-white/5 hover:bg-white/10 text-slate-200 text-xs font-medium rounded-xs flex items-center gap-2 transition-colors cursor-pointer"
             >
               <UserIcon className="w-3.5 h-3.5 text-[#c79dbd]" />
@@ -326,6 +343,7 @@ export const Dashboard: React.FC = () => {
 
         {/* Dynamic Contextual Banners (Resume Setup & Plan Limits) */}
         <div className="space-y-4">
+          <PendingInvitesBanner onInviteAccepted={fetchWorkspacesAndProgress} />
           {/* Resume Onboarding Banner */}
           {onboardingProgress && !isBannerDismissed && (
             <ResumeSetupBanner
@@ -348,6 +366,38 @@ export const Dashboard: React.FC = () => {
             />
           )}
         </div>
+
+        {/* Zero-State Welcome Card for Users with No Organizations */}
+        {totalOrgsCount === 0 && (
+          <div className="p-8 sm:p-10 rounded-sm bg-[#140c13]/90 border border-[#714b67]/40 text-center space-y-4 shadow-xl">
+            <div className="w-12 h-12 mx-auto rounded-xs bg-[#714b67]/20 border border-[#714b67]/40 flex items-center justify-center text-[#f0d8e8]">
+              <Store className="w-6 h-6" />
+            </div>
+            <div className="space-y-1.5 max-w-md mx-auto">
+              <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight">
+                No organizations yet
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+                Workspaces house your business stock, team members, and POS terminals. Create your first organization to get started, or wait for an invitation from your team.
+              </p>
+            </div>
+            <div className="pt-2 flex flex-wrap items-center justify-center gap-3">
+              <Button
+                onClick={() => handleCreateOrgForApp('inventory')}
+                className="h-10 px-5 bg-[#714b67] hover:bg-[#86597a] active:bg-[#603f57] text-white text-xs font-semibold rounded-xs shadow-lg shadow-[#714b67]/25 flex items-center gap-2 cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Create an Organization</span>
+              </Button>
+              <a
+                href="/pricing"
+                className="h-10 px-4 border border-white/10 hover:border-white/20 bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white text-xs font-medium rounded-xs flex items-center gap-1.5 transition-colors"
+              >
+                <span>View Plans & Pricing</span>
+              </a>
+            </div>
+          </div>
+        )}
 
         {/* Toolbar & Search */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -490,21 +540,30 @@ export const Dashboard: React.FC = () => {
                         </div>
                       </div>
 
-                      {/* Launch Button */}
-                      <Button
-                        onClick={() => handleLaunchApp(item.workspace.id, 'inventory')}
-                        disabled={isLaunching}
-                        className="w-full h-9 bg-[#714b67] hover:bg-[#86597a] active:bg-[#603f57] text-white rounded-xs text-xs font-semibold shadow-md cursor-pointer flex items-center justify-center gap-1.5"
-                      >
-                        {isLaunching ? (
-                          <Spinner size="sm" className="text-white mr-1" />
-                        ) : (
-                          <>
-                            <span>Open Inventory</span>
-                            <ArrowRight className="w-3.5 h-3.5" />
-                          </>
-                        )}
-                      </Button>
+                      {/* Actions: Launch App & Settings */}
+                      <div className="flex items-center gap-2">
+                        <Button
+                          onClick={() => handleLaunchApp(item.workspace.id, 'inventory')}
+                          disabled={isLaunching}
+                          className="flex-1 h-9 bg-[#714b67] hover:bg-[#86597a] active:bg-[#603f57] text-white rounded-xs text-xs font-semibold shadow-md cursor-pointer flex items-center justify-center gap-1.5"
+                        >
+                          {isLaunching ? (
+                            <Spinner size="sm" className="text-white mr-1" />
+                          ) : (
+                            <>
+                              <span>Open Inventory</span>
+                              <ArrowRight className="w-3.5 h-3.5" />
+                            </>
+                          )}
+                        </Button>
+                        <a
+                          href={`/settings/workspaces/${item.workspace.id}`}
+                          title="Organization Settings"
+                          className="h-9 px-2.5 border border-white/10 hover:border-white/20 bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white rounded-xs flex items-center justify-center transition-colors shrink-0 cursor-pointer"
+                        >
+                          <Settings className="w-3.5 h-3.5" />
+                        </a>
+                      </div>
                     </div>
                   );
                 })}
@@ -628,7 +687,7 @@ export const Dashboard: React.FC = () => {
             </div>
 
             <a
-              href={`${getAccountsUrl(env)}/profile/personal`}
+              href="/profile/personal"
               className="text-xs text-[#c79dbd] hover:text-white transition-colors underline shrink-0 flex items-center gap-1 cursor-pointer font-medium"
             >
               <span>Manage Security & Profile</span>

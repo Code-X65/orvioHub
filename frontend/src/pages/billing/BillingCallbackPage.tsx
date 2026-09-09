@@ -4,7 +4,7 @@ import { Header } from '@/components/landing/Header';
 import { Button } from '@/components/ui/button';
 import { CheckCircle2, XCircle, Loader2, ArrowRight, ShieldCheck } from 'lucide-react';
 import { useHost } from '@/host/useHost';
-import { getApiUrl, getLauncherUrl } from '@orviohub/shared';
+import { getApiUrl } from '@orviohub/shared';
 import { useAuthStore } from '@/stores/useAuthStore';
 
 export const BillingCallbackPage: React.FC = () => {
@@ -112,7 +112,7 @@ export const BillingCallbackPage: React.FC = () => {
 
             <Button
               onClick={() => {
-                window.location.href = getLauncherUrl(env);
+                navigate('/inventory/dashboard');
               }}
               className="w-full h-11 bg-[#714b67] hover:bg-[#86597a] text-white rounded-xs font-semibold text-xs shadow-lg shadow-[#714b67]/25 flex items-center justify-center gap-2 cursor-pointer"
             >
@@ -143,11 +143,11 @@ export const BillingCallbackPage: React.FC = () => {
               </Button>
               <Button
                 onClick={() => {
-                  window.location.href = getLauncherUrl(env);
+                  navigate('/inventory/dashboard');
                 }}
                 className="flex-1 h-10 bg-[#714b67] hover:bg-[#86597a] text-white rounded-xs text-xs cursor-pointer"
               >
-                Back to Launcher
+                Back to Dashboard
               </Button>
             </div>
           </div>

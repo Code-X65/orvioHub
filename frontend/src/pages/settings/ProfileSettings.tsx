@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { ActiveSessions } from '@/components/settings/ActiveSessions';
 import { LinkedIdentities } from '@/components/settings/LinkedIdentities';
+import { UserPlanBadge } from '@/components/profile/UserPlanBadge';
 
 const TIMEZONES = [
   { value: 'UTC', label: 'UTC (Coordinated Universal Time)' },
@@ -361,7 +362,10 @@ export const ProfileSettings: React.FC = () => {
       {/* Main Content Area */}
       <main className="flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="mb-8">
-          <h1 className="text-2xl font-bold text-slate-100 tracking-tight">Account & Security Settings</h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl font-bold text-slate-100 tracking-tight">Account & Security Settings</h1>
+            <UserPlanBadge planKey={user?.planKey} size="xs" />
+          </div>
           <p className="text-sm text-slate-400 mt-1">
             Manage your personal profile, email preferences, password security, two-factor authentication, and GDPR privacy options.
           </p>
@@ -378,7 +382,7 @@ export const ProfileSettings: React.FC = () => {
             }`}
           >
             <UserIcon className="w-4 h-4" />
-            <span>Profile Information</span>
+            <span>Profile</span>
           </button>
           <button
             onClick={() => setActiveTab('security')}
@@ -389,7 +393,7 @@ export const ProfileSettings: React.FC = () => {
             }`}
           >
             <Shield className="w-4 h-4" />
-            <span>Security & 2FA</span>
+            <span>Security</span>
           </button>
           <button
             onClick={() => setActiveTab('privacy')}
@@ -408,7 +412,10 @@ export const ProfileSettings: React.FC = () => {
         {activeTab === 'profile' && (
           <div className="space-y-6 max-w-2xl">
             <div className="bg-slate-900 border border-slate-800 rounded-sm p-6 shadow-sm">
-              <h2 className="text-lg font-semibold text-slate-100 mb-1">Personal Details</h2>
+              <div className="flex items-center justify-between mb-1">
+                <h2 className="text-lg font-semibold text-slate-100">Personal Details</h2>
+                <UserPlanBadge planKey={user?.planKey} size="xs" />
+              </div>
               <p className="text-xs text-slate-400 mb-6">Update your name and regional preferences.</p>
 
               <form onSubmit={handleSaveProfile} className="space-y-5">

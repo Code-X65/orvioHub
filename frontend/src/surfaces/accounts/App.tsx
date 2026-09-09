@@ -1,5 +1,14 @@
+import { useEffect } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { AuthGuard } from "../../components/auth/AuthGuard";
+import { getPostVerificationUrl } from "@/lib/domain";
+
+function RedirectToOnboard() {
+  useEffect(() => {
+    window.location.href = getPostVerificationUrl();
+  }, []);
+  return null;
+}
 
 // Auth Pages
 import { Login } from "../../pages/auth/Login";
@@ -7,6 +16,8 @@ import { Signup } from "../../pages/auth/Signup";
 import { ForgotPassword } from "../../pages/auth/ForgotPassword";
 import { ResetPassword } from "../../pages/auth/ResetPassword";
 import { VerifyEmail } from "../../pages/auth/VerifyEmail";
+import { VerifyPhone } from "../../pages/auth/VerifyPhone";
+import { PaymentPage } from "../../pages/billing/PaymentPage";
 import { AcceptInvite } from "../../pages/auth/AcceptInvite";
 import { AuthCallback } from "../../pages/auth/AuthCallback";
 import { ConfirmEmailChange } from "../../pages/auth/ConfirmEmailChange";
@@ -73,11 +84,19 @@ export default function AccountsApp() {
       <Route path="/auth/callback" element={<AuthCallback />} />
       <Route path="/verify-email" element={<VerifyEmail />} />
       <Route path="/verify-email/:tokenParam" element={<VerifyEmail />} />
+      <Route path="/verify-phone" element={<VerifyPhone />} />
+      <Route path="/payment" element={<PaymentPage />} />
       <Route path="/confirm-email-change" element={<ConfirmEmailChange />} />
 
       {/* Invitations */}
+      <Route path="/invite" element={<AcceptInvite />} />
       <Route path="/invite/:token" element={<AcceptInvite />} />
+      <Route path="/invitations" element={<AcceptInvite />} />
       <Route path="/invitations/:token" element={<AcceptInvite />} />
+
+      {/* Onboarding redirects to Home surface */}
+      <Route path="/onboard" element={<RedirectToOnboard />} />
+      <Route path="/onboarding" element={<RedirectToOnboard />} />
 
       {/* Dedicated Personal Profile / Account Settings */}
       <Route path="/profile" element={<Navigate to="/profile/personal" replace />} />

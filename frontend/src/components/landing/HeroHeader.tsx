@@ -1,18 +1,10 @@
 import React, { useEffect } from 'react';
 import { ArrowRight, LayoutDashboard, User } from 'lucide-react';
 import { useAuthStore } from '@/stores/useAuthStore';
-import { useHost } from '@/host/useHost';
-import {
-  getAccountsUrl,
-  getHomeUrl,
-  getApplicationUrl,
-} from '@orviohub/shared';
+
 
 export const HeroHeader: React.FC = () => {
   const { user, isAuthenticated, isInitialized, refreshSession } = useAuthStore();
-  const host = useHost();
-  const env = host.environment;
-  const isMarketing = host.application === 'marketing';
 
   useEffect(() => {
     if (!isInitialized) {
@@ -20,10 +12,10 @@ export const HeroHeader: React.FC = () => {
     }
   }, [isInitialized, refreshSession]);
 
-  const homeUrl = getHomeUrl(env);
-  const myAccountUrl = `${getAccountsUrl(env)}/profile/personal`;
-  const signupUrl = `${getAccountsUrl(env)}/signup`;
-  const pricingUrl = isMarketing ? '/pricing' : `${getApplicationUrl('marketing', env)}/pricing`;
+  const homeUrl = '/inventory/dashboard';
+  const myAccountUrl = '/profile/personal';
+  const signupUrl = '/signup';
+  const pricingUrl = '/pricing';
 
   return (
     <section className="relative w-full max-w-[1400px] mx-auto pt-12 sm:pt-16 pb-16 sm:pb-20 px-6 sm:px-8 text-center flex flex-col items-center">

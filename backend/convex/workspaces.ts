@@ -638,9 +638,9 @@ export const getUserWorkspaces = query({
         products = [];
       }
 
-      // If no products registered, fallback to enabledModules or default inventory
+      // If no products registered, fallback to enabledModules or empty array
       if (!products || products.length === 0) {
-        const mods = ws.enabledModules || ["inventory"];
+        const mods = ws.enabledModules || [];
         products = mods.map((mod: string) => ({
           productKey: mod,
           status: "active",
@@ -694,9 +694,14 @@ export const getUserWorkspaces = query({
 });
 
 export const getWorkspaceById = query({
-  args: { workspaceId: v.id("workspaces") },
+  args: { workspaceId: v.union(v.id("workspaces"), v.string()) },
   handler: async (ctx, args) => {
-    return await ctx.db.get(args.workspaceId);
+    if (!args.workspaceId || args.workspaceId === "undefined" || args.workspaceId === "null") {
+      return null;
+    }
+    const wsId = ctx.db.normalizeId("workspaces", args.workspaceId);
+    if (!wsId) return null;
+    return await ctx.db.get(wsId);
   },
 });
 
@@ -711,24 +716,42 @@ export const getWorkspaceBySlug = query({
 });
 
 export const getOrganizationWorkspaces = query({
-  args: { organizationId: v.id("organizations") },
+  args: { organizationId: v.union(v.id("organizations"), v.id("workspaces"), v.string()) },
   handler: async (ctx, args) => {
+    let orgId = ctx.db.normalizeId("organizations", args.organizationId);
+    if (!orgId) {
+      const wsId = ctx.db.normalizeId("workspaces", args.organizationId);
+      if (wsId) {
+        const ws = await ctx.db.get(wsId);
+        if (ws?.organizationId) orgId = ws.organizationId;
+      }
+    }
+    if (!orgId) return [];
     return await ctx.db
       .query("workspaces")
       .withIndex("by_organizationId", (q) =>
-        q.eq("organizationId", args.organizationId)
+        q.eq("organizationId", orgId!)
       )
       .collect();
   },
 });
 
 export const getDefaultWorkspace = query({
-  args: { organizationId: v.id("organizations") },
+  args: { organizationId: v.union(v.id("organizations"), v.id("workspaces"), v.string()) },
   handler: async (ctx, args) => {
+    let orgId = ctx.db.normalizeId("organizations", args.organizationId);
+    if (!orgId) {
+      const wsId = ctx.db.normalizeId("workspaces", args.organizationId);
+      if (wsId) {
+        const ws = await ctx.db.get(wsId);
+        if (ws?.organizationId) orgId = ws.organizationId;
+      }
+    }
+    if (!orgId) return null;
     const workspaces = await ctx.db
       .query("workspaces")
       .withIndex("by_organizationId", (q) =>
-        q.eq("organizationId", args.organizationId)
+        q.eq("organizationId", orgId!)
       )
       .collect();
     return workspaces.find((w) => w.isDefault) || workspaces[0] || null;
@@ -1111,6 +1134,50 @@ export const deleteWorkspace = mutation({
       metadata: { reason: args.reason },
       createdAt: now,
     });
+
+    return { success: true };
+  },
+});
+
+export const activateProductEntitlement = mutation({
+  args: {
+    workspaceId: v.union(v.id("workspaces"), v.string()),
+    userId: v.union(v.id("users"), v.string()),
+    productKey: v.string(),
+    planId: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const wsId = ctx.db.normalizeId("workspaces", args.workspaceId);
+    if (!wsId) return { success: false, reason: "INVALID_WORKSPACE" };
+
+    const ws = await ctx.db.get(wsId);
+    if (!ws) return { success: false, reason: "WORKSPACE_NOT_FOUND" };
+
+    const uId = ctx.db.normalizeId("users", args.userId);
+
+    let existing = await ctx.db
+      .query("workspaceProducts")
+      .withIndex("by_workspace_product", (q) =>
+        q.eq("workspaceId", wsId).eq("productKey", args.productKey)
+      )
+      .first();
+
+    const now = Date.now();
+    if (!existing) {
+      await ctx.db.insert("workspaceProducts", {
+        workspaceId: wsId,
+        productKey: args.productKey,
+        status: "active",
+        planId: args.planId || "free",
+        activatedBy: (uId || ws.ownerId) as any,
+        activatedAt: now,
+      });
+    } else {
+      await ctx.db.patch(existing._id, {
+        status: "active",
+        activatedAt: now,
+      });
+    }
 
     return { success: true };
   },

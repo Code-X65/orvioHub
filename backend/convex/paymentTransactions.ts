@@ -79,39 +79,107 @@ export const markSuccessful = mutation({
     const isAnnual = transaction.billingCycle === "annual";
     const duration = isAnnual ? ONE_YEAR_MS : ONE_MONTH_MS;
 
-    // 2. Update/create workspace subscription
-    const existingSub = await ctx.db
-      .query("subscriptions")
-      .withIndex("by_workspace", (q) => q.eq("workspaceId", transaction.workspaceId as any))
-      .first();
+    // 2. Resolve organization and workspace
+    let orgId = null;
+    let ws: any = null;
+    try {
+      ws = await ctx.db.get(transaction.workspaceId as any);
+      if (ws?.organizationId) orgId = ws.organizationId;
+    } catch {}
+    if (!orgId) {
+      try {
+        const org: any = await ctx.db.get(transaction.workspaceId as any);
+        if (org?.name) orgId = org._id;
+      } catch {}
+    }
 
+    // Update/create subscription strictly tied to organization/workspace
+    let existingSub = null;
+    if (orgId) {
+      existingSub = await ctx.db
+        .query("subscriptions")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", orgId))
+        .first();
+    }
+    if (!existingSub) {
+      existingSub = await ctx.db
+        .query("subscriptions")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", transaction.workspaceId as any))
+        .first();
+    }
+
+    let subId;
     if (existingSub) {
       const baseStart = existingSub.currentPeriodEnd > now ? existingSub.currentPeriodEnd : now;
       await ctx.db.patch(existingSub._id, {
+        organizationId: orgId || existingSub.organizationId,
         planKey: transaction.planKey,
         status: "active",
         currentPeriodStart: now,
         currentPeriodEnd: baseStart + duration,
         cancelAtPeriodEnd: false,
+        lastPaymentDate: now,
+        paystackSubscriptionId: transaction.gatewayReference,
         updatedAt: now,
       });
+      subId = existingSub._id;
     } else {
-      await ctx.db.insert("subscriptions", {
-        workspaceId: transaction.workspaceId as any,
+      subId = await ctx.db.insert("subscriptions", {
+        organizationId: orgId,
+        workspaceId: ws?._id || (transaction.workspaceId as any),
         planKey: transaction.planKey,
         status: "active",
         currentPeriodStart: now,
         currentPeriodEnd: now + duration,
+        paymentMethod: args.gateway,
+        paystackSubscriptionId: transaction.gatewayReference,
+        lastPaymentDate: now,
+        amount: transaction.amount,
+        currency: "NGN",
         cancelAtPeriodEnd: false,
         createdAt: now,
         updatedAt: now,
       });
     }
 
-    // 3. Update workspace planId
-    await ctx.db.patch(transaction.workspaceId as any, {
-      planId: transaction.planKey,
-      updatedAt: now,
+    // 3. Update workspace planId if workspace exists
+    if (ws) {
+      await ctx.db.patch(ws._id, {
+        planId: transaction.planKey,
+        updatedAt: now,
+      });
+    }
+
+    // 4. Record successful payment in payments table
+    let targetUserId = null;
+    if (transaction.customerEmail) {
+      const u = await ctx.db
+        .query("users")
+        .withIndex("by_email_normalized", (q) =>
+          q.eq("emailNormalized", transaction.customerEmail.toLowerCase().trim())
+        )
+        .first();
+      if (u) targetUserId = u._id;
+    }
+    if (!targetUserId && ws?.ownerId) {
+      targetUserId = ws.ownerId;
+    }
+
+    const amountInNaira = Math.round(transaction.amount / 100);
+    await ctx.db.insert("payments", {
+      organizationId: orgId,
+      workspaceId: ws?._id || (transaction.workspaceId as any),
+      userId: targetUserId || undefined,
+      subscriptionId: subId,
+      amount: amountInNaira > 0 ? amountInNaira : transaction.amount,
+      currency: "NGN",
+      provider: args.gateway,
+      providerReference: transaction.gatewayReference,
+      paymentMethod: args.gateway,
+      reference: transaction.gatewayReference,
+      status: "success",
+      createdAt: now,
+      completedAt: now,
     });
 
     return {

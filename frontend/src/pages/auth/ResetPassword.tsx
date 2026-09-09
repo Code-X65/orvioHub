@@ -28,6 +28,7 @@ export const ResetPassword: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token');
+  const email = searchParams.get('email');
 
   const [isLoading, setIsLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -52,6 +53,7 @@ export const ResetPassword: React.FC = () => {
     try {
       await api.post('/auth/reset-password', {
         token,
+        email: email || undefined,
         password: data.password,
       });
       setIsSuccess(true);

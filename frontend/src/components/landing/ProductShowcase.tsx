@@ -157,7 +157,7 @@ export const ProductShowcase: React.FC = () => {
           </div>
           <div className="text-xs font-medium text-slate-400 flex items-center gap-1.5 px-3 py-1 rounded-sm bg-white border border-slate-200/60 shadow-2xs">
             <span className="w-2 h-2 rounded-sm bg-emerald-500" />
-            <span>app.orviohub.com/dashboard</span>
+            <span>orviohub.com/inventory/dashboard</span>
           </div>
           <div className="w-12" />
         </div>

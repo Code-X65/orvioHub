@@ -1,5 +1,6 @@
 import { query, mutation } from "./_generated/server.js";
 import { v } from "convex/values";
+import { DEFAULT_PLANS } from "./plans.js";
 
 function generateSlug(name: string): string {
   return name
@@ -29,16 +30,59 @@ export const getOrganizationBySlug = query({
 
 export const getMembership = query({
   args: {
-    organizationId: v.id("organizations"),
+    organizationId: v.union(v.id("organizations"), v.id("workspaces"), v.string()),
     userId: v.id("users"),
   },
   handler: async (ctx, args) => {
-    return await ctx.db
+    // 1. Check directly on organizationMemberships
+    let membership = await ctx.db
       .query("organizationMemberships")
       .withIndex("by_org_and_user", (q: any) =>
-        q.eq("organizationId", args.organizationId).eq("userId", args.userId)
+        q.eq("organizationId", args.organizationId as any).eq("userId", args.userId)
       )
       .first();
+
+    if (membership) return membership;
+
+    // 2. If organizationId is actually a workspaceId, resolve workspace and check organization
+    let ws = null;
+    try {
+      ws = await ctx.db.get(args.organizationId as any);
+    } catch {
+      // not a convex ID
+    }
+    if (ws && (ws as any).organizationId) {
+      membership = await ctx.db
+        .query("organizationMemberships")
+        .withIndex("by_org_and_user", (q: any) =>
+          q.eq("organizationId", (ws as any).organizationId).eq("userId", args.userId)
+        )
+        .first();
+      if (membership) return membership;
+    }
+
+    // 3. Fallback: check workspaceMemberships
+    const wsMembership = await ctx.db
+      .query("workspaceMemberships")
+      .withIndex("by_workspace_user", (q: any) =>
+        q.eq("workspaceId", args.organizationId as any).eq("userId", args.userId)
+      )
+      .first();
+
+    if (wsMembership) {
+      return {
+        _id: wsMembership._id,
+        _creationTime: wsMembership._creationTime,
+        organizationId: args.organizationId,
+        userId: wsMembership.userId,
+        role: wsMembership.role || "MEMBER",
+        status: wsMembership.status || "ACTIVE",
+        createdAt: wsMembership.createdAt,
+        updatedAt: wsMembership.updatedAt || wsMembership.createdAt,
+      };
+    }
+
+    return null;
   },
 });
 
@@ -58,6 +102,53 @@ export const getUserMemberships = query({
       }
     }
     return results;
+  },
+});
+
+export async function ensureUserHasNoOtherFreeTrial(
+  _ctx: { db: any },
+  _userId: any,
+  _excludeOrgId?: any
+) {
+  // Users are permitted to have multiple organizations on the Free Trial tier.
+  return;
+}
+
+export const getUserFreeTrialStatus = query({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const memberships = await ctx.db
+      .query("organizationMemberships")
+      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
+      .collect();
+
+    for (const m of memberships) {
+      const sub = await ctx.db
+        .query("subscriptions")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", m.organizationId))
+        .first();
+
+      if (!sub) continue;
+
+      const planKey = (sub.planKey || "").toLowerCase();
+      const isFreeTrial = planKey === "free_trial" || planKey === "free";
+      const isActiveOrTrial = ["trial", "trialing", "active"].includes(sub.status);
+
+      if (isFreeTrial && isActiveOrTrial) {
+        const isExpired = sub.trialEndsAt && sub.trialEndsAt < Date.now() && sub.status !== "active";
+        if (!isExpired) {
+          const org = await ctx.db.get(m.organizationId);
+          return {
+            hasFreeTrial: true,
+            organizationId: m.organizationId,
+            organizationName: org?.name || "Existing Business",
+            trialEndsAt: sub.trialEndsAt,
+          };
+        }
+      }
+    }
+
+    return { hasFreeTrial: false };
   },
 });
 
@@ -86,6 +177,9 @@ export const createOrganization = mutation({
     logo: v.optional(v.string()),
     phone: v.optional(v.string()),
     planId: v.optional(v.string()),
+    billingCycle: v.optional(v.string()),
+    paymentGateway: v.optional(v.string()),
+    paymentReference: v.optional(v.string()),
     products: v.optional(v.array(v.string())),
     primaryBranch: v.optional(
       v.object({
@@ -123,8 +217,13 @@ export const createOrganization = mutation({
     }
 
     const now = Date.now();
-    const activeProducts = args.products && args.products.length > 0 ? args.products : ["inventory"];
-    const activePlan = args.planId || "free";
+    const activeProducts = Array.isArray(args.products) ? args.products : ["inventory"];
+    const activePlan = args.planId === "standard" ? "standard" : "free_trial";
+
+    // Enforce Rule 2: One free trial organization per user
+    if (activePlan === "free_trial") {
+      await ensureUserHasNoOtherFreeTrial(ctx, args.userId);
+    }
 
     // 2. Check idempotency: If user already has an active onboarding with an org
     const onboarding = await ctx.db
@@ -175,6 +274,34 @@ export const createOrganization = mutation({
         }
 
         if (ws) {
+          // Ensure subscription
+          const existingSub = await ctx.db
+            .query("subscriptions")
+            .withIndex("by_workspace", (q) => q.eq("workspaceId", ws!._id))
+            .first();
+
+          if (!existingSub) {
+            const trialEnd = now + 30 * 86_400_000;
+            await ctx.db.insert("subscriptions", {
+              organizationId: existingOrg._id,
+              workspaceId: ws._id,
+              planKey: "free_trial",
+              status: "trial",
+              billingInterval: "monthly",
+              currentPeriodStart: now,
+              currentPeriodEnd: trialEnd,
+              trialStart: now,
+              trialEnd,
+              trialEndsAt: trialEnd,
+              paymentMethod: "bank_transfer",
+              amount: 0,
+              currency: "NGN",
+              cancelAtPeriodEnd: false,
+              createdAt: now,
+              updatedAt: now,
+            });
+          }
+
           // Ensure workspace membership
           const wsMem = await ctx.db
             .query("workspaceMemberships")
@@ -228,7 +355,8 @@ export const createOrganization = mutation({
       }
     }
 
-    // 3. Generate unique slug
+    // 2b. Users are free - each organization has its own subscription (Free Trial or Standard).
+    // Generate unique slug
     let baseSlug = generateSlug(args.name);
     if (!baseSlug) {
       baseSlug = "organization";
@@ -247,7 +375,7 @@ export const createOrganization = mutation({
       slug = `${baseSlug}-${counter}`;
     }
 
-    // 4. ATOMIC CREATION: Org + Membership + Settings + Workspace + WorkspaceMembership + Products + Branch + Onboarding
+    // 3. ATOMIC CREATION: Org + Membership + Settings + Workspace + WorkspaceMembership + Products + Branch + Onboarding
     const organizationId = await ctx.db.insert("organizations", {
       name: args.name,
       slug,
@@ -257,6 +385,9 @@ export const createOrganization = mutation({
       website: args.website,
       size: args.size,
       logo: args.logo,
+      phone: args.phone,
+      currency: args.currency || (args.country === "NG" ? "NGN" : "USD"),
+      ownerId: args.userId,
       createdAt: now,
       updatedAt: now,
     });
@@ -297,10 +428,84 @@ export const createOrganization = mutation({
         phone: args.phone,
         currency: args.currency || (args.country === "NG" ? "NGN" : "USD"),
         timezone: args.timezone,
+        billingCycle: args.billingCycle,
+        paymentGateway: args.paymentGateway,
+        paymentReference: args.paymentReference,
       },
       createdAt: now,
       updatedAt: now,
     });
+
+    // Create Subscription: 30-day Free Trial (default) or Standard (paid)
+    const isStandardPaid = activePlan === "standard" && Boolean(args.paymentReference);
+    const trialDays = 30;
+    const trialEnd = now + trialDays * 86_400_000;
+    const interval = args.billingCycle === "annual" ? "annual" : "monthly";
+
+    await ctx.db.insert("subscriptions", {
+      organizationId,
+      workspaceId,
+      planKey: activePlan === "standard" ? "standard" : "free_trial",
+      status: isStandardPaid ? "active" : (activePlan === "standard" ? "pending" : "trial"),
+      billingInterval: interval,
+      currentPeriodStart: now,
+      currentPeriodEnd: isStandardPaid
+        ? now + (interval === "annual" ? 365 : 30) * 86_400_000
+        : trialEnd,
+      trialStart: activePlan === "standard" ? undefined : now,
+      trialEnd: activePlan === "standard" ? undefined : trialEnd,
+      trialEndsAt: activePlan === "standard" ? undefined : trialEnd,
+      paymentMethod: args.paymentGateway === "paystack" ? "paystack" : (args.paymentGateway === "flutterwave" ? "flutterwave" : "bank_transfer"),
+      amount: activePlan === "standard" ? (interval === "annual" ? 75000 : 7500) : 0,
+      currency: "NGN",
+      cancelAtPeriodEnd: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // Record payment if Standard plan was paid
+    if (isStandardPaid) {
+      await ctx.db.insert("payments", {
+        organizationId,
+        workspaceId,
+        userId: args.userId,
+        amount: interval === "annual" ? 75000 : 7500,
+        currency: "NGN",
+        provider: args.paymentGateway || "paystack",
+        providerReference: args.paymentReference,
+        paymentMethod: (args.paymentGateway as any) || "paystack",
+        reference: args.paymentReference,
+        status: "success",
+        createdAt: now,
+        completedAt: now,
+      });
+    }
+
+    // Enqueue trial started email if on Free Trial
+    if (!isStandardPaid) {
+      const user = await ctx.db.get(args.userId);
+      if (user && user.email) {
+        await ctx.db.insert("emailOutbox", {
+          to: user.email,
+          template: "trial_started" as any,
+          payload: {
+            firstName: user.name?.split(" ")[0] || "there",
+            name: user.name || "Customer",
+            orgName: args.name,
+            trialEndsAt: new Date(trialEnd).toLocaleDateString("en-NG", {
+              year: "numeric",
+              month: "short",
+              day: "numeric",
+            }),
+          },
+          status: "PENDING",
+          attempts: 0,
+          nextAttemptAt: now,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    }
 
     // Owner workspace membership
     await ctx.db.insert("workspaceMemberships", {
@@ -690,6 +895,9 @@ export const updateMemberRole = mutation({
       v.literal("OWNER"),
       v.literal("ADMIN"),
       v.literal("MANAGER"),
+      v.literal("SALES_ATTENDANT"),
+      v.literal("STOCK_MANAGER"),
+      v.literal("ACCOUNTANT"),
       v.literal("MEMBER")
     ),
   },

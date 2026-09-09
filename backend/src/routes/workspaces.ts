@@ -6,6 +6,7 @@ import { entitlementService } from '../services/entitlementService.js';
 import { smsService } from '../services/smsService.js';
 import { validateNigerianPhone } from '../utils/phoneValidation.js';
 import { ERROR_CODES, AUDIT_EVENTS } from '../config/constants.js';
+import { getPlanLimits } from '../config/planLimits.js';
 
 const createWorkspaceSchema = z.object({
   name: z.string().min(2, 'Workspace name must be at least 2 characters'),
@@ -126,7 +127,9 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
             message: entitlement.error,
             current: entitlement.current,
             limit: entitlement.limit,
+            max: entitlement.limit,
             planKey: entitlement.planKey,
+            upgradeRequired: true,
           },
         });
       }
@@ -559,7 +562,9 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
             message: entitlement.error,
             current: entitlement.current,
             limit: entitlement.limit,
+            max: entitlement.limit,
             planKey: entitlement.planKey,
+            upgradeRequired: true,
           },
         });
       }
@@ -781,6 +786,23 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
         }
       }
 
+      // Check branch creation entitlement
+      const entitlement = await entitlementService.checkBranchCreationEntitlement(workspaceId, request.user.id);
+      if (!entitlement.allowed) {
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.BRANCH_LIMIT_REACHED,
+            message: entitlement.error || `You have reached the maximum branches allowed by your plan.`,
+            current: entitlement.current,
+            limit: entitlement.limit,
+            max: entitlement.limit,
+            planKey: entitlement.planKey,
+            upgradeRequired: true,
+          },
+        });
+      }
+
       try {
         const branchId = await dataService.createBranch({
           workspaceId,
@@ -973,6 +995,70 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
           error: {
             code: 'BRANCH_UPDATE_FAILED',
             message: err.message || 'Failed to update branch.',
+          },
+        });
+      }
+    }
+  );
+
+  // DELETE /api/v1/workspaces/:workspaceId/branches/:branchId - Archive/delete branch
+  fastify.delete(
+    '/:workspaceId/branches/:branchId',
+    {
+      schema: {
+        tags: ['Workspaces', 'Branches'],
+        summary: 'Archive or remove a branch from workspace',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['workspaceId', 'branchId'],
+          properties: {
+            workspaceId: { type: 'string' },
+            branchId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId, branchId } = request.params as { workspaceId: string; branchId: string };
+      const existing = await dataService.getBranchById(branchId);
+      if (!existing || (existing as any).workspaceId !== workspaceId) {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: 'BRANCH_NOT_FOUND',
+            message: 'Branch not found in this workspace.',
+          },
+        });
+      }
+
+      if (existing.isPrimary) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: 'CANNOT_DELETE_PRIMARY_BRANCH',
+            message: 'Cannot delete the primary branch of a workspace.',
+          },
+        });
+      }
+
+      try {
+        await dataService.updateBranch(branchId, {
+          status: 'archived',
+          deletedAt: Date.now(),
+          callerUserId: request.user.id,
+        });
+
+        return reply.send({
+          success: true,
+          message: 'Branch successfully archived.',
+        });
+      } catch (err: any) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: 'BRANCH_DELETE_FAILED',
+            message: err.message || 'Failed to archive branch.',
           },
         });
       }
@@ -1362,7 +1448,7 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
     {
       schema: {
         tags: ['Workspaces'],
-        summary: 'Create and send a workspace invitation with product/branch access',
+        summary: 'Create and send a workspace invitation with hybrid organization, app, and branch access',
         security: [{ bearerAuth: [] }],
         params: {
           type: 'object',
@@ -1371,10 +1457,23 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
         },
         body: {
           type: 'object',
-          required: ['email', 'role'],
+          required: ['email'],
           properties: {
             email: { type: 'string', format: 'email' },
             role: { type: 'string' },
+            organizationRole: { type: 'string' },
+            appAccess: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['productKey', 'appRole', 'branchIds'],
+                properties: {
+                  productKey: { type: 'string' },
+                  appRole: { type: 'string' },
+                  branchIds: { type: 'array', items: { type: 'string' } },
+                },
+              },
+            },
             productKey: { type: 'string' },
             branchIds: { type: 'array', items: { type: 'string' } },
             message: { type: 'string' },
@@ -1386,7 +1485,13 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
       const { workspaceId } = request.params as { workspaceId: string };
       const body = request.body as {
         email: string;
-        role: string;
+        role?: string;
+        organizationRole?: string;
+        appAccess?: Array<{
+          productKey: string;
+          appRole: string;
+          branchIds: string[];
+        }>;
         productKey?: string;
         branchIds?: string[];
         message?: string;
@@ -1396,7 +1501,9 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
         workspaceId,
         callerUserId: request.user.id,
         email: body.email,
-        role: body.role,
+        role: body.organizationRole || body.role || 'staff',
+        organizationRole: body.organizationRole || body.role || 'staff',
+        appAccess: body.appAccess,
         productKey: body.productKey,
         branchIds: body.branchIds,
         message: body.message,
@@ -1463,6 +1570,483 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.send({
         success: true,
         message: 'Invitation revoked.',
+      });
+    }
+  );
+
+  // ==========================================
+  // GRANULAR MEMBER ACCESS & PERMISSIONS
+  // ==========================================
+
+  // GET /api/v1/workspaces/:workspaceId/members/:userId/access
+  fastify.get(
+    '/:workspaceId/members/:userId/access',
+    {
+      schema: {
+        tags: ['Workspaces', 'Members'],
+        summary: 'Get granular access matrix for a member (org role, app roles, branch access)',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['workspaceId', 'userId'],
+          properties: {
+            workspaceId: { type: 'string' },
+            userId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId, userId } = request.params as { workspaceId: string; userId: string };
+      const access = await dataService.getMemberAccessDetails(workspaceId, userId, request.user.id);
+      return reply.send({
+        success: true,
+        data: access,
+      });
+    }
+  );
+
+  // PATCH /api/v1/workspaces/:workspaceId/members/:userId/access
+  fastify.patch(
+    '/:workspaceId/members/:userId/access',
+    {
+      schema: {
+        tags: ['Workspaces', 'Members'],
+        summary: 'Update member organization role, app roles, and branch assignments',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['workspaceId', 'userId'],
+          properties: {
+            workspaceId: { type: 'string' },
+            userId: { type: 'string' },
+          },
+        },
+        body: {
+          type: 'object',
+          properties: {
+            organizationRole: { type: 'string' },
+            appAccess: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['productKey', 'enabled', 'appRole', 'branchIds'],
+                properties: {
+                  productKey: { type: 'string' },
+                  enabled: { type: 'boolean' },
+                  appRole: { type: 'string' },
+                  branchIds: { type: 'array', items: { type: 'string' } },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId, userId } = request.params as { workspaceId: string; userId: string };
+      const body = request.body as {
+        organizationRole?: string;
+        appAccess?: Array<{
+          productKey: string;
+          enabled: boolean;
+          appRole: string;
+          branchIds: string[];
+        }>;
+      };
+
+      await dataService.updateMemberAccess({
+        workspaceId,
+        memberUserId: userId,
+        callerUserId: request.user.id,
+        organizationRole: body.organizationRole,
+        appAccess: body.appAccess || [],
+      });
+
+      return reply.send({
+        success: true,
+        message: 'Member access permissions updated.',
+      });
+    }
+  );
+
+  // POST /api/v1/workspaces/:workspaceId/members/:userId/apps
+  fastify.post(
+    '/:workspaceId/members/:userId/apps',
+    {
+      schema: {
+        tags: ['Workspaces', 'Members'],
+        summary: 'Grant or update application access for member',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['workspaceId', 'userId'],
+          properties: {
+            workspaceId: { type: 'string' },
+            userId: { type: 'string' },
+          },
+        },
+        body: {
+          type: 'object',
+          required: ['productKey', 'role'],
+          properties: {
+            productKey: { type: 'string' },
+            role: { type: 'string' },
+            branchIds: { type: 'array', items: { type: 'string' } },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId, userId } = request.params as { workspaceId: string; userId: string };
+      const body = request.body as { productKey: string; role: string; branchIds?: string[] };
+
+      await dataService.updateMemberAccess({
+        workspaceId,
+        memberUserId: userId,
+        callerUserId: request.user.id,
+        appAccess: [
+          {
+            productKey: body.productKey,
+            enabled: true,
+            appRole: body.role,
+            branchIds: body.branchIds || [],
+          },
+        ],
+      });
+
+      return reply.send({
+        success: true,
+        message: `App access for ${body.productKey} granted.`,
+      });
+    }
+  );
+
+  // DELETE /api/v1/workspaces/:workspaceId/members/:userId/apps/:productKey
+  fastify.delete(
+    '/:workspaceId/members/:userId/apps/:productKey',
+    {
+      schema: {
+        tags: ['Workspaces', 'Members'],
+        summary: 'Revoke application access from member',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['workspaceId', 'userId', 'productKey'],
+          properties: {
+            workspaceId: { type: 'string' },
+            userId: { type: 'string' },
+            productKey: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId, userId, productKey } = request.params as {
+        workspaceId: string;
+        userId: string;
+        productKey: string;
+      };
+
+      await dataService.updateMemberAccess({
+        workspaceId,
+        memberUserId: userId,
+        callerUserId: request.user.id,
+        appAccess: [
+          {
+            productKey,
+            enabled: false,
+            appRole: 'staff',
+            branchIds: [],
+          },
+        ],
+      });
+
+      return reply.send({
+        success: true,
+        message: `App access for ${productKey} revoked.`,
+      });
+    }
+  );
+
+  // POST /api/v1/workspaces/:workspaceId/members/:userId/branches
+  fastify.post(
+    '/:workspaceId/members/:userId/branches',
+    {
+      schema: {
+        tags: ['Workspaces', 'Members'],
+        summary: 'Grant branch access to member for an application',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['workspaceId', 'userId'],
+          properties: {
+            workspaceId: { type: 'string' },
+            userId: { type: 'string' },
+          },
+        },
+        body: {
+          type: 'object',
+          required: ['productKey', 'branchId'],
+          properties: {
+            productKey: { type: 'string' },
+            branchId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId, userId } = request.params as { workspaceId: string; userId: string };
+      const body = request.body as { productKey: string; branchId: string };
+
+      const currentAccess: any = await dataService.getMemberAccessDetails(workspaceId, userId, request.user.id);
+      const app = currentAccess.apps.find((a: any) => a.productKey === body.productKey);
+      const currentBranches = app ? [...app.branchIds] : [];
+      if (!currentBranches.includes(body.branchId)) {
+        currentBranches.push(body.branchId);
+      }
+
+      await dataService.updateMemberAccess({
+        workspaceId,
+        memberUserId: userId,
+        callerUserId: request.user.id,
+        appAccess: [
+          {
+            productKey: body.productKey,
+            enabled: true,
+            appRole: app?.role || 'staff',
+            branchIds: currentBranches,
+          },
+        ],
+      });
+
+      return reply.send({
+        success: true,
+        message: 'Branch access granted.',
+      });
+    }
+  );
+
+  // DELETE /api/v1/workspaces/:workspaceId/members/:userId/branches/:branchId
+  fastify.delete(
+    '/:workspaceId/members/:userId/branches/:branchId',
+    {
+      schema: {
+        tags: ['Workspaces', 'Members'],
+        summary: 'Revoke branch access from member',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['workspaceId', 'userId', 'branchId'],
+          properties: {
+            workspaceId: { type: 'string' },
+            userId: { type: 'string' },
+            branchId: { type: 'string' },
+          },
+        },
+        querystring: {
+          type: 'object',
+          properties: {
+            productKey: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId, userId, branchId } = request.params as {
+        workspaceId: string;
+        userId: string;
+        branchId: string;
+      };
+      const query = (request.query as { productKey?: string }) || {};
+
+      const currentAccess: any = await dataService.getMemberAccessDetails(workspaceId, userId, request.user.id);
+      const appsToUpdate = query.productKey
+        ? currentAccess.apps.filter((a: any) => a.productKey === query.productKey)
+        : currentAccess.apps;
+
+      for (const app of appsToUpdate) {
+        const remainingBranches = app.branchIds.filter((bId: string) => bId !== branchId);
+        await dataService.updateMemberAccess({
+          workspaceId,
+          memberUserId: userId,
+          callerUserId: request.user.id,
+          appAccess: [
+            {
+              productKey: app.productKey,
+              enabled: true,
+              appRole: app.role,
+              branchIds: remainingBranches,
+            },
+          ],
+        });
+      }
+
+      return reply.send({
+        success: true,
+        message: 'Branch access revoked.',
+      });
+    }
+  );
+
+  // ==========================================
+  // APP-SPECIFIC BRANCHES ROUTES
+  // ==========================================
+
+  // GET /api/v1/workspaces/:workspaceId/apps/:productKey/branches
+  fastify.get(
+    '/:workspaceId/apps/:productKey/branches',
+    {
+      schema: {
+        tags: ['Workspaces', 'App Branches'],
+        summary: 'List branches for a specific application in workspace',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['workspaceId', 'productKey'],
+          properties: {
+            workspaceId: { type: 'string' },
+            productKey: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId, productKey } = request.params as {
+        workspaceId: string;
+        productKey: string;
+      };
+
+      const branches = await dataService.getBranches(workspaceId, request.user.id, productKey);
+      const scopedBranches = (branches || []).filter(
+        (b: any) => !b.productKey || b.productKey === productKey
+      );
+
+      return reply.send({
+        success: true,
+        data: { branches: scopedBranches },
+      });
+    }
+  );
+
+  // POST /api/v1/workspaces/:workspaceId/apps/:productKey/branches
+  fastify.post(
+    '/:workspaceId/apps/:productKey/branches',
+    {
+      schema: {
+        tags: ['Workspaces', 'App Branches'],
+        summary: 'Create a new branch for a specific application in workspace',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['workspaceId', 'productKey'],
+          properties: {
+            workspaceId: { type: 'string' },
+            productKey: { type: 'string' },
+          },
+        },
+        body: {
+          type: 'object',
+          required: ['name'],
+          properties: {
+            name: { type: 'string' },
+            code: { type: 'string' },
+            country: { type: 'string' },
+            state: { type: 'string' },
+            stateCode: { type: 'string' },
+            lga: { type: 'string' },
+            city: { type: 'string' },
+            street: { type: 'string' },
+            blockNumber: { type: 'string' },
+            area: { type: 'string' },
+            landmark: { type: 'string' },
+            postalCode: { type: 'string' },
+            address: { type: 'string' },
+            phone: { type: 'string' },
+            email: { type: 'string' },
+            isPrimary: { type: 'boolean' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId, productKey } = request.params as {
+        workspaceId: string;
+        productKey: string;
+      };
+      const body = request.body as any;
+
+      // Entitlement check
+      const entitlement = await entitlementService.checkBranchCreationEntitlement(workspaceId, request.user.id, productKey);
+      if (!entitlement.allowed) {
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: 'BRANCH_LIMIT_REACHED',
+            message: entitlement.error || 'You have reached the maximum branches allowed by your plan.',
+            current: entitlement.current,
+            limit: entitlement.limit,
+            max: entitlement.limit,
+            planKey: entitlement.planKey,
+            upgradeRequired: true,
+          },
+        });
+      }
+
+      const branch = await dataService.createBranch({
+        workspaceId,
+        productKey,
+        ...body,
+      });
+
+      return reply.status(201).send({
+        success: true,
+        message: 'Branch created successfully.',
+        data: { branch },
+      });
+    }
+  );
+
+  // GET /api/v1/workspaces/:workspaceId/entitlements
+  fastify.get(
+    '/:workspaceId/entitlements',
+    {
+      schema: {
+        tags: ['Workspaces', 'Entitlements'],
+        summary: 'Get workspace subscription entitlements and usage limits',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['workspaceId'],
+          properties: { workspaceId: { type: 'string' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId } = request.params as { workspaceId: string };
+      const ws = await dataService.getWorkspaceById(workspaceId);
+      if (!ws) {
+        return reply.status(404).send({ success: false, error: { code: 'WORKSPACE_NOT_FOUND', message: 'Workspace not found.' } });
+      }
+
+      let sub: any = await dataService.getWorkspaceSubscription(workspaceId);
+      if ((!sub || sub.planKey === 'free_trial') && ws.organizationId) {
+        const orgSub = await dataService.getOrganizationSubscription(ws.organizationId);
+        if (orgSub) sub = orgSub;
+      }
+      const planKey = (sub?.planKey || 'free_trial').toLowerCase();
+      const limits = getPlanLimits(planKey === 'free_trial' ? 'free' : (planKey as any));
+      const usage = await entitlementService.getWorkspaceUsageSummary(workspaceId, request.user.id);
+
+      return reply.send({
+        success: true,
+        data: {
+          plan: planKey,
+          planKey,
+          limits,
+          usage,
+          subscription: sub,
+        },
       });
     }
   );

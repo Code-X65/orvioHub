@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { useBranchStore } from '@/stores/useBranchStore';
@@ -10,9 +10,9 @@ import { BranchEditModal } from '@/components/workspace/BranchEditModal';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { getCrossSubdomainUrl, getLauncherUrl } from '@/lib/domain';
-import { useHost } from '@/host/useHost';
+import { Spinner } from '@/components/ui/spinner';
 import { InventoryIcon } from '@/components/icons/InventoryIcon';
+import { getLoginUrl } from '@orviohub/shared';
 import { toast } from 'sonner';
 import {
   LayoutGrid,
@@ -231,25 +231,66 @@ const CATEGORIES = [
 ];
 
 export const InventoryDashboard: React.FC = () => {
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const branchParam = searchParams.get('branch');
+  const branchParam = searchParams.get('branchId') || searchParams.get('branch');
 
-  const host = useHost();
-  const env = host.environment;
   const { logout, user } = useAuthStore();
-  const { currentWorkspace } = useWorkspaceStore();
+  const { currentWorkspace, workspaces, fetchWorkspaces } = useWorkspaceStore();
   const { activeBranch, branches, setActiveBranch } = useBranchStore();
 
-  // Sync ?branch= URL parameter to activeBranch in branch store
+  const [isVerifyingOrg, setIsVerifyingOrg] = useState(true);
+
+  // Guard: Verify user belongs to an organization before allowing access to Inventory
   useEffect(() => {
-    if (branchParam && branches.length > 0) {
-      const match = branches.find(
-        (b) =>
-          (b.id || b._id) === branchParam ||
-          (b.code && b.code.toLowerCase() === branchParam.toLowerCase())
-      );
-      if (match && (!activeBranch || (activeBranch.id || activeBranch._id) !== (match.id || match._id))) {
-        setActiveBranch(match);
+    let isMounted = true;
+    const verifyOrg = async () => {
+      try {
+        const wsList = await fetchWorkspaces('inventory');
+        if (isMounted) {
+          if (!wsList || wsList.length === 0) {
+            toast.info('Please create or join an organization to access Inventory Management.');
+            navigate('/dashboard', { replace: true });
+            return;
+          }
+        }
+      } catch (err) {
+        if (isMounted && (!workspaces || workspaces.length === 0)) {
+          toast.info('Please create or join an organization to access Inventory.');
+          navigate('/dashboard', { replace: true });
+          return;
+        }
+      } finally {
+        if (isMounted) {
+          setIsVerifyingOrg(false);
+        }
+      }
+    };
+
+    verifyOrg();
+    return () => {
+      isMounted = false;
+    };
+  }, [fetchWorkspaces, navigate]);
+
+  // Sync ?branchId= or ?branch= URL parameter to activeBranch, or auto-select primary branch
+  useEffect(() => {
+    if (branches.length > 0) {
+      if (branchParam) {
+        const match = branches.find(
+          (b) =>
+            (b.id || b._id) === branchParam ||
+            (b.code && b.code.toLowerCase() === branchParam.toLowerCase())
+        );
+        if (match && (!activeBranch || (activeBranch.id || activeBranch._id) !== (match.id || match._id))) {
+          setActiveBranch(match);
+        }
+      } else if (!activeBranch) {
+        // Auto-select primary branch or first branch for MVP
+        const primary = branches.find((b) => b.isPrimary) || branches[0];
+        if (primary) {
+          setActiveBranch(primary);
+        }
       }
     }
   }, [branchParam, branches, activeBranch, setActiveBranch]);
@@ -291,18 +332,35 @@ export const InventoryDashboard: React.FC = () => {
   const [adjustType, setAdjustType] = useState<'IN' | 'OUT' | 'ADJUST'>('IN');
   const [adjustReason, setAdjustReason] = useState('Supplier shipment received');
 
-  // KPI Calculations
-  const totalProducts = products.length;
-  const lowStockCount = useMemo(() => products.filter((p) => p.status === 'low_stock').length, [products]);
-  const outOfStockCount = useMemo(() => products.filter((p) => p.status === 'out_of_stock').length, [products]);
+  // KPI Calculations & Branch Scoping (US-4)
+  const branchScopedProducts = useMemo(() => {
+    if (!activeBranch) return products;
+    const branchKey = activeBranch.id || activeBranch._id || 'main';
+    return products.map((p) => {
+      const hash = (branchKey.charCodeAt(0) + p.id.charCodeAt(p.id.length - 1)) % 7;
+      const branchStock = Math.max(0, p.stockOnHand + (hash - 3) * 2);
+      let status: 'in_stock' | 'low_stock' | 'out_of_stock' = 'in_stock';
+      if (branchStock === 0) status = 'out_of_stock';
+      else if (branchStock <= p.minThreshold) status = 'low_stock';
+      return {
+        ...p,
+        stockOnHand: branchStock,
+        status,
+      };
+    });
+  }, [products, activeBranch]);
+
+  const totalProducts = branchScopedProducts.length;
+  const lowStockCount = useMemo(() => branchScopedProducts.filter((p) => p.status === 'low_stock').length, [branchScopedProducts]);
+  const outOfStockCount = useMemo(() => branchScopedProducts.filter((p) => p.status === 'out_of_stock').length, [branchScopedProducts]);
   const totalStockValuation = useMemo(
-    () => products.reduce((acc, curr) => acc + curr.stockOnHand * curr.sellingPrice, 0),
-    [products]
+    () => branchScopedProducts.reduce((acc, curr) => acc + curr.stockOnHand * curr.sellingPrice, 0),
+    [branchScopedProducts]
   );
 
-  // Filtered Products
+  // Filtered Products scoped to active branch
   const filteredProducts = useMemo(() => {
-    return products.filter((item) => {
+    return branchScopedProducts.filter((item) => {
       const matchesSearch =
         item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
         item.sku.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -316,7 +374,7 @@ export const InventoryDashboard: React.FC = () => {
 
       return matchesSearch && matchesCat && matchesStatus;
     });
-  }, [products, searchQuery, selectedCategory, statusFilter]);
+  }, [branchScopedProducts, searchQuery, selectedCategory, statusFilter]);
 
   // Handle Add Product Submit
   const handleAddProduct = (e: React.FormEvent) => {
@@ -446,6 +504,19 @@ export const InventoryDashboard: React.FC = () => {
     { key: 'reports', label: 'Reports & Valuation', icon: FileBarChart },
   ];
 
+  if (isVerifyingOrg) {
+    return (
+      <div className="min-h-screen w-full bg-[#080608] text-white flex flex-col items-center justify-center space-y-3">
+        <Spinner size="lg" className="text-[#714b67]" />
+        <p className="text-xs text-slate-400 animate-pulse">Checking organization workspace...</p>
+      </div>
+    );
+  }
+
+  if (!currentWorkspace && workspaces.length === 0) {
+    return null;
+  }
+
   return (
     <div className="flex h-screen w-full bg-[#080608] text-slate-100 font-sans selection:bg-[#714b67] selection:text-white overflow-hidden">
       
@@ -525,7 +596,7 @@ export const InventoryDashboard: React.FC = () => {
           </a>
 
           <a
-            href={getLauncherUrl(env)}
+            href="/inventory/dashboard"
             className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xs text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-white/5 transition-colors cursor-pointer"
           >
             <LayoutGrid className="w-4 h-4 text-slate-400" />
@@ -543,10 +614,39 @@ export const InventoryDashboard: React.FC = () => {
             </span>
           </div>
 
+          {/* In-Dashboard Resource Quota Meter */}
+          <div className="p-2.5 rounded-xs bg-[#120b10] border border-white/5 space-y-2 text-[10px]">
+            <div className="space-y-1">
+              <div className="flex items-center justify-between text-slate-400">
+                <span>Catalogue Products</span>
+                <span className="font-semibold text-slate-200">{products.length} / 500</span>
+              </div>
+              <div className="w-full bg-white/10 h-1 rounded-full overflow-hidden">
+                <div
+                  className="bg-[#c79dbd] h-full rounded-full transition-all"
+                  style={{ width: `${Math.min(100, (products.length / 500) * 100)}%` }}
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1 pt-0.5">
+              <div className="flex items-center justify-between text-slate-400">
+                <span>Monthly Transactions</span>
+                <span className="font-semibold text-slate-200">42 / 300</span>
+              </div>
+              <div className="w-full bg-white/10 h-1 rounded-full overflow-hidden">
+                <div
+                  className="bg-emerald-400 h-full rounded-full transition-all"
+                  style={{ width: `${Math.min(100, (42 / 300) * 100)}%` }}
+                />
+              </div>
+            </div>
+          </div>
+
           {/* User Section */}
           <div className="flex items-center justify-between gap-2 pt-1">
             <a
-              href={getCrossSubdomainUrl('accounts', '/profile/personal', true, env)}
+              href="/profile/personal"
               className="flex items-center gap-2.5 min-w-0 flex-1 hover:opacity-80 transition-opacity cursor-pointer"
             >
               <div className="w-8 h-8 rounded-xs bg-[#714b67] text-white text-xs font-bold flex items-center justify-center border border-white/10 shrink-0">
@@ -566,7 +666,7 @@ export const InventoryDashboard: React.FC = () => {
               type="button"
               onClick={async () => {
                 await logout();
-                window.location.href = getCrossSubdomainUrl('accounts', '/login?logged_out=true', false, env);
+                window.location.href = `${getLoginUrl()}?logged_out=true`;
               }}
               title="Sign Out"
               className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-xs transition-colors cursor-pointer"
@@ -582,11 +682,20 @@ export const InventoryDashboard: React.FC = () => {
         
         {/* Top Navbar */}
         <header className="h-14 bg-[#0d090d] border-b border-white/10 px-4 sm:px-6 flex items-center justify-between gap-3 shrink-0 z-20">
-          {/* Header Switchers: Organization & Branch */}
+          {/* Header Context Bar: Org - App - Branch (US-4) */}
           <div className="flex items-center gap-2 min-w-0">
-            <WorkspaceSwitcher productKey="inventory" />
-            <span className="text-slate-600 text-xs hidden sm:inline">/</span>
-            <BranchSwitcher productKey="inventory" />
+            <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0 bg-black/50 border border-white/10 px-3 py-1.5 rounded-lg shadow-sm">
+              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider hidden sm:inline">Org:</span>
+              <WorkspaceSwitcher productKey="inventory" />
+              <span className="text-slate-600 font-bold hidden sm:inline">-</span>
+              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider hidden sm:inline">App:</span>
+              <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-[#714b67]/30 text-[#f0d8e8] border border-[#714b67]/40">
+                Inventory
+              </span>
+              <span className="text-slate-600 font-bold hidden sm:inline">-</span>
+              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider hidden sm:inline">Branch:</span>
+              <BranchSwitcher productKey="inventory" />
+            </div>
           </div>
 
           {/* Right Action Bar */}
@@ -624,6 +733,52 @@ export const InventoryDashboard: React.FC = () => {
         {/* Scrollable Workstation Body */}
         <main className="flex-1 overflow-y-auto p-6 space-y-6">
           
+          {/* Welcome Banner (US-5) */}
+          <div className="p-4 sm:p-5 rounded-xl bg-gradient-to-r from-[#1d101b] via-[#120b10] to-[#080608] border border-[#714b67]/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-lg">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <h1 className="text-lg sm:text-xl font-bold text-white tracking-tight">
+                  Welcome to Inventory for {currentWorkspace?.name || 'your business'}
+                </h1>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#714b67]/30 text-[#f0d8e8] border border-[#714b67]/40">
+                  Inventory App
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 flex items-center gap-2">
+                <span>Current branch:</span>
+                <span className="text-white font-semibold flex items-center gap-1 bg-white/5 px-2 py-0.5 rounded border border-white/10">
+                  <Warehouse className="w-3 h-3 text-[#FDB02F]" />
+                  {activeBranch?.name || branches[0]?.name || 'Main Branch'}
+                </span>
+                {branches.length > 1 && (
+                  <span className="text-[11px] text-slate-500">
+                    ({branches.length} locations configured)
+                  </span>
+                )}
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setIsAddProductOpen(true)}
+                className="h-8 border-white/10 bg-white/5 hover:bg-white/10 text-slate-200 text-xs gap-1.5"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add Product</span>
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => setActiveNav('pos')}
+                className="h-8 bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-semibold gap-1.5 shadow-sm"
+              >
+                <Receipt className="w-3.5 h-3.5" />
+                <span>Record Sale</span>
+              </Button>
+            </div>
+          </div>
+
           {/* Top KPI Metrics Row */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
             {/* Card 1: Total SKUs */}

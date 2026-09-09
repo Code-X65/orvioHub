@@ -11,6 +11,9 @@ import {
   CreditCard,
   PlusCircle,
   Store,
+  ClipboardList,
+  CheckCircle,
+  Clock,
 } from "lucide-react";
 import { InventoryIcon } from "../components/icons/InventoryIcon";
 import { useAuth } from "../hooks/useAuth";
@@ -28,6 +31,22 @@ export const OrganizationDetails: React.FC = () => {
   const [actionLoading, setActionLoading] = useState(false);
   const [manualPayments, setManualPayments] = useState<ManualPaymentRecord[]>([]);
   const [isRecordPaymentOpen, setIsRecordPaymentOpen] = useState(false);
+  const [isExtendTrialOpen, setIsExtendTrialOpen] = useState(false);
+  const [extensionDays, setExtensionDays] = useState(14);
+
+  const handleExtendTrial = async () => {
+    if (!id || !sessionToken) return;
+    setActionLoading(true);
+    try {
+      await adminOrganizationsApi.extendTrial(sessionToken, org.id, extensionDays);
+      await loadDetails();
+      setIsExtendTrialOpen(false);
+    } catch (err: any) {
+      alert(err.message || "Failed to extend trial.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
 
   const [dialogConfig, setDialogConfig] = useState<{
     isOpen: boolean;
@@ -91,6 +110,9 @@ export const OrganizationDetails: React.FC = () => {
   const members = data.members || [];
   const products = data.products || [];
   const branches = data.branches || [];
+  const onboardingAnswers = data.onboardingAnswers;
+  const orgProfile = onboardingAnswers?.organizationProfile;
+  const invOnboarding = onboardingAnswers?.inventoryOnboarding;
 
   const handleToggleProduct = (productKey: string, isCurrentlyActive: boolean) => {
     setDialogConfig({
@@ -251,7 +273,17 @@ export const OrganizationDetails: React.FC = () => {
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            {data?.entitlements?.isFreeTrial && (
+              <button
+                onClick={() => setIsExtendTrialOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-xs font-semibold border border-amber-500/20 transition cursor-pointer"
+              >
+                <Clock className="w-3.5 h-3.5" />
+                Extend Trial
+              </button>
+            )}
+
             <button
               onClick={() => setIsRecordPaymentOpen(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-xs font-semibold border border-emerald-500/20 transition cursor-pointer"
@@ -262,12 +294,12 @@ export const OrganizationDetails: React.FC = () => {
 
             <span className="text-xs text-slate-400 font-medium">Change Tier:</span>
             <select
-              value={org.planId || "free"}
+              value={org.planId || "free_trial"}
               onChange={async (e) => {
                 const newPlan = e.target.value;
                 setActionLoading(true);
                 try {
-                  await adminBillingApi.changeWorkspacePlan(org.id, newPlan);
+                  await adminOrganizationsApi.updateOrganizationPlan(sessionToken!, org.id, newPlan);
                   await loadDetails();
                 } catch (err: any) {
                   alert(err.message || "Failed to change plan.");
@@ -278,18 +310,79 @@ export const OrganizationDetails: React.FC = () => {
               disabled={actionLoading}
               className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs font-bold focus:outline-none focus:border-brand-500 uppercase cursor-pointer"
             >
-              <option value="free">Free (₦0/mo)</option>
+              <option value="free_trial">Free Trial (30-Day Limit)</option>
               <option value="standard">Standard (₦7,500/mo)</option>
               <option value="premium">Premium (₦20,000/mo)</option>
             </select>
           </div>
         </div>
 
+        {/* Free Trial Status & Entitlement Meters */}
+        {data?.entitlements?.isFreeTrial && (
+          <div className="p-4 rounded-xl bg-gradient-to-r from-purple-950/30 to-indigo-950/20 border border-purple-500/20 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                  30-Day Free Trial Policy
+                </span>
+                {data.entitlements.daysRemaining !== null && (
+                  <span className={`text-xs font-bold ${
+                    data.entitlements.daysRemaining <= 3 ? "text-red-400 font-mono animate-pulse" : "text-amber-300 font-mono"
+                  }`}>
+                    {data.entitlements.daysRemaining} days remaining
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-300">
+                Trial Limit: Maximum 1 Application and 1 Branch. Trial ends on{" "}
+                <span className="text-white font-semibold">
+                  {data.entitlements.trialEndsAt ? new Date(data.entitlements.trialEndsAt).toLocaleDateString() : "—"}
+                </span>.
+              </p>
+            </div>
+            <button
+              onClick={() => setIsExtendTrialOpen(true)}
+              className="px-3.5 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold shadow-lg shadow-purple-600/30 transition shrink-0"
+            >
+              + Extend Duration
+            </button>
+          </div>
+        )}
+
         {/* Plan Limits & Live Resource Usage */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
           <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-1">
-            <span className="text-slate-500 text-[10px] uppercase font-bold">Active Apps</span>
-            <p className="text-xl font-bold text-white">{products.length} <span className="text-xs font-normal text-slate-400">apps</span></p>
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500 text-[10px] uppercase font-bold">Active Apps</span>
+              {data?.entitlements?.isFreeTrial && (
+                <span className="text-[10px] text-purple-400 font-bold bg-purple-500/10 px-1.5 py-0.5 rounded">
+                  Limit: 1
+                </span>
+              )}
+            </div>
+            <p className="text-xl font-bold text-white">
+              {data?.entitlements?.activeApplications ?? products.length}{" "}
+              <span className="text-xs font-normal text-slate-400">
+                / {data?.entitlements?.isFreeTrial ? "1 max" : "unlimited"}
+              </span>
+            </p>
+          </div>
+
+          <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500 text-[10px] uppercase font-bold">Branches</span>
+              {data?.entitlements?.isFreeTrial && (
+                <span className="text-[10px] text-purple-400 font-bold bg-purple-500/10 px-1.5 py-0.5 rounded">
+                  Limit: 1
+                </span>
+              )}
+            </div>
+            <p className="text-xl font-bold text-white">
+              {data?.entitlements?.activeBranches ?? branches.length}{" "}
+              <span className="text-xs font-normal text-slate-400">
+                / {data?.entitlements?.isFreeTrial ? "1 max" : "unlimited"}
+              </span>
+            </p>
           </div>
 
           <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-1">
@@ -298,17 +391,42 @@ export const OrganizationDetails: React.FC = () => {
           </div>
 
           <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-1">
-            <span className="text-slate-500 text-[10px] uppercase font-bold">Branches</span>
-            <p className="text-xl font-bold text-white">{branches.length} <span className="text-xs font-normal text-slate-400">locations</span></p>
-          </div>
-
-          <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-1">
             <span className="text-slate-500 text-[10px] uppercase font-bold">Subscription Status</span>
-            <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 mt-1">
-              Active
+            <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase mt-1 ${
+              data?.entitlements?.isFreeTrial
+                ? "bg-purple-500/10 text-purple-400 border border-purple-500/20"
+                : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+            }`}>
+              {data?.entitlements?.isFreeTrial ? "Trialing" : "Active Standard"}
             </span>
           </div>
         </div>
+
+        {/* Owner's Other Organizations (1 Free Trial Rule Verification) */}
+        {data?.ownerOtherOrgs && data.ownerOtherOrgs.length > 0 && (
+          <div className="p-4 rounded-xl bg-slate-950/40 border border-slate-800/80 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-200">
+                Owner's Other Organizations ({data.ownerOtherOrgs.length})
+              </span>
+              <span className="text-[11px] text-slate-500">Enforcing: Max 1 Free Trial Org Per User</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {data.ownerOtherOrgs.map((o: any) => (
+                <div key={o.id} className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-between text-xs">
+                  <Link to={`/organizations/${o.id}`} className="font-medium text-white hover:text-brand-300">
+                    {o.name}
+                  </Link>
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                    o.isTrial ? "bg-purple-500/10 text-purple-300 border border-purple-500/20" : "bg-blue-500/10 text-blue-300 border border-blue-500/20"
+                  }`}>
+                    {o.planKey}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Offline Payment History */}
         {manualPayments.length > 0 && (
@@ -522,6 +640,193 @@ export const OrganizationDetails: React.FC = () => {
         )}
       </div>
 
+      {/* Stored Onboarding Answers (US-5) */}
+      <div className="p-6 md:p-8 rounded-2xl bg-slate-900/80 border border-slate-800 shadow-xl space-y-6">
+        <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 flex items-center justify-center">
+              <ClipboardList className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-white">Stored Onboarding Responses</h2>
+              <p className="text-xs text-slate-400">
+                Read-only customer answers provided during Organization Profile creation and Inventory setup.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Organization Profile Answers */}
+          <div className="p-5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800/80">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">
+                Organization Profile
+              </h3>
+              {orgProfile ? (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                  <CheckCircle className="w-2.5 h-2.5" /> Completed
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-400 bg-slate-800/60 px-2 py-0.5 rounded border border-slate-700/40">
+                  <Clock className="w-2.5 h-2.5" /> Pending / Skipped
+                </span>
+              )}
+            </div>
+
+            {orgProfile ? (
+              <div className="space-y-3 text-xs">
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Business Type</span>
+                  <span className="font-semibold text-slate-200 capitalize">
+                    {orgProfile.businessType || "Not specified"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Branch Count Range</span>
+                  <span className="font-semibold text-slate-200">
+                    {orgProfile.branchCountRange ? `${orgProfile.branchCountRange} branches` : "Not specified"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Product / SKU Range</span>
+                  <span className="font-semibold text-slate-200">
+                    {orgProfile.productCountRange ? `${orgProfile.productCountRange} SKUs` : "Not specified"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Primary Users</span>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {orgProfile.primaryUsers?.length ? (
+                      orgProfile.primaryUsers.map((u: string) => (
+                        <span
+                          key={u}
+                          className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300 text-[10px] capitalize"
+                        >
+                          {u}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-slate-500">None specified</span>
+                    )}
+                  </div>
+                </div>
+                {orgProfile.completedAt && (
+                  <p className="text-[10px] text-slate-500 pt-2 border-t border-slate-800/60">
+                    Completed on: {new Date(orgProfile.completedAt).toLocaleString()}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs text-slate-500 py-4">No organization profile answers recorded.</p>
+            )}
+          </div>
+
+          {/* Inventory App Onboarding Answers */}
+          <div className="p-5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800/80">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">
+                Inventory App Questionnaire
+              </h3>
+              {invOnboarding ? (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20">
+                  <CheckCircle className="w-2.5 h-2.5" /> Completed
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-400 bg-slate-800/60 px-2 py-0.5 rounded border border-slate-700/40">
+                  <Clock className="w-2.5 h-2.5" /> Pending / Skipped
+                </span>
+              )}
+            </div>
+
+            {invOnboarding ? (
+              <div className="space-y-3 text-xs">
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Previous Tracking Tools</span>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {invOnboarding.previousTools?.length ? (
+                      invOnboarding.previousTools.map((t: string) => (
+                        <span
+                          key={t}
+                          className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300 text-[10px]"
+                        >
+                          {t}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-slate-500">None specified</span>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Biggest Pain Points</span>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {invOnboarding.painPoints?.length ? (
+                      invOnboarding.painPoints.map((p: string) => (
+                        <span
+                          key={p}
+                          className="px-2 py-0.5 rounded bg-rose-500/10 border border-rose-500/20 text-rose-300 text-[10px]"
+                        >
+                          {p}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-slate-500">None specified</span>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Top Priority Features</span>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {invOnboarding.priorityFeatures?.length ? (
+                      invOnboarding.priorityFeatures.map((f: string) => (
+                        <span
+                          key={f}
+                          className="px-2 py-0.5 rounded bg-brand-500/10 border border-brand-500/20 text-brand-300 text-[10px]"
+                        >
+                          {f}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-slate-500">None specified</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-slate-500 block">Needs Multi-Branch</span>
+                    <span className="font-semibold text-slate-200">
+                      {invOnboarding.needsMultiBranch === true
+                        ? "Yes"
+                        : invOnboarding.needsMultiBranch === false
+                        ? "No (Single Location)"
+                        : "Not answered"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-slate-500 block">Team Software Comfort</span>
+                    <span className="font-semibold text-slate-200 capitalize">
+                      {invOnboarding.teamComfortLevel || "Not answered"}
+                    </span>
+                  </div>
+                </div>
+
+                {invOnboarding.completedAt && (
+                  <p className="text-[10px] text-slate-500 pt-2 border-t border-slate-800/60">
+                    Completed on: {new Date(invOnboarding.completedAt).toLocaleString()}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs text-slate-500 py-4">No Inventory onboarding answers recorded.</p>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* Confirmation Modal */}
       <ConfirmDialog
         isOpen={dialogConfig.isOpen}
@@ -533,6 +838,90 @@ export const OrganizationDetails: React.FC = () => {
         onConfirm={dialogConfig.action}
         onCancel={() => setDialogConfig((prev) => ({ ...prev, isOpen: false }))}
       />
+
+      {/* Extend Trial Modal */}
+      {isExtendTrialOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-purple-500/10 text-purple-400 border border-purple-500/20 flex items-center justify-center">
+                  <Clock className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Extend Free Trial</h3>
+                  <p className="text-xs text-slate-400">Add days to "{org.name}" 30-day trial</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsExtendTrialOpen(false)}
+                className="text-slate-400 hover:text-white p-1 text-xs"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <label className="text-xs font-semibold text-slate-300 block">
+                Select Extension Period:
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {[7, 14, 30].map((d) => (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => setExtensionDays(d)}
+                    className={`py-2 px-3 rounded-xl border text-xs font-bold transition ${
+                      extensionDays === d
+                        ? "bg-purple-600 text-white border-purple-500 shadow-lg shadow-purple-600/30"
+                        : "bg-slate-950/60 text-slate-300 border-slate-800 hover:border-slate-700"
+                    }`}
+                  >
+                    +{d} Days
+                  </button>
+                ))}
+              </div>
+
+              <div className="pt-2">
+                <label className="text-[11px] text-slate-400 block mb-1">Custom Days:</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="180"
+                  value={extensionDays}
+                  onChange={(e) => setExtensionDays(Math.max(1, parseInt(e.target.value) || 1))}
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-purple-500 font-mono"
+                />
+              </div>
+
+              <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 text-[11px] text-slate-400 space-y-1">
+                <p>• Retains the 1 App / 1 Branch Trial Quota.</p>
+                <p>• Extends active application access without requiring immediate payment.</p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsExtendTrialOpen(false)}
+                disabled={actionLoading}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleExtendTrial}
+                disabled={actionLoading}
+                className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold shadow-lg shadow-purple-600/30 transition flex items-center gap-1.5"
+              >
+                {actionLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>Confirm +{extensionDays} Days</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Record Payment Modal */}
       <RecordPaymentModal

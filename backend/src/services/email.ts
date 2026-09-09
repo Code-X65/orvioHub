@@ -81,15 +81,26 @@ function renderEmail(message: { template: string; payload: Record<string, string
   switch (message.template) {
     case 'verification':
       return {
-        subject: 'Verify your OrvioHub account email',
+        subject: 'Verify your email address - Orviohub',
         html: buildHtmlTemplate({
           title: 'Verify your email address',
-          preheader: 'Complete your OrvioHub registration by confirming your email address.',
+          preheader: message.payload.code ? `Your Orviohub verification code is ${message.payload.code}.` : 'Complete your Orviohub registration by confirming your email address.',
           contentHtml: `<p>Hello ${message.payload.name || 'there'},</p>
-          <p>Thank you for signing up for OrvioHub. Please click the button below to verify your email address and activate all business workspace features:</p>`,
+          <p>Thank you for choosing Orviohub! Please use the 6-digit verification code below to confirm your email and activate your account:</p>
+          ${
+            message.payload.code
+              ? `<div style="margin: 24px 0; text-align: center;">
+                  <div style="display: inline-block; background-color: #1a1118; border: 1.5px solid #FDB02F; border-radius: 6px; padding: 16px 36px; box-shadow: 0 4px 16px rgba(253, 176, 47, 0.15);">
+                    <span style="font-size: 32px; font-weight: 800; letter-spacing: 8px; color: #FDB02F; font-family: monospace;">${message.payload.code}</span>
+                  </div>
+                  <p style="margin-top: 10px; font-size: 12px; color: #94a3b8;">This code expires in <strong style="color: #cbd5e1;">10 minutes</strong>.</p>
+                </div>`
+              : ''
+          }
+          <p>Or click the button below to verify your email directly in your browser:</p>`,
           buttonText: 'Verify Email Address',
           buttonUrl: message.payload.url,
-          footerNote: 'This verification link will expire in 24 hours. If you did not create an account, you can safely ignore this email.',
+          footerNote: 'This link is valid for 24 hours. If you did not request this verification, you can safely ignore this message.',
         }),
       };
 
@@ -118,7 +129,7 @@ function renderEmail(message: { template: string; payload: Record<string, string
           <p>Congratulations! Your organization <strong>${message.payload.organizationName || 'Workspace'}</strong> has been successfully configured.</p>
           <p>You can now access your product suites including Inventory, POS, CRM, and Multi-Branch Management.</p>`,
           buttonText: 'Open Workspace Dashboard',
-          buttonUrl: message.payload.url || 'http://home.orviohub.localhost:4000',
+          buttonUrl: message.payload.url || `${env.BASE_URL_INVENTORY || env.APP_URL}/dashboard`,
         }),
       };
 
@@ -151,6 +162,119 @@ function renderEmail(message: { template: string; payload: Record<string, string
           footerNote: 'This link expires in 24 hours. If you did not request this change, please contact support immediately.',
         }),
       };
+
+    case 'trial_started':
+      return {
+        subject: 'Your Orviohub Free Trial Has Started! 🎉',
+        html: buildHtmlTemplate({
+          title: 'Your 14-Day Free Trial Has Started!',
+          preheader: `Welcome to OrvioHub. Your trial for ${message.payload.orgName || 'your organization'} is active.`,
+          contentHtml: `<p>Hello ${message.payload.firstName || message.payload.name || 'there'},</p>
+          <p>Your 14-day free trial for <strong>${message.payload.orgName || 'your organization'}</strong> is now officially active with full access to the Standard Plan suite (3 organizations, 3 applications, 10 team members, 3 branches, 5,000 products, and 5,000 transactions/mo).</p>
+          <p>Your trial ends on <strong>${message.payload.trialEndsAt || '14 days from now'}</strong>. No payment details are required during the trial.</p>`,
+          buttonText: 'Launch Workspace Apps',
+          buttonUrl: message.payload.url || `${env.BASE_URL_INVENTORY || env.APP_URL}/dashboard`,
+        }),
+      };
+
+    case 'trial_reminder_7days':
+      return {
+        subject: '7 Days Left in Your Orviohub Trial ⏰',
+        html: buildHtmlTemplate({
+          title: '7 Days Remaining on Your Trial',
+          preheader: 'Halfway through your OrvioHub trial. Upgrade anytime to continue.',
+          contentHtml: `<p>Hello ${message.payload.firstName || message.payload.name || 'there'},</p>
+          <p>You have <strong>7 days remaining</strong> on your free trial for <strong>${message.payload.orgName || 'your organization'}</strong> (ends on ${message.payload.trialEndsAt}).</p>
+          <p>Upgrade to the Standard Plan (₦7,500/month or ₦75,000/year) today to lock in uninterrupted business operations for your stores.</p>`,
+          buttonText: 'Upgrade to Standard Plan',
+          buttonUrl: message.payload.url || `${env.BASE_URL_HOME || env.APP_URL}/settings/billing`,
+        }),
+      };
+
+    case 'trial_reminder_2days':
+      return {
+        subject: '2 Days Left - Upgrade Now to Keep Access ⚠️',
+        html: buildHtmlTemplate({
+          title: '2 Days Remaining - Action Required',
+          preheader: 'Your trial expires in 48 hours.',
+          contentHtml: `<p>Hello ${message.payload.firstName || message.payload.name || 'there'},</p>
+          <p>Your OrvioHub trial for <strong>${message.payload.orgName || 'your organization'}</strong> will expire in <strong>2 days</strong> on ${message.payload.trialEndsAt}.</p>
+          <p>To avoid account suspension or interruption to your branches and catalog inventory, please upgrade to Standard plan.</p>`,
+          buttonText: 'Upgrade to Standard',
+          buttonUrl: message.payload.url || `${env.BASE_URL_HOME || env.APP_URL}/settings/billing`,
+        }),
+      };
+
+    case 'trial_reminder_today':
+      return {
+        subject: 'Your Orviohub Trial Expires Today 🔒',
+        html: buildHtmlTemplate({
+          title: 'Your Free Trial Expires Today',
+          preheader: 'Upgrade today to keep your workspace active.',
+          contentHtml: `<p>Hello ${message.payload.firstName || message.payload.name || 'there'},</p>
+          <p>Today is the final day of your free trial for <strong>${message.payload.orgName || 'your organization'}</strong>.</p>
+          <p>Upgrade to the Standard Plan right now via Paystack or Bank Transfer to keep your products, sales, and members active.</p>`,
+          buttonText: 'Upgrade Now',
+          buttonUrl: message.payload.url || `${env.BASE_URL_HOME || env.APP_URL}/settings/billing`,
+        }),
+      };
+
+    case 'trial_expired':
+      return {
+        subject: 'Your Orviohub Trial Has Expired 🔒',
+        html: buildHtmlTemplate({
+          title: 'Your Trial Has Ended',
+          preheader: 'Your workspace has entered read-only mode.',
+          contentHtml: `<p>Hello ${message.payload.firstName || message.payload.name || 'there'},</p>
+          <p>The 14-day free trial for <strong>${message.payload.orgName || 'your organization'}</strong> has expired, and your workspace has been temporarily suspended into read-only mode.</p>
+          <p>All your data, branches, products, and configurations are securely preserved. Simply upgrade to reactivate full workspace capabilities instantly.</p>`,
+          buttonText: 'Reactivate with Standard Plan',
+          buttonUrl: message.payload.url || `${env.BASE_URL_HOME || env.APP_URL}/settings/billing`,
+        }),
+      };
+
+    case 'payment_success':
+      return {
+        subject: 'Payment Confirmed - Orviohub Standard Activated ✅',
+        html: buildHtmlTemplate({
+          title: 'Payment Confirmed!',
+          preheader: 'Your Standard subscription is active.',
+          contentHtml: `<p>Hello ${message.payload.firstName || message.payload.name || 'there'},</p>
+          <p>We've received your payment of <strong>₦${message.payload.amount || '7,500'}</strong> for <strong>${message.payload.orgName || 'your organization'}</strong>.</p>
+          <p>Your <strong>Standard Plan</strong> is now active. All features, apps, and higher transaction quotas have been unlocked.</p>
+          ${message.payload.nextPayment ? `<p>Next renewal date: <strong>${message.payload.nextPayment}</strong></p>` : ''}`,
+          buttonText: 'Go to Workspace Dashboard',
+          buttonUrl: message.payload.url || `${env.BASE_URL_INVENTORY || env.APP_URL}/dashboard`,
+        }),
+      };
+
+    case 'payment_failed':
+      return {
+        subject: 'Payment Failed - Action Required ⚠️',
+        html: buildHtmlTemplate({
+          title: 'Payment / Verification Issue',
+          preheader: 'Action required regarding your subscription payment.',
+          contentHtml: `<p>Hello ${message.payload.firstName || message.payload.name || 'there'},</p>
+          <p>We encountered an issue processing or verifying your subscription payment for <strong>${message.payload.orgName || 'your organization'}</strong>.</p>
+          <p>${message.payload.reason || 'Please check your payment method or contact support for assistance.'}</p>`,
+          buttonText: 'Update Payment Method',
+          buttonUrl: message.payload.url || `${env.BASE_URL_HOME || env.APP_URL}/settings/billing`,
+        }),
+      };
+
+    case 'renewal_reminder':
+      return {
+        subject: 'Your Orviohub Subscription Renews in 7 Days',
+        html: buildHtmlTemplate({
+          title: 'Upcoming Subscription Renewal',
+          preheader: 'Your subscription will renew soon.',
+          contentHtml: `<p>Hello ${message.payload.firstName || message.payload.name || 'there'},</p>
+          <p>This is a quick notice that your Standard plan subscription for <strong>${message.payload.orgName || 'your organization'}</strong> is scheduled to renew on <strong>${message.payload.renewalDate || 'soon'}</strong> for <strong>₦${message.payload.amount || '7,500'}</strong>.</p>`,
+          buttonText: 'Manage Billing & Invoices',
+          buttonUrl: message.payload.url || `${env.BASE_URL_HOME || env.APP_URL}/settings/billing`,
+        }),
+      };
+
 
     default:
       return {

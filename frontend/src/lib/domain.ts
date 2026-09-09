@@ -3,8 +3,9 @@
  * Single source of truth application registry and URL utilities.
  */
 import {
-  getApplicationUrl,
   resolveHost,
+  getApplicationUrl,
+  isAllowedReturnTo,
   type ApplicationKey,
   type Environment,
 } from "@orviohub/shared";
@@ -27,56 +28,40 @@ export function getCurrentSubdomain(): ApplicationKey {
 }
 
 /**
- * Generates cross-surface URL with optional authentication token forwarding.
+ * Generates cross-surface URL pointing to the appropriate subdomain and path.
  */
 export function getCrossSubdomainUrl(
   appKey: ApplicationKey,
   path = "",
-  includeAuth = true,
-  envOverride?: Environment
+  _includeAuth = false,
+  _envOverride?: Environment
 ): string {
-  const env =
-    envOverride ||
-    (typeof window !== "undefined"
-      ? resolveHost(window.location.host).environment
-      : "development");
-
-  const baseUrl = getApplicationUrl(appKey, env);
-  const cleanPath = path.startsWith("/") ? path : path ? `/${path}` : "";
-  const targetUrl = `${baseUrl}${cleanPath}`;
-
-  if (typeof window === "undefined" || !includeAuth) return targetUrl;
-
-  const token = localStorage.getItem("orvio_auth_token");
-  const refreshToken = localStorage.getItem("orvio_refresh_token");
-  const user = localStorage.getItem("orvio_user");
-
-  if (!token) return targetUrl;
-
-  try {
-    const url = new URL(targetUrl);
-    url.searchParams.set("auth_token", token);
-    if (refreshToken) {
-      url.searchParams.set("refresh_token", refreshToken);
+  let env: Environment = _envOverride || "development";
+  if (typeof window !== "undefined") {
+    try {
+      const host = resolveHost(window.location.host);
+      env = host.environment;
+    } catch {
+      env = "development";
     }
-    if (user) {
-      try {
-        const parsed = JSON.parse(user);
-        // Exclude giant base64 avatar images to prevent HTTP 431 (Request Header Fields Too Large)
-        const { avatar, avatarUrl, ...safeUser } = parsed;
-        if (typeof avatar === 'string' && avatar.startsWith('http')) {
-          (safeUser as any).avatar = avatar;
-        }
-        if (typeof avatarUrl === 'string' && avatarUrl.startsWith('http')) {
-          (safeUser as any).avatarUrl = avatarUrl;
-        }
-        url.searchParams.set("auth_user", JSON.stringify(safeUser));
-      } catch {
-        // Ignore parsing errors
-      }
-    }
-    return url.toString();
-  } catch {
-    return targetUrl;
   }
+
+  const cleanPath = path.startsWith("/") ? path : path ? `/${path}` : "";
+  return getApplicationUrl(appKey, env, cleanPath);
+}
+
+/**
+ * Validates whether a return URL is safe to redirect to.
+ */
+export function isValidReturnUrl(url: string, envOverride?: Environment): boolean {
+  let env: Environment = envOverride || "development";
+  if (typeof window !== "undefined") {
+    try {
+      const host = resolveHost(window.location.host);
+      env = host.environment;
+    } catch {
+      env = "development";
+    }
+  }
+  return isAllowedReturnTo(url, env);
 }

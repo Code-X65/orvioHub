@@ -19,24 +19,20 @@ import {
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
-import { useHost } from '@/host/useHost';
 import { api } from '@/lib/api';
 import { Header } from '@/components/landing/Header';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { InventoryIcon } from '@/components/icons/InventoryIcon';
+import { SeoMeta } from '@/components/seo/SeoMeta';
 import { toast } from 'sonner';
-import { getAccountsUrl } from '@orviohub/shared';
 
 export const InventoryLanding: React.FC = () => {
   const navigate = useNavigate();
-  const host = useHost();
-  const env = host.environment;
   const { isAuthenticated } = useAuthStore();
   const { currentWorkspace } = useWorkspaceStore();
 
-  const accountsUrl = getAccountsUrl(env);
   const workspaceId = currentWorkspace?.id || localStorage.getItem('orvio_active_workspace_id');
 
   // Activation check state
@@ -100,7 +96,7 @@ export const InventoryLanding: React.FC = () => {
       );
       toast.success('Inventory & POS activated successfully!');
       setIsActivated(true);
-      navigate('/dashboard');
+      navigate('/inventory/dashboard');
     } catch (err: any) {
       toast.error(err.message || 'Failed to activate Inventory module.');
     } finally {
@@ -111,10 +107,9 @@ export const InventoryLanding: React.FC = () => {
   // Determine dynamic CTA properties
   const getCtaConfig = () => {
     if (!isAuthenticated) {
-      const returnUrl = typeof window !== 'undefined' ? window.location.href : '';
       return {
         text: 'Sign Up Free',
-        href: `${accountsUrl}/signup?product=inventory&returnUrl=${encodeURIComponent(returnUrl)}`,
+        href: '/signup?product=inventory',
         action: undefined,
         primary: true,
       };
@@ -140,9 +135,9 @@ export const InventoryLanding: React.FC = () => {
     }
 
     return {
-      text: 'Go to Dashboard',
+      text: 'Open Inventory',
       href: undefined,
-      action: () => navigate('/dashboard'),
+      action: () => navigate('/inventory/dashboard'),
       primary: true,
     };
   };
@@ -271,6 +266,16 @@ export const InventoryLanding: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-black text-slate-100 selection:bg-[#714b67] selection:text-white flex flex-col justify-between">
+      <SeoMeta
+        title="Orviohub Inventory & POS • Multi-Branch Retail Stock Management"
+        description="Track warehouse stock, record rapid POS sales, manage multi-branch transfers, and prevent stock-outs across Nigerian stores and retail chains."
+        softwareApplication={{
+          name: 'Orviohub Inventory & POS',
+          applicationCategory: 'BusinessApplication',
+          price: '7500',
+          priceCurrency: 'NGN',
+        }}
+      />
       {/* Universal Top Header */}
       <Header />
 
@@ -456,7 +461,7 @@ export const InventoryLanding: React.FC = () => {
               Predictable Plans with Zero Hidden Fees
             </h2>
             <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">
-              Start with a 14-day free trial on any tier. Upgrade or change your branches anytime.
+              Start with a 30-day free trial on any tier. Upgrade or change your branches anytime.
             </p>
           </div>
 

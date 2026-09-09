@@ -15,6 +15,16 @@ export class UnknownHostError extends Error {
   }
 }
 
+export function normalizeSubdomain(sub: string): string {
+  const s = sub.toLowerCase();
+  if (s === "account" || s === "accounts") return "accounts";
+  if (s === "app" || s === "launcher" || s === "home") return "home";
+  if (s === "pos" || s === "inventory") return "inventory";
+  if (s === "tasks" || s === "taskmanagement") return "taskmanagement";
+  if (s === "billing") return "billing";
+  return s;
+}
+
 export function resolveHost(rawHost: string, pathname = ""): HostContext {
   const hostname = rawHost.toLowerCase().split(":")[0].replace(/\.$/, "");
 
@@ -26,15 +36,24 @@ export function resolveHost(rawHost: string, pathname = ""): HostContext {
 
   const environment: Environment = isDev ? "development" : isPreprod ? "preproduction" : "production";
 
-  // Vercel Single-Host or Direct Path Resolution
-  if (hostname.endsWith(".vercel.app") || hostname.includes("vercel.app") || hostname === "localhost" || hostname === "127.0.0.1") {
-    // Check if there is an explicit subdomain prefix (e.g. accounts.orviohub.vercel.app)
-    const firstSub = hostname.split(".")[0];
-    const matchBySub = Object.values(applications).find(
-      (a) => a.enabled && a.subdomain !== "" && a.subdomain === firstSub
-    );
-    if (matchBySub) {
-      return { environment, application: matchBySub.key, hostname };
+  // Single-Host (DEV_ROOT, localhost, Vercel preview) Direct Path Resolution
+  if (
+    hostname === DEV_ROOT ||
+    hostname.endsWith(".vercel.app") ||
+    hostname.includes("vercel.app") ||
+    hostname === "localhost" ||
+    hostname === "127.0.0.1"
+  ) {
+    // Check if there is an explicit subdomain prefix (e.g. account.orviohub.localhost or accounts.orviohub.vercel.app)
+    if (hostname.includes(".")) {
+      const firstSub = hostname.split(".")[0];
+      if (firstSub === "admin") throw new UnknownHostError(hostname);
+      const normalizedFirstSub = normalizeSubdomain(firstSub);
+      if (normalizedFirstSub === "accounts") return { environment, application: "accounts", hostname };
+      if (normalizedFirstSub === "home") return { environment, application: "home", hostname };
+      if (normalizedFirstSub === "inventory") return { environment, application: "inventory", hostname };
+      if (normalizedFirstSub === "billing") return { environment, application: "billing", hostname };
+      if (normalizedFirstSub === "taskmanagement") return { environment, application: "taskmanagement", hostname };
     }
 
     // Infer from pathname or query for single-deployment preview
@@ -50,25 +69,26 @@ export function resolveHost(rawHost: string, pathname = ""): HostContext {
       cleanPath.startsWith("/invitations") ||
       cleanPath.startsWith("/invite") ||
       cleanPath.startsWith("/profile") ||
-      cleanPath.startsWith("/accounts")
+      cleanPath.startsWith("/accounts") ||
+      cleanPath.startsWith("/account")
     ) {
       return { environment, application: "accounts", hostname };
     }
 
-    if (cleanPath.startsWith("/app") || cleanPath.startsWith("/launcher") || cleanPath.startsWith("/onboarding") || cleanPath.startsWith("/welcome")) {
-      return { environment, application: "launcher", hostname };
+    if (cleanPath.startsWith("/onboard") || cleanPath.startsWith("/onboarding") || cleanPath.startsWith("/dashboard") || cleanPath.startsWith("/organizations") || cleanPath.startsWith("/workspaces") || cleanPath.startsWith("/app") || cleanPath.startsWith("/launcher") || cleanPath.startsWith("/home")) {
+      return { environment, application: "home", hostname };
     }
 
-    if (cleanPath.startsWith("/inventory")) {
+    if (cleanPath.startsWith("/inventory") || cleanPath.startsWith("/pos")) {
       return { environment, application: "inventory", hostname };
+    }
+
+    if (cleanPath.startsWith("/billing")) {
+      return { environment, application: "billing", hostname };
     }
 
     if (cleanPath.startsWith("/taskmanagement") || cleanPath.startsWith("/tasks")) {
       return { environment, application: "taskmanagement", hostname };
-    }
-
-    if (cleanPath.startsWith("/dashboard") || cleanPath.startsWith("/home")) {
-      return { environment, application: "home", hostname };
     }
 
     return { environment, application: "marketing", hostname };
@@ -85,11 +105,23 @@ export function resolveHost(rawHost: string, pathname = ""): HostContext {
   // Reject nested or multi-label subdomains outright.
   if (sub === "" || sub.includes(".")) throw new UnknownHostError(hostname);
 
+  // Explicitly reject admin.orviohub.* - separate isolated project
+  if (sub === "admin") throw new UnknownHostError(hostname);
+
+  const normalizedSub = normalizeSubdomain(sub);
+
+  if (normalizedSub === "accounts") return { environment, application: "accounts", hostname };
+  if (normalizedSub === "home") return { environment, application: "home", hostname };
+  if (normalizedSub === "inventory") return { environment, application: "inventory", hostname };
+  if (normalizedSub === "billing") return { environment, application: "billing", hostname };
+  if (normalizedSub === "taskmanagement") return { environment, application: "taskmanagement", hostname };
+
   const match = Object.values(applications).find(
-    (a) => a.enabled && a.subdomain !== "" && a.subdomain === sub
+    (a) => a.enabled && a.subdomain !== "" && (a.subdomain === normalizedSub || a.subdomain === sub)
   );
 
   if (!match) throw new UnknownHostError(hostname);
 
   return { environment, application: match.key, hostname };
 }
+

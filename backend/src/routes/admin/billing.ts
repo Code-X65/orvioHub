@@ -69,8 +69,12 @@ export const adminBillingRoutes: FastifyPluginAsync = async (fastify) => {
           type: 'object',
           properties: {
             name: { type: 'string' },
+            price: { type: 'object' },
             monthlyPrice: { type: 'number' },
             annualPrice: { type: 'number' },
+            limits: { type: 'object' },
+            allowedApps: { type: 'array', items: { type: 'string' } },
+            allowedAppKeys: { type: 'array', items: { type: 'string' } },
             isActive: { type: 'boolean' },
           },
         },
@@ -99,9 +103,47 @@ export const adminBillingRoutes: FastifyPluginAsync = async (fastify) => {
     }
   );
 
-  // GET /api/v1/admin/organizations/:workspaceId/subscription
+  // GET /api/v1/admin/users/:userId/usage - View user usage against plan limits
   fastify.get(
-    '/organizations/:workspaceId/subscription',
+    '/users/:userId/usage',
+    {
+      preHandler: [requireSingleAdmin],
+      schema: {
+        tags: ['Admin Billing'],
+        summary: 'Get user resource usage and entitlements against plan limits',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['userId'],
+          properties: {
+            userId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { userId } = request.params as { userId: string };
+      try {
+        const usage = await dataService.getUserUsage(userId);
+        return reply.send({
+          success: true,
+          data: usage,
+        });
+      } catch (err: any) {
+        return reply.status(500).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+            message: err.message || 'Failed to fetch user usage.',
+          },
+        });
+      }
+    }
+  );
+
+  // GET /api/v1/admin/organizations/:id/subscription (supports orgId or workspaceId)
+  fastify.get(
+    '/organizations/:id/subscription',
     {
       preHandler: [requireSingleAdmin],
       schema: {
@@ -110,17 +152,22 @@ export const adminBillingRoutes: FastifyPluginAsync = async (fastify) => {
         security: [{ bearerAuth: [] }],
         params: {
           type: 'object',
-          required: ['workspaceId'],
+          required: ['id'],
           properties: {
-            workspaceId: { type: 'string' },
+            id: { type: 'string' },
           },
         },
       },
     },
     async (request, reply) => {
-      const { workspaceId } = request.params as { workspaceId: string };
+      const { id } = request.params as { id: string };
       try {
-        const subscription = await dataService.getWorkspaceSubscription(workspaceId);
+        let subscription: any = await dataService.getOrganizationSubscription(id);
+        if (!subscription || !subscription.organizationId) {
+          const wsSub = await dataService.getWorkspaceSubscription(id);
+          if (wsSub) subscription = wsSub;
+        }
+
         return reply.send({
           success: true,
           data: { subscription },
@@ -137,9 +184,9 @@ export const adminBillingRoutes: FastifyPluginAsync = async (fastify) => {
     }
   );
 
-  // POST /api/v1/admin/organizations/:workspaceId/subscription/change
+  // POST /api/v1/admin/organizations/:id/subscription/change
   fastify.post(
-    '/organizations/:workspaceId/subscription/change',
+    '/organizations/:id/subscription/change',
     {
       preHandler: [requireSingleAdmin],
       schema: {
@@ -148,44 +195,74 @@ export const adminBillingRoutes: FastifyPluginAsync = async (fastify) => {
         security: [{ bearerAuth: [] }],
         params: {
           type: 'object',
-          required: ['workspaceId'],
+          required: ['id'],
           properties: {
-            workspaceId: { type: 'string' },
+            id: { type: 'string' },
           },
         },
         body: {
           type: 'object',
           required: ['planKey'],
           properties: {
-            planKey: { type: 'string', enum: ['free', 'standard', 'premium'] },
-            status: { type: 'string', enum: ['active', 'cancelled', 'past_due'] },
+            planKey: { type: 'string', enum: ['free', 'free_trial', 'standard', 'premium'] },
+            status: { type: 'string', enum: ['active', 'trialing', 'cancelled', 'canceled', 'past_due', 'expired'] },
             currentPeriodEnd: { type: 'number' },
+            trialEndsAt: { type: 'number' },
             cancelAtPeriodEnd: { type: 'boolean' },
           },
         },
       },
     },
     async (request, reply) => {
-      const { workspaceId } = request.params as { workspaceId: string };
+      const { id } = request.params as { id: string };
       const body = request.body as {
         planKey: string;
-        status?: 'active' | 'cancelled' | 'past_due';
+        status?: 'active' | 'trialing' | 'cancelled' | 'canceled' | 'past_due' | 'expired';
         currentPeriodEnd?: number;
+        trialEndsAt?: number;
         cancelAtPeriodEnd?: boolean;
       };
 
       try {
-        const updated = await dataService.updateWorkspaceSubscription(
-          workspaceId,
-          body.planKey,
-          body.status,
-          body.currentPeriodEnd,
-          body.cancelAtPeriodEnd
-        );
+        const normalizedStatus = body.status === 'cancelled' ? 'canceled' : body.status;
+        const normalizedPlanKey = body.planKey === 'free' ? 'free_trial' : body.planKey;
+
+        // Try updating organization subscription first
+        let updated: any;
+        try {
+          updated = await dataService.updateOrganizationSubscription(
+            id,
+            normalizedPlanKey,
+            normalizedStatus as any,
+            body.currentPeriodEnd,
+            body.trialEndsAt,
+            body.cancelAtPeriodEnd
+          );
+        } catch {
+          // Fallback to workspace subscription
+          updated = await dataService.updateWorkspaceSubscription(
+            id,
+            normalizedPlanKey,
+            normalizedStatus as any,
+            body.currentPeriodEnd,
+            body.cancelAtPeriodEnd
+          );
+        }
+
+        await dataService.logAudit({
+          actorUserId: request.user.id,
+          eventType: 'billing.plan_updated',
+          metadata: {
+            targetId: id,
+            newPlan: normalizedPlanKey,
+            status: normalizedStatus,
+            adminEmail: request.user.email,
+          },
+        });
 
         return reply.send({
           success: true,
-          message: `Subscription updated to ${body.planKey.toUpperCase()} plan.`,
+          message: `Subscription updated to ${normalizedPlanKey.toUpperCase()} plan.`,
           data: { subscription: updated },
         });
       } catch (err: any) {
@@ -194,6 +271,72 @@ export const adminBillingRoutes: FastifyPluginAsync = async (fastify) => {
           error: {
             code: ERROR_CODES.VALIDATION_ERROR,
             message: err.message || 'Failed to update subscription.',
+          },
+        });
+      }
+    }
+  );
+
+  // POST /api/v1/admin/organizations/:id/subscription/extend-trial
+  fastify.post(
+    '/organizations/:id/subscription/extend-trial',
+    {
+      preHandler: [requireSingleAdmin],
+      schema: {
+        tags: ['Admin Billing'],
+        summary: 'Extend organization trial period',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string' },
+          },
+        },
+        body: {
+          type: 'object',
+          properties: {
+            extensionDays: { type: 'number', minimum: 1 },
+            trialEndsAt: { type: 'number' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = request.body as {
+        extensionDays?: number;
+        trialEndsAt?: number;
+      };
+
+      try {
+        const updated = await dataService.extendOrganizationTrial(
+          id,
+          body.extensionDays || 14,
+          body.trialEndsAt
+        );
+
+        await dataService.logAudit({
+          actorUserId: request.user.id,
+          eventType: 'billing.trial_extended' as any,
+          metadata: {
+            organizationId: id,
+            extensionDays: body.extensionDays,
+            adminEmail: request.user.email,
+          },
+        });
+
+        return reply.send({
+          success: true,
+          message: 'Trial period extended successfully.',
+          data: { subscription: updated },
+        });
+      } catch (err: any) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: err.message || 'Failed to extend trial.',
           },
         });
       }
@@ -312,9 +455,9 @@ export const adminBillingRoutes: FastifyPluginAsync = async (fastify) => {
     }
   );
 
-  // POST /api/v1/admin/organizations/:workspaceId/payments/manual - Record offline payment
+  // POST /api/v1/admin/organizations/:id/payments/manual - Record offline payment
   fastify.post(
-    '/organizations/:workspaceId/payments/manual',
+    '/organizations/:id/payments/manual',
     {
       preHandler: [requireSingleAdmin],
       schema: {
@@ -323,21 +466,21 @@ export const adminBillingRoutes: FastifyPluginAsync = async (fastify) => {
         security: [{ bearerAuth: [] }],
         params: {
           type: 'object',
-          required: ['workspaceId'],
+          required: ['id'],
           properties: {
-            workspaceId: { type: 'string' },
+            id: { type: 'string' },
           },
         },
         body: {
           type: 'object',
           required: ['planKey', 'amount', 'billingCycle', 'paymentReference', 'paymentMethod'],
           properties: {
-            planKey: { type: 'string', enum: ['standard', 'premium'] },
+            planKey: { type: 'string', enum: ['free_trial', 'standard', 'premium'] },
             amount: { type: 'number' },
             currency: { type: 'string', default: 'NGN' },
             billingCycle: { type: 'string', enum: ['monthly', 'annual'] },
             paymentReference: { type: 'string' },
-            paymentMethod: { type: 'string', enum: ['bank_transfer', 'cash', 'pos', 'cheque', 'other'] },
+            paymentMethod: { type: 'string', enum: ['bank_transfer', 'cash', 'pos', 'cheque', 'manual', 'other'] },
             paidAt: { type: 'number' },
             notes: { type: 'string' },
             extensionDays: { type: 'number' },
@@ -346,12 +489,12 @@ export const adminBillingRoutes: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      const { workspaceId } = request.params as { workspaceId: string };
+      const { id } = request.params as { id: string };
       const body = request.body as any;
 
       try {
-        const result = await dataService.recordManualPayment({
-          workspaceId,
+        const result = await dataService.recordOrganizationManualPayment({
+          organizationId: id,
           planKey: body.planKey,
           amount: body.amount,
           currency: body.currency || 'NGN',
@@ -364,9 +507,21 @@ export const adminBillingRoutes: FastifyPluginAsync = async (fastify) => {
           extensionDays: body.extensionDays,
         });
 
+        await dataService.logAudit({
+          actorUserId: request.user.id,
+          eventType: 'billing.payment_received',
+          metadata: {
+            organizationId: id,
+            amount: body.amount,
+            planKey: body.planKey,
+            reference: body.paymentReference,
+            adminEmail: request.user.email,
+          },
+        });
+
         return reply.status(201).send({
           success: true,
-          message: 'Payment recorded and subscription updated successfully.',
+          message: 'Payment recorded and organization subscription updated successfully.',
           data: result,
         });
       } catch (err: any) {
@@ -381,14 +536,57 @@ export const adminBillingRoutes: FastifyPluginAsync = async (fastify) => {
     }
   );
 
-  // GET /api/v1/admin/organizations/:workspaceId/payments/manual - List offline payments history
+  // GET /api/v1/admin/organizations/:id/payments - List all payments for organization
+  fastify.get(
+    '/organizations/:id/payments',
+    {
+      preHandler: [requireSingleAdmin],
+      schema: {
+        tags: ['Admin Billing'],
+        summary: 'List all payment records for an organization (manual and gateway)',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+
+      try {
+        const payments = await dataService.getOrganizationPayments(id);
+        const manualPayments = await dataService.listManualPayments(id);
+        return reply.send({
+          success: true,
+          data: {
+            payments: payments || [],
+            manualPayments: manualPayments || [],
+          },
+        });
+      } catch (err: any) {
+        return reply.status(500).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+            message: err.message || 'Failed to list payments.',
+          },
+        });
+      }
+    }
+  );
+
+  // GET /api/v1/admin/organizations/:workspaceId/payments/manual - Backwards compatibility
   fastify.get(
     '/organizations/:workspaceId/payments/manual',
     {
       preHandler: [requireSingleAdmin],
       schema: {
         tags: ['Admin Billing'],
-        summary: 'List manual payment records for an organization',
+        summary: 'List manual payment records for an organization (compat)',
         security: [{ bearerAuth: [] }],
         params: {
           type: 'object',

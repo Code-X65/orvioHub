@@ -5,6 +5,7 @@ export const getNotifications = query({
   args: {
     userId: v.id("users"),
     status: v.optional(v.union(v.literal("UNREAD"), v.literal("READ"), v.literal("ARCHIVED"))),
+    type: v.optional(v.string()),
     limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
@@ -17,10 +18,28 @@ export const getNotifications = query({
     if (args.status) {
       filtered = filtered.filter((n) => n.status === args.status);
     }
+    if (args.type) {
+      filtered = filtered.filter((n) => n.type === args.type);
+    }
     if (args.limit) {
       filtered = filtered.slice(0, args.limit);
     }
     return filtered;
+  },
+});
+
+export const getUnreadCount = query({
+  args: {
+    userId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    const unread = await ctx.db
+      .query("notifications")
+      .withIndex("by_user_and_status", (q) =>
+        q.eq("userId", args.userId).eq("status", "UNREAD")
+      )
+      .collect();
+    return { count: unread.length };
   },
 });
 
@@ -65,6 +84,23 @@ export const markAllNotificationsRead = mutation({
   },
 });
 
+export const archiveNotification = mutation({
+  args: {
+    notificationId: v.id("notifications"),
+    userId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    const notif = await ctx.db.get(args.notificationId);
+    if (!notif || notif.userId !== args.userId) {
+      throw new Error("NOTIFICATION_NOT_FOUND");
+    }
+    await ctx.db.patch(args.notificationId, {
+      status: "ARCHIVED",
+    });
+    return { success: true };
+  },
+});
+
 export const sendNotification = mutation({
   args: {
     userId: v.id("users"),
@@ -73,6 +109,7 @@ export const sendNotification = mutation({
     type: v.string(),
     title: v.string(),
     body: v.string(),
+    data: v.optional(v.any()),
     severity: v.union(v.literal("INFO"), v.literal("SUCCESS"), v.literal("WARNING"), v.literal("ERROR")),
     channel: v.optional(v.union(v.literal("IN_APP"), v.literal("EMAIL"), v.literal("SMS"), v.literal("WHATSAPP"))),
   },
@@ -84,6 +121,7 @@ export const sendNotification = mutation({
       type: args.type,
       title: args.title,
       body: args.body,
+      data: args.data,
       severity: args.severity,
       channel: args.channel || "IN_APP",
       status: "UNREAD",

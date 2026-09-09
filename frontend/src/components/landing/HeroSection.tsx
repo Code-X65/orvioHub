@@ -1,17 +1,8 @@
 import React from 'react';
 import { ArrowRight, ChevronDown, X } from 'lucide-react';
-import { useHost } from '@/host/useHost';
-import { getAccountsUrl } from '@orviohub/shared';
-import { getCrossSubdomainUrl } from '@/lib/domain';
 
 export const HeroSection: React.FC = () => {
-  const host = useHost();
-  const env = host.environment;
-  const accountsUrl = getAccountsUrl(env);
-  const homeUrl = getCrossSubdomainUrl('home', '', true, env);
-  const launcherUrl = getCrossSubdomainUrl('launcher', '', true, env);
-
-  const signupUrl = `${accountsUrl}/signup?returnTo=${encodeURIComponent(homeUrl)}`;
+  const signupUrl = '/signup';
 
   return (
     <section className="relative w-full max-w-[1440px] mx-auto px-6 sm:px-8 lg:px-12 pt-10 pb-16 lg:py-16 overflow-hidden">
@@ -53,12 +44,12 @@ export const HeroSection: React.FC = () => {
               href={signupUrl}
               className="inline-flex items-center justify-center gap-2.5 px-6 py-3.5 rounded-sm bg-[#714B67] hover:bg-[#86597A] text-white text-sm font-semibold shadow-xl shadow-[#714B67]/30 hover:scale-[1.02] active:scale-[0.98] transition-all"
             >
-              <span>Get started free</span>
+              <span>Start Free Trial</span>
               <ArrowRight className="w-4 h-4" />
             </a>
 
             <a
-              href={launcherUrl}
+              href="/inventory/dashboard"
               className="inline-flex items-center justify-center px-6 py-3.5 rounded-sm bg-black/60 hover:bg-white/5 border border-[#FDB02F]/40 hover:border-[#FDB02F] text-[#FDB02F] text-sm font-semibold transition-all"
             >
               <span>Explore solutions</span>

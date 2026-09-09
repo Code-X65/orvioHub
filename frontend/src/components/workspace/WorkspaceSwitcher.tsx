@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
-import { useHost } from '@/host/useHost';
-import { getLauncherUrl } from '@orviohub/shared';
+
 import {
   ChevronDown,
   Check,
@@ -20,9 +19,6 @@ export const WorkspaceSwitcher: React.FC<WorkspaceSwitcherProps> = ({
   productKey,
   className = '',
 }) => {
-  const host = useHost();
-  const env = host.environment;
-  const launcherUrl = getLauncherUrl(env);
 
   const {
     currentWorkspace,
@@ -38,8 +34,10 @@ export const WorkspaceSwitcher: React.FC<WorkspaceSwitcherProps> = ({
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    fetchWorkspaces(productKey).catch(() => {});
-  }, [productKey, fetchWorkspaces]);
+    if (workspaces.length === 0) {
+      fetchWorkspaces(productKey).catch(() => {});
+    }
+  }, [productKey, fetchWorkspaces, workspaces.length]);
 
   // Click outside listener to close dropdown
   useEffect(() => {
@@ -164,8 +162,8 @@ export const WorkspaceSwitcher: React.FC<WorkspaceSwitcherProps> = ({
           {/* Create New Org Action */}
           <div className="p-2 border-t border-white/10 bg-[#080608]">
             <a
-              href={`${launcherUrl}/workspaces/new?product=${productKey || 'inventory'}`}
-              className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-[#f0d8e8] hover:text-white rounded-xs hover:bg-white/5 transition-colors cursor-pointer"
+              href={`/workspaces/new?product=${productKey || 'inventory'}`}
+              className="flex items-center gap-2.5 px-2.5 py-1.5 text-xs text-[#f0d8e8] hover:text-white rounded-xs hover:bg-white/5 transition-colors cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" />
               <span>Create New Organization</span>

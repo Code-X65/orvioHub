@@ -4,16 +4,26 @@ import { HeroSection } from '@/components/landing/HeroSection';
 import { AfricanPatternDivider } from '@/components/landing/AfricanPatternDivider';
 import { AppGrid } from '@/components/landing/AppGrid';
 import { GrowthSection } from '@/components/landing/GrowthSection';
+import { LandingPricingSection } from '@/components/landing/LandingPricingSection';
 import { CallToAction } from '@/components/landing/CallToAction';
 import { Footer } from '@/components/landing/Footer';
 import { MessageSquare } from 'lucide-react';
 import { toast } from 'sonner';
+import { SeoMeta } from '@/components/seo/SeoMeta';
 
 export const LandingPage: React.FC = () => {
   const [isChatOpen, setIsChatOpen] = useState(false);
 
   return (
     <div className="min-h-screen bg-black text-slate-100 selection:bg-[#714B67] selection:text-white relative overflow-x-hidden flex flex-col justify-between">
+      <SeoMeta
+        title="Orviohub • All-in-One Cloud Business Operating Platform"
+        description="Run your retail, wholesale, multi-branch inventory, invoicing, POS, and team workspaces with Orviohub."
+        softwareApplication={{
+          name: 'Orviohub Platform',
+          applicationCategory: 'BusinessApplication',
+        }}
+      />
       
       {/* Background Ambient Radial Glows in Royal Purple (#714B67) & Golden Amber (#FDB02F) */}
       <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-[1440px] h-[600px] bg-radial from-[#714B67]/15 via-transparent to-transparent pointer-events-none -z-10" />
@@ -36,7 +46,13 @@ export const LandingPage: React.FC = () => {
         {/* 5. "Powering growth across Africa" with African Businesswoman & Business Health Meter */}
         <GrowthSection />
 
-        {/* 6. "Ready to transform your business?" Call To Action Banner */}
+        {/* 6. Pricing Section: 3 Tiers, Billing Toggle & Start Free Trial CTA */}
+        <LandingPricingSection />
+
+        {/* 7. African Geometric Pattern Divider Band */}
+        <AfricanPatternDivider opacity={0.5} />
+
+        {/* 8. "Ready to transform your business?" Call To Action Banner */}
         <CallToAction />
       </main>
 

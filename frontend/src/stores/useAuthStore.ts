@@ -11,6 +11,7 @@ import {
 } from '../lib/types';
 import { getOrCreateDeviceId } from '../lib/device';
 import { useWorkspaceStore } from './useWorkspaceStore';
+import { getLoginUrl } from '@orviohub/shared';
 
 const REMEMBERED_ACCOUNTS_KEY = 'orvio_remembered_accounts';
 const STORED_USER_KEY = 'orvio_user';
@@ -125,7 +126,7 @@ interface AuthState {
   addRememberedAccount: (account: RememberedAccount) => void;
   removeRememberedAccount: (email: string) => void;
   switchAccount: (email: string) => boolean;
-  logout: () => Promise<void>;
+  logout: (redirectToLogin?: boolean) => Promise<void>;
   logoutAllAccounts: () => Promise<void>;
   refreshSession: () => Promise<void>;
   setOnboardingStatus: (status: OnboardingState) => void;
@@ -300,13 +301,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
-  logout: async () => {
+  logout: async (redirectToLogin: boolean = false) => {
     const currentUser = get().user;
     try {
       const refreshToken = localStorage.getItem('orvio_refresh_token');
-      if (localStorage.getItem('orvio_auth_token')) {
-        await api.post('/auth/logout', { refreshToken: refreshToken || undefined });
-      }
+      // Always invoke /auth/logout so the backend invalidates Convex session and sends Set-Cookie clearing headers
+      await api.post('/auth/logout', { refreshToken: refreshToken || undefined });
     } catch {
       // Ignore network / token expiration errors during logout
     } finally {
@@ -315,6 +315,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       localStorage.removeItem('orvio_active_org_id');
       localStorage.removeItem('orvio_active_workspace_id');
       saveStoredUser(null);
+
+      // Trigger cross-tab logout synchronization via localStorage event
+      try {
+        localStorage.setItem('orvio_logout_sync', String(Date.now()));
+      } catch {
+        // Safe fallback
+      }
 
       // Fully purge active workspace store
       try {
@@ -343,6 +350,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         activeOrganizationId: null,
         isInitialized: true,
       });
+
+      if (redirectToLogin && typeof window !== 'undefined') {
+        const loginUrl = `${getLoginUrl()}?logged_out=true`;
+        window.location.href = loginUrl;
+      }
     }
   },
 
@@ -449,9 +461,26 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 }));
 
-// Listen for global unauthorized events
+// Listen for global unauthorized events and cross-tab logout synchronization
 if (typeof window !== 'undefined') {
   window.addEventListener('auth:unauthorized', () => {
-    useAuthStore.getState().logout();
+    useAuthStore.getState().logout(true);
+  });
+
+  window.addEventListener('storage', (event) => {
+    if (event.key === 'orvio_logout_sync') {
+      useAuthStore.setState({
+        isAuthenticated: false,
+        user: null,
+        token: null,
+        onboardingStatus: null,
+        memberships: [],
+        activeOrganizationId: null,
+        isInitialized: true,
+      });
+      // Immediately redirect to login
+      const loginUrl = `${getLoginUrl(window.location.href)}?logged_out=true`;
+      window.location.href = loginUrl;
+    }
   });
 }

@@ -11,8 +11,13 @@ import {
   Zap,
   Crown,
   X,
+  Sliders,
+  Building2,
+  Layers,
+  GitBranch,
+  Users as UsersIcon,
 } from "lucide-react";
-import { adminBillingApi, type PlanRecord } from "../api/adminBilling";
+import { adminBillingApi, type PlanRecord, type PlanLimits } from "../api/adminBilling";
 
 export const Plans: React.FC = () => {
   const [plans, setPlans] = useState<PlanRecord[]>([]);
@@ -26,6 +31,12 @@ export const Plans: React.FC = () => {
     monthlyPriceNaira: 0,
     annualPriceNaira: 0,
     isActive: true,
+    maxOrganizations: 1,
+    maxAppsPerOrganization: "1" as string | number,
+    maxBranchesPerApp: "1" as string | number,
+    maxMembersPerOrganization: 2,
+    maxProductsPerWorkspace: 500,
+    maxTransactionsPerMonth: 500,
   });
 
   const loadPlans = async () => {
@@ -46,11 +57,21 @@ export const Plans: React.FC = () => {
 
   const handleOpenEdit = (plan: PlanRecord) => {
     setEditingPlan(plan);
+    const limits = plan.limits || {};
+    const monthlyVal = plan.price?.monthly ?? (plan.monthlyPrice ? plan.monthlyPrice / 100 : 0);
+    const annualVal = plan.price?.annual ?? (plan.annualPrice ? plan.annualPrice / 100 : 0);
+
     setFormData({
       name: plan.name,
-      monthlyPriceNaira: (plan.monthlyPrice || 0) / 100,
-      annualPriceNaira: (plan.annualPrice || 0) / 100,
+      monthlyPriceNaira: monthlyVal,
+      annualPriceNaira: annualVal,
       isActive: plan.isActive !== false,
+      maxOrganizations: limits.maxOrganizations ?? limits.maxWorkspaces ?? 1,
+      maxAppsPerOrganization: limits.maxAppsPerOrganization ?? limits.maxAppsPerWorkspace ?? 1,
+      maxBranchesPerApp: limits.maxBranchesPerApp ?? 1,
+      maxMembersPerOrganization: limits.maxMembersPerOrganization ?? limits.maxMembersPerWorkspace ?? 2,
+      maxProductsPerWorkspace: limits.maxProductsPerWorkspace ?? 500,
+      maxTransactionsPerMonth: limits.maxTransactionsPerMonth ?? 500,
     });
   };
 
@@ -60,12 +81,40 @@ export const Plans: React.FC = () => {
 
     setActionLoading(true);
     try {
+      const parsedApps =
+        formData.maxAppsPerOrganization === "unlimited"
+          ? ("unlimited" as const)
+          : Math.max(1, Number(formData.maxAppsPerOrganization) || 1);
+
+      const parsedBranches =
+        formData.maxBranchesPerApp === "unlimited"
+          ? ("unlimited" as const)
+          : Math.max(1, Number(formData.maxBranchesPerApp) || 1);
+
+      const limitsPayload: PlanLimits = {
+        maxOrganizations: Number(formData.maxOrganizations) || 1,
+        maxAppsPerOrganization: parsedApps,
+        maxBranchesPerApp: parsedBranches,
+        maxMembersPerOrganization: Number(formData.maxMembersPerOrganization) || 2,
+        maxProductsPerWorkspace: Number(formData.maxProductsPerWorkspace) || 500,
+        maxTransactionsPerMonth: Number(formData.maxTransactionsPerMonth) || 500,
+        maxWorkspaces: Number(formData.maxOrganizations) || 1,
+        maxAppsPerWorkspace: parsedApps,
+        maxMembersPerWorkspace: Number(formData.maxMembersPerOrganization) || 2,
+      };
+
       await adminBillingApi.updatePlan(editingPlan.key, {
         name: formData.name,
+        price: {
+          monthly: Math.round(Number(formData.monthlyPriceNaira)),
+          annual: Math.round(Number(formData.annualPriceNaira)),
+        },
         monthlyPrice: Math.round(Number(formData.monthlyPriceNaira) * 100), // convert to kobo
         annualPrice: Math.round(Number(formData.annualPriceNaira) * 100),
+        limits: limitsPayload,
         isActive: formData.isActive,
       });
+
       setEditingPlan(null);
       await loadPlans();
     } catch (err: any) {
@@ -104,6 +153,7 @@ export const Plans: React.FC = () => {
   const getPlanIcon = (key: string) => {
     switch (key.toLowerCase()) {
       case "free":
+      case "free_trial":
         return <ShieldCheck className="w-5 h-5 text-emerald-400" />;
       case "standard":
         return <Zap className="w-5 h-5 text-amber-400" />;
@@ -121,17 +171,17 @@ export const Plans: React.FC = () => {
         <div>
           <div className="flex items-center gap-2">
             <CreditCard className="w-5 h-5 text-brand-400" />
-            <h1 className="text-xl font-bold text-white tracking-tight">Subscription Plans & Pricing (MVP)</h1>
+            <h1 className="text-xl font-bold text-white tracking-tight">Subscription Plans & Batch Limits</h1>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Manage manual subscription tiers (Free, Standard, Premium), prices in Nigerian Naira (₦), and active states.
+            Configure subscription tiers (Free Trial, Standard, Premium), pricing in Naira (₦), and strict entitlement limits.
           </p>
         </div>
 
         <div className="flex items-center gap-3">
           <button
             onClick={loadPlans}
-            className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-semibold border border-slate-800 transition flex items-center gap-2"
+            className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-semibold border border-slate-800 transition flex items-center gap-2 cursor-pointer"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
             <span>Refresh</span>
@@ -139,7 +189,7 @@ export const Plans: React.FC = () => {
         </div>
       </div>
 
-      {/* Plans List */}
+      {/* Plans Content */}
       {loading ? (
         <div className="py-24 flex flex-col items-center justify-center space-y-3">
           <Loader2 className="w-8 h-8 animate-spin text-brand-400" />
@@ -151,119 +201,244 @@ export const Plans: React.FC = () => {
           <div>
             <h3 className="text-base font-bold text-white">No plans configured yet</h3>
             <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
-              Initialize default Free (₦0), Standard (₦7,500), and Premium (₦20,000) plans.
+              Initialize default Free (₦0), Standard (₦7,500), and Premium (₦20,000) plans with batch limits.
             </p>
           </div>
           <button
             onClick={handleSeedDefaults}
             disabled={actionLoading}
-            className="px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-500 text-white text-xs font-bold transition inline-flex items-center gap-2"
+            className="px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-500 text-white text-xs font-bold transition inline-flex items-center gap-2 cursor-pointer"
           >
             <Sparkles className="w-4 h-4" />
             <span>Seed Default Subscription Plans</span>
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {plans.map((p) => {
-            const monthlyNaira = (p.monthlyPrice || 0) / 100;
-            const annualNaira = (p.annualPrice || 0) / 100;
+        <div className="space-y-8">
+          {/* Plan Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {plans.map((p) => {
+              const monthlyNaira = p.price?.monthly ?? ((p.monthlyPrice || 0) / 100);
+              const annualNaira = p.price?.annual ?? ((p.annualPrice || 0) / 100);
+              const limits = p.limits || {};
 
-            return (
-              <div
-                key={p._id || p.key}
-                className="p-6 rounded-2xl bg-slate-900/90 border border-slate-800 shadow-xl flex flex-col justify-between space-y-6 hover:border-slate-700 transition"
-              >
-                <div className="space-y-4">
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="w-11 h-11 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-center">
-                        {getPlanIcon(p.key)}
+              const maxOrgs = limits.maxOrganizations ?? limits.maxWorkspaces ?? (p.key === "premium" ? 10 : p.key === "standard" ? 3 : 1);
+              const maxApps = limits.maxAppsPerOrganization ?? limits.maxAppsPerWorkspace ?? (p.key === "premium" ? "unlimited" : p.key === "standard" ? 3 : 1);
+              const maxBranches = limits.maxBranchesPerApp ?? (p.key === "premium" ? 10 : p.key === "standard" ? 3 : 1);
+              const maxMembers = limits.maxMembersPerOrganization ?? limits.maxMembersPerWorkspace ?? (p.key === "premium" ? 50 : p.key === "standard" ? 10 : 2);
+              const maxProducts = limits.maxProductsPerWorkspace ?? (p.key === "premium" ? 25000 : p.key === "standard" ? 5000 : 500);
+              const maxTransactions = limits.maxTransactionsPerMonth ?? (p.key === "premium" ? 25000 : p.key === "standard" ? 5000 : 500);
+
+              return (
+                <div
+                  key={p._id || p.key}
+                  className="p-6 rounded-2xl bg-slate-900/90 border border-slate-800 shadow-xl flex flex-col justify-between space-y-6 hover:border-slate-700 transition"
+                >
+                  <div className="space-y-4">
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-11 h-11 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-center">
+                          {getPlanIcon(p.key)}
+                        </div>
+                        <div>
+                          <h3 className="text-base font-bold text-white">{p.name}</h3>
+                          <span className="text-[11px] font-mono text-slate-500">key: {p.key}</span>
+                        </div>
                       </div>
-                      <div>
-                        <h3 className="text-base font-bold text-white">{p.name}</h3>
-                        <span className="text-[11px] font-mono text-slate-500">key: {p.key}</span>
-                      </div>
+
+                      <span
+                        className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                          p.isActive
+                            ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                            : "bg-slate-800 text-slate-400 border border-slate-700"
+                        }`}
+                      >
+                        {p.isActive ? "Active" : "Disabled"}
+                      </span>
                     </div>
 
-                    <span
-                      className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                        p.isActive
-                          ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
-                          : "bg-slate-800 text-slate-400 border border-slate-700"
-                      }`}
-                    >
-                      {p.isActive ? "Active" : "Disabled"}
-                    </span>
-                  </div>
-
-                  <div className="space-y-1">
-                    <div className="text-2xl font-bold text-white">
-                      ₦{monthlyNaira.toLocaleString()}
-                      <span className="text-xs font-normal text-slate-400 ml-1">/ month</span>
-                    </div>
-                    {annualNaira > 0 ? (
-                      <div className="text-xs text-slate-400">
-                        ₦{annualNaira.toLocaleString()} / year (save 2 months)
+                    <div className="space-y-1">
+                      <div className="text-2xl font-bold text-white">
+                        ₦{monthlyNaira.toLocaleString()}
+                        <span className="text-xs font-normal text-slate-400 ml-1">/ month</span>
                       </div>
-                    ) : (
-                      <div className="text-xs text-slate-500">Free forever for basic use</div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="pt-4 border-t border-slate-800 space-y-3">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-slate-400">Currency:</span>
-                    <span className="font-mono text-slate-200">{p.currency || "NGN"}</span>
-                  </div>
-
-                  <div className="flex items-center justify-between pt-2">
-                    <button
-                      onClick={() => handleToggleActive(p)}
-                      disabled={actionLoading}
-                      className="text-xs text-slate-400 hover:text-white flex items-center gap-1.5 transition"
-                    >
-                      {p.isActive ? (
-                        <>
-                          <XCircle className="w-3.5 h-3.5 text-slate-500" />
-                          <span>Hide from new signups</span>
-                        </>
+                      {annualNaira > 0 ? (
+                        <div className="text-xs text-slate-400">
+                          ₦{annualNaira.toLocaleString()} / year (save 2 months)
+                        </div>
                       ) : (
-                        <>
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                          <span>Re-enable plan</span>
-                        </>
+                        <div className="text-xs text-purple-400 font-semibold">30-Day Free Trial (1 App, 1 Branch)</div>
                       )}
-                    </button>
+                    </div>
 
-                    <button
-                      onClick={() => handleOpenEdit(p)}
-                      className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition flex items-center gap-1.5"
-                    >
-                      <Edit2 className="w-3 h-3" />
-                      <span>Edit Price</span>
-                    </button>
+                    {/* Limits Mini Badges */}
+                    <div className="pt-2 grid grid-cols-2 gap-2 text-[11px]">
+                      <div className="p-2 rounded-lg bg-slate-950/60 border border-slate-800/80 flex items-center gap-1.5">
+                        <Building2 className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                        <span className="text-slate-300 font-medium truncate">{maxOrgs} Orgs</span>
+                      </div>
+                      <div className="p-2 rounded-lg bg-slate-950/60 border border-slate-800/80 flex items-center gap-1.5">
+                        <Layers className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                        <span className="text-slate-300 font-medium truncate">{maxApps === "unlimited" ? "Unlimited" : `${maxApps} Apps/Org`}</span>
+                      </div>
+                      <div className="p-2 rounded-lg bg-slate-950/60 border border-slate-800/80 flex items-center gap-1.5">
+                        <GitBranch className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                        <span className="text-slate-300 font-medium truncate">{maxBranches} Branches/App</span>
+                      </div>
+                      <div className="p-2 rounded-lg bg-slate-950/60 border border-slate-800/80 flex items-center gap-1.5">
+                        <UsersIcon className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                        <span className="text-slate-300 font-medium truncate">{maxMembers} Members</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pt-4 border-t border-slate-800 space-y-3">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-400">Products & Volume:</span>
+                      <span className="font-mono text-slate-200">
+                        {maxProducts.toLocaleString()} items &bull; {maxTransactions.toLocaleString()} txs/mo
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-2">
+                      <button
+                        onClick={() => handleToggleActive(p)}
+                        disabled={actionLoading}
+                        className="text-xs text-slate-400 hover:text-white flex items-center gap-1.5 transition cursor-pointer"
+                      >
+                        {p.isActive ? (
+                          <>
+                            <XCircle className="w-3.5 h-3.5 text-slate-500" />
+                            <span>Hide</span>
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                            <span>Re-enable</span>
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        onClick={() => handleOpenEdit(p)}
+                        className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Edit2 className="w-3 h-3" />
+                        <span>Edit Limits & Price</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
+              );
+            })}
+          </div>
+
+          {/* Plan Limits Comprehensive Comparison Table */}
+          <div className="rounded-2xl bg-slate-900/80 border border-slate-800 overflow-hidden shadow-xl">
+            <div className="p-4 border-b border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Sliders className="w-4 h-4 text-brand-400" />
+                <h3 className="font-bold text-sm text-white">Plan Limits & Entitlements Matrix</h3>
               </div>
-            );
-          })}
+              <span className="text-[11px] text-slate-400">Strict server-side batch rules applied</span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-800 bg-slate-950/60 text-slate-400 font-semibold">
+                    <th className="py-3 px-4">Plan Name</th>
+                    <th className="py-3 px-4">Price (Monthly)</th>
+                    <th className="py-3 px-4">Price (Annual)</th>
+                    <th className="py-3 px-4">Max Orgs</th>
+                    <th className="py-3 px-4">Max Apps / Org</th>
+                    <th className="py-3 px-4">Max Branches / App</th>
+                    <th className="py-3 px-4">Max Members</th>
+                    <th className="py-3 px-4">Max Products</th>
+                    <th className="py-3 px-4">Max Transactions</th>
+                    <th className="py-3 px-4">Status</th>
+                    <th className="py-3 px-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {plans.map((p) => {
+                    const monthlyNaira = p.price?.monthly ?? ((p.monthlyPrice || 0) / 100);
+                    const annualNaira = p.price?.annual ?? ((p.annualPrice || 0) / 100);
+                    const limits = p.limits || {};
+
+                    const maxOrgs = limits.maxOrganizations ?? limits.maxWorkspaces ?? (p.key === "premium" ? 10 : p.key === "standard" ? 3 : 1);
+                    const maxApps = limits.maxAppsPerOrganization ?? limits.maxAppsPerWorkspace ?? (p.key === "premium" ? "unlimited" : p.key === "standard" ? 3 : 1);
+                    const maxBranches = limits.maxBranchesPerApp ?? (p.key === "premium" ? 10 : p.key === "standard" ? 3 : 1);
+                    const maxMembers = limits.maxMembersPerOrganization ?? limits.maxMembersPerWorkspace ?? (p.key === "premium" ? 50 : p.key === "standard" ? 10 : 2);
+                    const maxProducts = limits.maxProductsPerWorkspace ?? (p.key === "premium" ? 25000 : p.key === "standard" ? 5000 : 500);
+                    const maxTransactions = limits.maxTransactionsPerMonth ?? (p.key === "premium" ? 25000 : p.key === "standard" ? 5000 : 500);
+
+                    return (
+                      <tr key={`table-${p._id || p.key}`} className="hover:bg-slate-800/30 transition">
+                        <td className="py-3 px-4 font-semibold text-white flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full bg-brand-400" />
+                          <span>{p.name}</span>
+                          <span className="text-[10px] text-slate-500 font-mono">({p.key})</span>
+                        </td>
+                        <td className="py-3 px-4 text-slate-200">
+                          {monthlyNaira === 0 ? "Free (₦0)" : `₦${monthlyNaira.toLocaleString()}`}
+                        </td>
+                        <td className="py-3 px-4 text-slate-300">
+                          {annualNaira === 0 ? "₦0" : `₦${annualNaira.toLocaleString()}`}
+                        </td>
+                        <td className="py-3 px-4 font-mono font-bold text-blue-400">{maxOrgs}</td>
+                        <td className="py-3 px-4 font-mono font-bold text-indigo-400">
+                          {maxApps === "unlimited" ? (
+                            <span className="px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 font-bold text-[10px]">
+                              Unlimited
+                            </span>
+                          ) : (
+                            maxApps
+                          )}
+                        </td>
+                        <td className="py-3 px-4 font-mono font-bold text-amber-400">{maxBranches}</td>
+                        <td className="py-3 px-4 font-mono text-emerald-400">{maxMembers}</td>
+                        <td className="py-3 px-4 font-mono text-slate-300">{maxProducts.toLocaleString()}</td>
+                        <td className="py-3 px-4 font-mono text-slate-300">{maxTransactions.toLocaleString()}/mo</td>
+                        <td className="py-3 px-4">
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                              p.isActive ? "bg-emerald-500/10 text-emerald-400" : "bg-slate-800 text-slate-400"
+                            }`}
+                          >
+                            {p.isActive ? "Active" : "Disabled"}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <button
+                            onClick={() => handleOpenEdit(p)}
+                            className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium transition cursor-pointer"
+                          >
+                            Edit
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Edit Plan Modal */}
+      {/* Edit Plan & Limits Modal */}
       {editingPlan && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
-          <div className="max-w-md w-full rounded-2xl bg-slate-900 border border-slate-800 p-6 space-y-5 shadow-2xl">
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in overflow-y-auto">
+          <div className="max-w-lg w-full rounded-2xl bg-slate-900 border border-slate-800 p-6 space-y-5 shadow-2xl my-8">
             <div className="flex items-center justify-between border-b border-slate-800 pb-4">
               <div className="flex items-center gap-2">
-                <CreditCard className="w-5 h-5 text-brand-400" />
-                <h3 className="font-bold text-base text-white">Edit {editingPlan.name} Plan</h3>
+                <Sliders className="w-5 h-5 text-brand-400" />
+                <h3 className="font-bold text-base text-white">Edit {editingPlan.name} Plan & Batch Limits</h3>
               </div>
               <button
                 onClick={() => setEditingPlan(null)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800"
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -277,10 +452,11 @@ export const Plans: React.FC = () => {
                   required
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs focus:ring-1 focus:ring-brand-500"
                 />
               </div>
 
+              {/* Pricing Section */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <label className="text-slate-300 font-semibold">Monthly Price (₦)</label>
@@ -290,7 +466,7 @@ export const Plans: React.FC = () => {
                     required
                     value={formData.monthlyPriceNaira}
                     onChange={(e) => setFormData({ ...formData, monthlyPriceNaira: parseFloat(e.target.value) || 0 })}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs focus:ring-1 focus:ring-brand-500"
                   />
                 </div>
 
@@ -301,17 +477,127 @@ export const Plans: React.FC = () => {
                     min={0}
                     value={formData.annualPriceNaira}
                     onChange={(e) => setFormData({ ...formData, annualPriceNaira: parseFloat(e.target.value) || 0 })}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs focus:ring-1 focus:ring-brand-500"
                   />
                 </div>
               </div>
 
-              <label className="flex items-center gap-2 cursor-pointer text-slate-300 pt-1">
+              {/* Tier Batch Limits Section */}
+              <div className="pt-3 border-t border-slate-800 space-y-3">
+                <h4 className="text-[11px] font-bold uppercase tracking-wider text-brand-400 flex items-center gap-1.5">
+                  <Sliders className="w-3.5 h-3.5" />
+                  <span>Tier Batch Rules & Entitlement Limits</span>
+                </h4>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-slate-300 font-medium">Max Organizations</label>
+                    <input
+                      type="number"
+                      min={1}
+                      required
+                      value={formData.maxOrganizations}
+                      onChange={(e) => setFormData({ ...formData, maxOrganizations: parseInt(e.target.value, 10) || 1 })}
+                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-slate-300 font-medium">Max Apps per Org</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type={formData.maxAppsPerOrganization === "unlimited" ? "text" : "number"}
+                        min={1}
+                        required
+                        disabled={formData.maxAppsPerOrganization === "unlimited"}
+                        value={formData.maxAppsPerOrganization}
+                        onChange={(e) =>
+                          setFormData({ ...formData, maxAppsPerOrganization: parseInt(e.target.value, 10) || 1 })
+                        }
+                        className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs disabled:opacity-60"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setFormData({
+                            ...formData,
+                            maxAppsPerOrganization:
+                              formData.maxAppsPerOrganization === "unlimited" ? 3 : "unlimited",
+                          })
+                        }
+                        className={`px-2 py-2 rounded-xl text-[10px] font-bold border transition cursor-pointer whitespace-nowrap ${
+                          formData.maxAppsPerOrganization === "unlimited"
+                            ? "bg-brand-500/20 text-brand-300 border-brand-500/40"
+                            : "bg-slate-800 text-slate-400 border-slate-700"
+                        }`}
+                      >
+                        {formData.maxAppsPerOrganization === "unlimited" ? "Unlimited (✓)" : "Set Unlimited"}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-slate-300 font-medium">Max Branches per App</label>
+                    <input
+                      type="number"
+                      min={1}
+                      required
+                      value={formData.maxBranchesPerApp === "unlimited" ? 10 : formData.maxBranchesPerApp}
+                      onChange={(e) => setFormData({ ...formData, maxBranchesPerApp: parseInt(e.target.value, 10) || 1 })}
+                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-slate-300 font-medium">Max Members per Org</label>
+                    <input
+                      type="number"
+                      min={1}
+                      required
+                      value={formData.maxMembersPerOrganization}
+                      onChange={(e) =>
+                        setFormData({ ...formData, maxMembersPerOrganization: parseInt(e.target.value, 10) || 1 })
+                      }
+                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-slate-300 font-medium">Max Products</label>
+                    <input
+                      type="number"
+                      min={1}
+                      required
+                      value={formData.maxProductsPerWorkspace}
+                      onChange={(e) =>
+                        setFormData({ ...formData, maxProductsPerWorkspace: parseInt(e.target.value, 10) || 1 })
+                      }
+                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-slate-300 font-medium">Max Transactions/mo</label>
+                    <input
+                      type="number"
+                      min={1}
+                      required
+                      value={formData.maxTransactionsPerMonth}
+                      onChange={(e) =>
+                        setFormData({ ...formData, maxTransactionsPerMonth: parseInt(e.target.value, 10) || 1 })
+                      }
+                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <label className="flex items-center gap-2 cursor-pointer text-slate-300 pt-2">
                 <input
                   type="checkbox"
                   checked={formData.isActive}
                   onChange={(e) => setFormData({ ...formData, isActive: e.target.checked })}
-                  className="rounded border-slate-700 accent-brand-500 w-4 h-4"
+                  className="rounded border-slate-700 accent-brand-500 w-4 h-4 cursor-pointer"
                 />
                 <span>Active (available for new workspace subscriptions)</span>
               </label>
@@ -320,7 +606,7 @@ export const Plans: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setEditingPlan(null)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 hover:bg-slate-700 transition"
+                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 hover:bg-slate-700 transition cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -328,10 +614,10 @@ export const Plans: React.FC = () => {
                 <button
                   type="submit"
                   disabled={actionLoading}
-                  className="px-5 py-2 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-bold transition flex items-center gap-2 shadow-lg shadow-brand-600/30"
+                  className="px-5 py-2 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-bold transition flex items-center gap-2 shadow-lg shadow-brand-600/30 cursor-pointer"
                 >
                   {actionLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                  <span>Save Plan</span>
+                  <span>Save Plan Limits & Pricing</span>
                 </button>
               </div>
             </form>

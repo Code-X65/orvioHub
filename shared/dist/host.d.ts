@@ -9,5 +9,6 @@ export declare class UnknownHostError extends Error {
     readonly hostname: string;
     constructor(hostname: string);
 }
+export declare function normalizeSubdomain(sub: string): string;
 export declare function resolveHost(rawHost: string, pathname?: string): HostContext;
 //# sourceMappingURL=host.d.ts.map
