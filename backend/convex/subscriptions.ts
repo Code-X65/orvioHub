@@ -2689,3 +2689,518 @@ export const adminRecordManualPayment = mutation({
     };
   },
 });
+
+/**
+ * Daily Cron: Check trial expirations and send warning alerts (3 days & 1 day before)
+ */
+export const checkTrialExpirations = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const allSubs = await ctx.db.query("subscriptions").collect();
+    const now = Date.now();
+    let warnedCount = 0;
+
+    for (const sub of allSubs) {
+      const isTrial = sub.status === "trial" || sub.status === "trialing" || sub.planKey === "free_trial" || sub.planKey === "free";
+      if (!isTrial) continue;
+
+      const trialEnd = sub.trialEndsAt || sub.trialEnd || sub.currentPeriodEnd;
+      if (!trialEnd || trialEnd <= now) continue;
+
+      const msRemaining = trialEnd - now;
+      const daysRemaining = Math.ceil(msRemaining / (1000 * 60 * 60 * 24));
+
+      // Warn at 3 days and 1 day
+      if (daysRemaining === 3 || daysRemaining === 1) {
+        let org: any = sub.organizationId ? await ctx.db.get(sub.organizationId) : null;
+        let ws: any = sub.workspaceId ? await ctx.db.get(sub.workspaceId) : null;
+        const ownerId = org?.ownerId || ws?.ownerId || sub.userId;
+
+        if (ownerId) {
+          await ctx.db.insert("notifications", {
+            userId: ownerId,
+            workspaceId: sub.workspaceId,
+            productKey: "inventory",
+            type: "billing.trial_ending",
+            title: `Your Free Trial expires in ${daysRemaining} day${daysRemaining > 1 ? "s" : ""}!`,
+            body: `Upgrade to the Standard Plan to keep your inventory, branch data, and team access uninterrupted.`,
+            severity: "WARNING",
+            channel: "IN_APP",
+            status: "UNREAD",
+            createdAt: now,
+          });
+
+          const user = await ctx.db.get(ownerId);
+          if (user && (user as any).email) {
+            await ctx.db.insert("emailOutbox", {
+              to: (user as any).email,
+              template: "trial_ending" as any,
+              payload: {
+                firstName: (user as any).name?.split(" ")[0] || "there",
+                name: (user as any).name || "Customer",
+                orgName: org?.name || ws?.name || "Your Business",
+                daysRemaining: String(daysRemaining),
+                trialEndsAt: new Date(trialEnd).toLocaleDateString("en-NG", {
+                  year: "numeric",
+                  month: "short",
+                  day: "numeric",
+                }),
+              },
+              status: "PENDING",
+              attempts: 0,
+              nextAttemptAt: now,
+              createdAt: now,
+              updatedAt: now,
+            });
+          }
+          warnedCount++;
+        }
+      }
+    }
+
+    return { success: true, warnedCount };
+  },
+});
+
+/**
+ * Hourly Cron: Automatically expire ended Free Trials and recalculate entitlements
+ */
+export const expireTrials = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const allSubs = await ctx.db.query("subscriptions").collect();
+    const now = Date.now();
+    let expiredCount = 0;
+
+    for (const sub of allSubs) {
+      const isTrial = sub.status === "trial" || sub.status === "trialing";
+      if (!isTrial) continue;
+
+      const trialEnd = sub.trialEndsAt || sub.trialEnd || sub.currentPeriodEnd;
+      if (trialEnd && trialEnd <= now) {
+        await ctx.db.patch(sub._id, {
+          status: "expired",
+          activePlan: null,
+          entitlementStatus: "inactive",
+          updatedAt: now,
+        });
+
+        // Update entitlements if workspaceId is present
+        if (sub.workspaceId) {
+          const ents = await ctx.db
+            .query("workspaceEntitlements")
+            .withIndex("by_workspace", (q: any) => q.eq("workspaceId", sub.workspaceId))
+            .collect();
+          for (const ent of ents) {
+            await ctx.db.patch(ent._id, {
+              status: "expired",
+              enabled: false,
+              updatedAt: now,
+            });
+          }
+        }
+
+        let org: any = sub.organizationId ? await ctx.db.get(sub.organizationId) : null;
+        let ws: any = sub.workspaceId ? await ctx.db.get(sub.workspaceId) : null;
+        const ownerId = org?.ownerId || ws?.ownerId || sub.userId;
+
+        if (ownerId) {
+          await ctx.db.insert("notifications", {
+            userId: ownerId,
+            workspaceId: sub.workspaceId,
+            productKey: "inventory",
+            type: "billing.trial_expired",
+            title: "Your 30-Day Free Trial has expired",
+            body: "Your trial period has concluded. Upgrade to Standard to reactivate full operations.",
+            severity: "ERROR",
+            channel: "IN_APP",
+            status: "UNREAD",
+            createdAt: now,
+          });
+        }
+
+        await ctx.db.insert("auditLogs", {
+          organizationId: sub.organizationId,
+          workspaceId: sub.workspaceId,
+          action: "billing.trial_expired",
+          resource: `subscription:${sub._id}`,
+          severity: "warning",
+          metadata: {
+            previousStatus: "trial",
+            expiredAt: now,
+          },
+          timestamp: now,
+        });
+
+        expiredCount++;
+      }
+    }
+
+    return { success: true, expiredCount };
+  },
+});
+
+/**
+ * Daily Cron: Send renewal reminders 3 days before period end for paid subscriptions
+ */
+export const checkRenewals = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const allSubs = await ctx.db.query("subscriptions").collect();
+    const now = Date.now();
+    let remindedCount = 0;
+
+    for (const sub of allSubs) {
+      if (sub.status !== "active" || sub.planKey === "free_trial" || sub.planKey === "free") continue;
+      if (!sub.currentPeriodEnd || sub.currentPeriodEnd <= now) continue;
+
+      const msRemaining = sub.currentPeriodEnd - now;
+      const daysRemaining = Math.ceil(msRemaining / (1000 * 60 * 60 * 24));
+
+      if (daysRemaining === 3 || daysRemaining === 1) {
+        let org: any = sub.organizationId ? await ctx.db.get(sub.organizationId) : null;
+        let ws: any = sub.workspaceId ? await ctx.db.get(sub.workspaceId) : null;
+        const ownerId = org?.ownerId || ws?.ownerId || sub.userId;
+
+        if (ownerId) {
+          await ctx.db.insert("notifications", {
+            userId: ownerId,
+            workspaceId: sub.workspaceId,
+            productKey: "inventory",
+            type: "billing.renewal_reminder",
+            title: `Your subscription will renew in ${daysRemaining} day${daysRemaining > 1 ? "s" : ""}`,
+            body: `Your ${sub.planKey.toUpperCase()} plan will renew on ${new Date(sub.currentPeriodEnd).toLocaleDateString("en-NG")}.`,
+            severity: "INFO",
+            channel: "IN_APP",
+            status: "UNREAD",
+            createdAt: now,
+          });
+          remindedCount++;
+        }
+      }
+    }
+
+    return { success: true, remindedCount };
+  },
+});
+
+/**
+ * Hourly Cron: Process overdue subscriptions through Grace Period (7 days) -> Suspended
+ */
+export const processRenewals = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const allSubs = await ctx.db.query("subscriptions").collect();
+    const now = Date.now();
+    let processedCount = 0;
+
+    for (const sub of allSubs) {
+      const isPaid = sub.planKey === "standard" || sub.planKey === "premium";
+      if (!isPaid) continue;
+
+      // 1. If active and period has ended, transition to past_due with 7-day grace period
+      if (sub.status === "active" && sub.currentPeriodEnd && sub.currentPeriodEnd <= now) {
+        const graceEnd = now + 7 * 86_400_000;
+        await ctx.db.patch(sub._id, {
+          status: "past_due",
+          gracePeriodEnd: graceEnd,
+          updatedAt: now,
+        });
+
+        let org: any = sub.organizationId ? await ctx.db.get(sub.organizationId) : null;
+        let ws: any = sub.workspaceId ? await ctx.db.get(sub.workspaceId) : null;
+        const ownerId = org?.ownerId || ws?.ownerId || sub.userId;
+
+        if (ownerId) {
+          await ctx.db.insert("notifications", {
+            userId: ownerId,
+            workspaceId: sub.workspaceId,
+            productKey: "inventory",
+            type: "billing.payment_past_due",
+            title: "Payment past due - 7 day grace period active",
+            body: `Your subscription payment could not be renewed. You have a 7-day grace period ending on ${new Date(graceEnd).toLocaleDateString("en-NG")} to retry payment before access is restricted.`,
+            severity: "WARNING",
+            channel: "IN_APP",
+            status: "UNREAD",
+            createdAt: now,
+          });
+        }
+
+        await ctx.db.insert("auditLogs", {
+          organizationId: sub.organizationId,
+          workspaceId: sub.workspaceId,
+          action: "billing.past_due_grace_period_started",
+          resource: `subscription:${sub._id}`,
+          severity: "warning",
+          metadata: { gracePeriodEnd: graceEnd },
+          timestamp: now,
+        });
+
+        processedCount++;
+      }
+      // 2. If past_due and grace period has elapsed, suspend access
+      else if (sub.status === "past_due" && sub.gracePeriodEnd && sub.gracePeriodEnd <= now) {
+        await ctx.db.patch(sub._id, {
+          status: "suspended",
+          entitlementStatus: "inactive",
+          updatedAt: now,
+        });
+
+        if (sub.workspaceId) {
+          await ctx.db.patch(sub.workspaceId, {
+            status: "suspended",
+            updatedAt: now,
+          });
+        }
+
+        let org: any = sub.organizationId ? await ctx.db.get(sub.organizationId) : null;
+        let ws: any = sub.workspaceId ? await ctx.db.get(sub.workspaceId) : null;
+        const ownerId = org?.ownerId || ws?.ownerId || sub.userId;
+
+        if (ownerId) {
+          await ctx.db.insert("notifications", {
+            userId: ownerId,
+            workspaceId: sub.workspaceId,
+            productKey: "inventory",
+            type: "billing.subscription_suspended",
+            title: "Organization suspended due to unpaid subscription",
+            body: "Your grace period has ended. Please make a payment to restore full business access.",
+            severity: "ERROR",
+            channel: "IN_APP",
+            status: "UNREAD",
+            createdAt: now,
+          });
+        }
+
+        await ctx.db.insert("auditLogs", {
+          organizationId: sub.organizationId,
+          workspaceId: sub.workspaceId,
+          action: "billing.subscription_suspended_nonpayment",
+          resource: `subscription:${sub._id}`,
+          severity: "critical",
+          metadata: { suspendedAt: now },
+          timestamp: now,
+        });
+
+        processedCount++;
+      }
+    }
+
+    return { success: true, processedCount };
+  },
+});
+
+/**
+ * Mutation: Resume a subscription that was previously cancelled at period end
+ */
+export const resumeCancelledSubscription = mutation({
+  args: {
+    organizationId: v.id("organizations"),
+    userId: v.optional(v.id("users")),
+  },
+  handler: async (ctx, args) => {
+    let sub = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_organizationId", (q) => q.eq("organizationId", args.organizationId))
+      .first();
+
+    if (!sub) {
+      const ws = await ctx.db
+        .query("workspaces")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", args.organizationId))
+        .first();
+      if (ws) {
+        sub = await ctx.db
+          .query("subscriptions")
+          .withIndex("by_workspace", (q) => q.eq("workspaceId", ws._id))
+          .first();
+      }
+    }
+
+    if (!sub) throw new Error("SUBSCRIPTION_NOT_FOUND");
+
+    const now = Date.now();
+    await ctx.db.patch(sub._id, {
+      cancelAtPeriodEnd: false,
+      updatedAt: now,
+    });
+
+    await ctx.db.insert("auditLogs", {
+      actorId: args.userId,
+      actorUserId: args.userId,
+      organizationId: args.organizationId,
+      action: "billing.subscription_resumed",
+      resource: `subscription:${sub._id}`,
+      severity: "info",
+      metadata: { resumedAt: now },
+      timestamp: now,
+    });
+
+    return { success: true };
+  },
+});
+
+/**
+ * Query: Calculate resource conflicts when downgrading an organization
+ */
+export const calculateDowngradeConflicts = query({
+  args: {
+    organizationId: v.union(v.id("organizations"), v.id("workspaces"), v.string()),
+    targetPlanKey: v.string(), // "free_trial" | "standard"
+  },
+  handler: async (ctx, args) => {
+    const { org, orgId, workspace, workspaceId } = await resolveOrganization(ctx, args.organizationId);
+    const targetOrgId = orgId || org?._id;
+    const targetWsId = workspaceId || workspace?._id;
+
+    // Define target plan limits
+    const limits = args.targetPlanKey === "free_trial" || args.targetPlanKey === "free"
+      ? { maxBranches: 1, maxMembers: 2, maxProducts: 500 }
+      : { maxBranches: 3, maxMembers: 10, maxProducts: 5000 };
+
+    // Fetch branches
+    let branches: any[] = [];
+    if (targetOrgId) {
+      branches = await ctx.db
+        .query("branches")
+        .withIndex("by_organizationId", (q: any) => q.eq("organizationId", targetOrgId))
+        .filter((q: any) => q.neq(q.field("status"), "deleted") && q.neq(q.field("status"), "ARCHIVED") && q.neq(q.field("status"), "archived"))
+        .collect();
+    } else if (targetWsId) {
+      branches = await ctx.db
+        .query("branches")
+        .withIndex("by_workspace", (q: any) => q.eq("workspaceId", targetWsId))
+        .filter((q: any) => q.neq(q.field("status"), "deleted") && q.neq(q.field("status"), "ARCHIVED") && q.neq(q.field("status"), "archived"))
+        .collect();
+    }
+
+    // Fetch members
+    let members: any[] = [];
+    if (targetOrgId) {
+      members = await ctx.db
+        .query("organizationMemberships")
+        .withIndex("by_organizationId", (q: any) => q.eq("organizationId", targetOrgId))
+        .filter((q: any) => q.eq(q.field("status"), "ACTIVE"))
+        .collect();
+    } else if (targetWsId) {
+      members = await ctx.db
+        .query("workspaceMemberships")
+        .withIndex("by_workspace", (q: any) => q.eq("workspaceId", targetWsId))
+        .filter((q: any) => q.eq(q.field("status"), "active"))
+        .collect();
+    }
+
+    const memberDetails = [];
+    for (const m of members) {
+      const user = await ctx.db.get(m.userId);
+      memberDetails.push({
+        id: m._id,
+        userId: m.userId,
+        name: user?.name || "Member",
+        email: user?.email || "",
+        role: m.role,
+      });
+    }
+
+    const excessBranchesCount = Math.max(0, branches.length - limits.maxBranches);
+    const excessMembersCount = Math.max(0, members.length - limits.maxMembers);
+    const hasConflicts = excessBranchesCount > 0 || excessMembersCount > 0;
+
+    return {
+      hasConflicts,
+      targetLimits: limits,
+      currentCounts: {
+        branches: branches.length,
+        members: members.length,
+      },
+      excess: {
+        branches: excessBranchesCount,
+        members: excessMembersCount,
+      },
+      branches: branches.map((b) => ({
+        id: b._id,
+        name: b.name,
+        code: b.code || "MAIN",
+        isPrimary: Boolean(b.isPrimary),
+      })),
+      members: memberDetails,
+    };
+  },
+});
+
+/**
+ * Mutation: Schedule downgrade with user's selected primary branch and retained team members
+ */
+export const scheduleDowngradeWithConflictResolution = mutation({
+  args: {
+    organizationId: v.id("organizations"),
+    userId: v.id("users"),
+    targetPlanKey: v.string(),
+    primaryBranchId: v.optional(v.id("branches")),
+    retainedMemberUserIds: v.optional(v.array(v.id("users"))),
+    reason: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    let sub = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_organizationId", (q) => q.eq("organizationId", args.organizationId))
+      .first();
+
+    if (!sub) {
+      const ws = await ctx.db
+        .query("workspaces")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", args.organizationId))
+        .first();
+      if (ws) {
+        sub = await ctx.db
+          .query("subscriptions")
+          .withIndex("by_workspace", (q) => q.eq("workspaceId", ws._id))
+          .first();
+      }
+    }
+
+    if (!sub) throw new Error("SUBSCRIPTION_NOT_FOUND");
+
+    const now = Date.now();
+
+    // 1. Save chosen primary branch if provided
+    if (args.primaryBranchId) {
+      const branches = await ctx.db
+        .query("branches")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", args.organizationId))
+        .collect();
+
+      for (const b of branches) {
+        await ctx.db.patch(b._id, {
+          isPrimary: b._id === args.primaryBranchId,
+        });
+      }
+    }
+
+    // 2. Schedule downgrade at period end
+    await ctx.db.patch(sub._id, {
+      pendingPlanKey: args.targetPlanKey,
+      cancelAtPeriodEnd: true,
+      updatedAt: now,
+    });
+
+    await ctx.db.insert("auditLogs", {
+      actorId: args.userId,
+      actorUserId: args.userId,
+      organizationId: args.organizationId,
+      action: "billing.downgrade_scheduled",
+      resource: `subscription:${sub._id}`,
+      severity: "warning",
+      metadata: {
+        targetPlanKey: args.targetPlanKey,
+        primaryBranchId: args.primaryBranchId,
+        retainedMemberUserIds: args.retainedMemberUserIds,
+        reason: args.reason,
+      },
+      timestamp: now,
+    });
+
+    return { success: true, effectiveDate: sub.currentPeriodEnd };
+  },
+});
+

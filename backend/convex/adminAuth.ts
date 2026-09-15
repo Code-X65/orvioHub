@@ -639,3 +639,51 @@ export const getAuditLogs = query({
     return logs;
   },
 });
+
+/**
+ * verifyAdminPassword
+ * Step-up authentication check before high-risk administrative operations.
+ */
+export const verifyAdminPassword = mutation({
+  args: {
+    sessionToken: v.string(),
+    password: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const session = await ctx.db
+      .query("adminSessions")
+      .withIndex("by_token", (q: any) => q.eq("sessionToken", args.sessionToken))
+      .first();
+
+    if (!session || session.expiresAt < now) {
+      throw new Error("Invalid or expired session.");
+    }
+
+    const admin = await ctx.db.get(session.adminId);
+    if (!admin || !admin.isActive) {
+      throw new Error("Admin account is inactive or unauthorized.");
+    }
+
+    const isMatch = bcrypt.compareSync(args.password, admin.passwordHash);
+    if (!isMatch) {
+      await logAudit(ctx, {
+        adminId: admin._id,
+        action: "HIGH_RISK_STEP_UP_FAILED",
+        resourceType: "platformAdmins",
+        resourceId: admin._id,
+      });
+      throw new Error("Invalid administrator password.");
+    }
+
+    await logAudit(ctx, {
+      adminId: admin._id,
+      action: "HIGH_RISK_STEP_UP_VERIFIED",
+      resourceType: "platformAdmins",
+      resourceId: admin._id,
+    });
+
+    return { verified: true, adminId: admin._id };
+  },
+});
+

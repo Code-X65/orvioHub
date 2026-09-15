@@ -770,6 +770,7 @@ export const deleteOrganization = mutation({
     notes: v.optional(v.string()),
     cancelSubscriptions: v.optional(v.boolean()),
     adminForceDelete: v.optional(v.boolean()),
+    confirmationPhrase: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const { admin } = await verifyAdminSession(ctx, args.sessionToken);
@@ -778,7 +779,18 @@ export const deleteOrganization = mutation({
     if (!ws) throw new Error("Organization not found.");
     const targetWorkspaceId = ws._id;
 
+    // High Risk Verification: If force delete, require confirmation phrase match
+    if (args.adminForceDelete) {
+      const expectedPhrase = ws.slug || "DELETE";
+      if (!args.confirmationPhrase || (args.confirmationPhrase !== expectedPhrase && args.confirmationPhrase !== "DELETE")) {
+        throw new Error(
+          `CONFIRMATION_REQUIRED: High-risk deletion requires exact confirmation phrase match ('${expectedPhrase}').`
+        );
+      }
+    }
+
     const now = Date.now();
+
 
     // 1. Check subscriptions
     const subscriptions = await ctx.db

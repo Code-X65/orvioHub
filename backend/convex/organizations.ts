@@ -13,6 +13,59 @@ function generateSlug(name: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+export const VALID_ORG_STATUS_TRANSITIONS: Record<string, string[]> = {
+  creating: ["setup_incomplete", "trial", "active", "suspended", "deleted"],
+  setup_incomplete: ["trial", "active", "suspended", "archived", "deleted"],
+  trial: ["active", "past_due", "suspended", "archived", "deleting", "deleted"],
+  active: ["past_due", "suspended", "archived", "deleting", "deleted"],
+  past_due: ["active", "grace_period", "suspended", "archived", "deleting", "deleted"],
+  grace_period: ["active", "past_due", "suspended", "archived", "deleting", "deleted"],
+  suspended: ["active", "archived", "deleting", "deleted"],
+  archived: ["active", "deleting", "deleted"],
+  deleting: ["deleted", "active"],
+  deleted: [],
+};
+
+export function isValidOrgStatusTransition(currentStatus: string, newStatus: string): boolean {
+  if (currentStatus === newStatus) return true;
+  const allowed = VALID_ORG_STATUS_TRANSITIONS[currentStatus.toLowerCase()];
+  if (!allowed) return true; // If unknown status, allow transition to avoid locking
+  return allowed.includes(newStatus.toLowerCase());
+}
+
+export async function checkHasFinancialRecords(ctx: { db: any }, orgId: any): Promise<boolean> {
+  // 1. Check invoices
+  const invoice = await ctx.db
+    .query("invoices")
+    .withIndex("by_organizationId", (q: any) => q.eq("organizationId", orgId))
+    .first();
+  if (invoice) return true;
+
+  // 2. Check payments
+  const payment = await ctx.db
+    .query("payments")
+    .withIndex("by_organizationId", (q: any) => q.eq("organizationId", orgId))
+    .first();
+  if (payment) return true;
+
+  // 3. Check inventory sales for workspaces under this organization
+  const workspaces = await ctx.db
+    .query("workspaces")
+    .withIndex("by_organizationId", (q: any) => q.eq("organizationId", orgId))
+    .collect();
+
+  for (const ws of workspaces) {
+    const sale = await ctx.db
+      .query("inventorySales")
+      .withIndex("by_workspaceId", (q: any) => q.eq("workspaceId", ws._id))
+      .first();
+    if (sale) return true;
+  }
+
+  return false;
+}
+
+
 export const getOrganizationById = query({
   args: { organizationId: v.union(v.id("organizations"), v.id("workspaces"), v.string()) },
   handler: async (ctx, args) => {
@@ -1020,11 +1073,19 @@ export const updateOrganization = mutation({
     userId: v.id("users"),
     name: v.optional(v.string()),
     industry: v.optional(v.string()),
+    category: v.optional(v.string()),
     country: v.optional(v.string()),
     timezone: v.optional(v.string()),
+    currency: v.optional(v.string()),
     website: v.optional(v.string()),
     size: v.optional(v.string()),
     logo: v.optional(v.string()),
+    phone: v.optional(v.string()),
+    street: v.optional(v.string()),
+    city: v.optional(v.string()),
+    state: v.optional(v.string()),
+    address: v.optional(v.string()),
+    status: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     // Check permission
@@ -1044,17 +1105,59 @@ export const updateOrganization = mutation({
       throw new Error("ORGANIZATION_NOT_FOUND");
     }
 
+    // 1. Currency Lock Rule (Section 4 & 6 of Master Checklist)
+    if (args.currency && args.currency !== org.currency) {
+      const hasFinance = await checkHasFinancialRecords(ctx, args.organizationId);
+      if (hasFinance) {
+        throw new Error(
+          "CURRENCY_LOCKED: Organization currency cannot be modified because financial or sales records already exist."
+        );
+      }
+    }
+
+    // 2. Status Transition Rule (Section 3 of Master Checklist)
+    if (args.status && args.status !== org.status) {
+      const currentStatus = org.status || "active";
+      if (!isValidOrgStatusTransition(currentStatus, args.status)) {
+        throw new Error(
+          `INVALID_STATUS_TRANSITION: Cannot transition organization status from '${currentStatus}' to '${args.status}'.`
+        );
+      }
+    }
+
     const now = Date.now();
     const patchData: Record<string, unknown> = { updatedAt: now };
     if (args.name !== undefined) patchData.name = args.name;
     if (args.industry !== undefined) patchData.industry = args.industry;
+    if (args.category !== undefined) patchData.category = args.category;
     if (args.country !== undefined) patchData.country = args.country;
     if (args.timezone !== undefined) patchData.timezone = args.timezone;
+    if (args.currency !== undefined) patchData.currency = args.currency;
     if (args.website !== undefined) patchData.website = args.website;
     if (args.size !== undefined) patchData.size = args.size;
     if (args.logo !== undefined) patchData.logo = args.logo;
+    if (args.phone !== undefined) patchData.phone = args.phone;
+    if (args.street !== undefined) patchData.street = args.street;
+    if (args.city !== undefined) patchData.city = args.city;
+    if (args.state !== undefined) patchData.state = args.state;
+    if (args.address !== undefined) patchData.address = args.address;
+    if (args.status !== undefined) patchData.status = args.status;
 
     await ctx.db.patch(args.organizationId, patchData);
+
+    // Sync primary workspace details if needed
+    const ws = await ctx.db
+      .query("workspaces")
+      .withIndex("by_organizationId", (q) => q.eq("organizationId", args.organizationId))
+      .first();
+
+    if (ws) {
+      const wsPatch: any = { updatedAt: now };
+      if (args.name) wsPatch.name = args.name;
+      if (args.currency) wsPatch.currency = args.currency;
+      if (args.status) wsPatch.status = args.status;
+      await ctx.db.patch(ws._id, wsPatch);
+    }
 
     // Audit log
     await ctx.db.insert("auditLogs", {
@@ -1069,6 +1172,7 @@ export const updateOrganization = mutation({
     return await ctx.db.get(args.organizationId);
   },
 });
+
 
 export const leaveOrganization = mutation({
   args: {

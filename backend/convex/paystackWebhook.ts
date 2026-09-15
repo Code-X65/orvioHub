@@ -368,3 +368,113 @@ async function handleSubscriptionCancel(ctx: MutationCtx, data: any, eventId?: s
     });
   }
 }
+
+/**
+ * Superadmin / System: List billing events (optionally filtered by status)
+ */
+export const listBillingEvents = mutation({
+  args: {
+    status: v.optional(v.union(v.literal("received"), v.literal("processed"), v.literal("ignored"), v.literal("failed"))),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    let eventsQuery = ctx.db.query("billingEvents");
+    if (args.status) {
+      eventsQuery = eventsQuery.withIndex("by_status", (q) => q.eq("status", args.status!));
+    }
+    const events = await eventsQuery.order("desc").take(args.limit || 50);
+    return events;
+  },
+});
+
+/**
+ * Superadmin / System: Manually retry processing a failed or pending webhook event
+ */
+export const retryFailedWebhook = mutation({
+  args: {
+    billingEventId: v.optional(v.id("billingEvents")),
+    providerEventId: v.optional(v.string()),
+    adminUserId: v.optional(v.union(v.id("users"), v.string())),
+  },
+  handler: async (ctx, args) => {
+    let eventDoc = null;
+    if (args.billingEventId) {
+      eventDoc = await ctx.db.get(args.billingEventId);
+    } else if (args.providerEventId) {
+      eventDoc = await ctx.db
+        .query("billingEvents")
+        .withIndex("by_provider_event_id", (q) => q.eq("providerEventId", args.providerEventId!))
+        .first();
+    }
+
+    if (!eventDoc) {
+      throw new Error("BILLING_EVENT_NOT_FOUND");
+    }
+
+    const { eventType, payloadMetadata, providerEventId } = eventDoc;
+    const now = Date.now();
+
+    try {
+      switch (eventType) {
+        case "charge.success":
+          await handlePaymentSuccess(ctx, payloadMetadata, providerEventId);
+          break;
+        case "subscription.create":
+          await handleSubscriptionCreate(ctx, payloadMetadata, providerEventId);
+          break;
+        case "invoice.payment_success":
+          await handleInvoicePayment(ctx, payloadMetadata, providerEventId);
+          break;
+        case "subscription.disable":
+          await handleSubscriptionCancel(ctx, payloadMetadata, providerEventId);
+          break;
+        default:
+          console.log("Unhandled retry event type:", eventType);
+      }
+
+      await ctx.db.patch(eventDoc._id, {
+        status: "processed",
+        processedAt: now,
+        errorMessage: undefined,
+      });
+
+      await ctx.db.insert("auditLogs", {
+        actorId: args.adminUserId ? String(args.adminUserId) : undefined,
+        actorUserId: args.adminUserId ? String(args.adminUserId) : undefined,
+        action: "billing.webhook_retried_success",
+        resource: `webhook:${providerEventId}`,
+        severity: "info",
+        metadata: {
+          billingEventId: eventDoc._id,
+          providerEventId,
+          eventType,
+        },
+        timestamp: now,
+      });
+
+      return { success: true, status: "processed", eventId: providerEventId };
+    } catch (err: any) {
+      await ctx.db.patch(eventDoc._id, {
+        status: "failed",
+        errorMessage: `Retry failed: ${err?.message || String(err)}`,
+      });
+
+      await ctx.db.insert("auditLogs", {
+        actorId: args.adminUserId ? String(args.adminUserId) : undefined,
+        actorUserId: args.adminUserId ? String(args.adminUserId) : undefined,
+        action: "billing.webhook_retried_failed",
+        resource: `webhook:${providerEventId}`,
+        severity: "high",
+        metadata: {
+          billingEventId: eventDoc._id,
+          providerEventId,
+          error: err?.message || String(err),
+        },
+        timestamp: now,
+      });
+
+      throw err;
+    }
+  },
+});
+

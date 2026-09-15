@@ -27,7 +27,6 @@ import {
   PowerOff,
   Star,
   Phone,
-  Plus,
   X,
 } from 'lucide-react';
 
