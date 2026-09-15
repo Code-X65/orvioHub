@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useAuthStore } from '@/stores/useAuthStore';
 
 export type ActiveProfileSection =
   | 'personal'
@@ -133,6 +134,7 @@ export const ProfileLayout: React.FC<ProfileLayoutProps> = ({
   fullWidth = false,
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const user = useAuthStore((state) => state.user);
 
   return (
     <div className="min-h-screen bg-black text-slate-100 flex flex-col selection:bg-[#714b67] selection:text-white">
@@ -190,6 +192,23 @@ export const ProfileLayout: React.FC<ProfileLayoutProps> = ({
             )}
           >
             <nav className="space-y-4 bg-[#0a0508] border border-white/10 rounded-xs p-3 sticky top-24 shadow-xl">
+              {/* User Profile Summary Card */}
+              {user && (
+                <div className="p-3 mb-2 rounded-xs bg-[#130b10] border border-white/10 flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xs bg-gradient-to-tr from-[#714B67] to-[#FDB02F] flex items-center justify-center font-bold text-white text-xs shrink-0 shadow-sm overflow-hidden">
+                    {user.avatarUrl ? (
+                      <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" />
+                    ) : (
+                      user.name?.charAt(0).toUpperCase() || 'U'
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-bold text-white truncate">{user.name}</p>
+                    <p className="text-[10px] text-slate-400 truncate mt-0.5">{user.email}</p>
+                  </div>
+                </div>
+              )}
+
               {navGroups.map((group, gIdx) => (
                 <div key={gIdx} className="space-y-1">
                   <div className="px-2.5 py-1 text-[10px] font-bold tracking-wider text-slate-500 uppercase">

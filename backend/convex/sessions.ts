@@ -14,8 +14,22 @@ export const createSession = mutation({
     expiresAt: v.number(),
     userAgent: v.optional(v.string()),
     ipAddress: v.optional(v.string()),
+    lastVisitedUrl: v.optional(v.string()),
+    lastVisitedSubdomain: v.optional(v.string()),
+    lastVisitedAt: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.userId);
+    if (
+      user &&
+      (user.status === "SUSPENDED" ||
+        user.status === "suspended" ||
+        user.status === "DELETED" ||
+        user.status === "deleted")
+    ) {
+      throw new Error("ACCOUNT_SUSPENDED");
+    }
+
     const now = Date.now();
     const sessionId = await ctx.db.insert("sessions", {
       userId: args.userId,
@@ -30,6 +44,9 @@ export const createSession = mutation({
       ipAddress: args.ipAddress,
       lastActiveAt: now,
       expiresAt: args.expiresAt,
+      lastVisitedUrl: args.lastVisitedUrl,
+      lastVisitedSubdomain: args.lastVisitedSubdomain,
+      lastVisitedAt: args.lastVisitedAt,
       createdAt: now,
       updatedAt: now,
     });
@@ -89,7 +106,13 @@ export const rotateSession = mutation({
     }
 
     const user = await ctx.db.get(session.userId);
-    if (!user || user.status === "SUSPENDED" || user.status === "INACTIVE") {
+    if (!user || user.status === "DELETED" || user.status === "deleted") {
+      throw new Error("USER_NOT_ACTIVE");
+    }
+    if (user.status === "SUSPENDED" || user.status === "suspended") {
+      throw new Error("USER_SUSPENDED");
+    }
+    if (user.status === "INACTIVE" || user.status === "inactive") {
       throw new Error("USER_NOT_ACTIVE");
     }
 
@@ -131,6 +154,130 @@ export const rotateSession = mutation({
       email: user.email,
       name: user.name,
       tokenVersion: currentTokenVersion,
+    };
+  },
+});
+
+export const logout = mutation({
+  args: {
+    sessionId: v.optional(v.id("sessions")),
+    sessionHash: v.optional(v.string()),
+    refreshToken: v.optional(v.string()),
+    userId: v.optional(v.id("users")),
+    ipAddress: v.optional(v.string()),
+    userAgent: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    let session = null;
+    if (args.sessionId) {
+      session = await ctx.db.get(args.sessionId);
+    }
+    if (!session && args.sessionHash) {
+      session = await ctx.db
+        .query("sessions")
+        .withIndex("by_sessionHash", (q) => q.eq("sessionHash", args.sessionHash))
+        .first();
+    }
+    if (!session && args.refreshToken) {
+      session = await ctx.db
+        .query("sessions")
+        .withIndex("by_refreshToken", (q) => q.eq("refreshToken", args.refreshToken))
+        .first();
+    }
+
+    const now = Date.now();
+    let targetUserId = args.userId;
+
+    if (session) {
+      if (!session.revokedAt) {
+        await ctx.db.patch(session._id, {
+          revokedAt: now,
+          updatedAt: now,
+        });
+      }
+      targetUserId = targetUserId || session.userId;
+    }
+
+    // Insert auth event for audit
+    if (targetUserId) {
+      await ctx.db.insert("authEvents", {
+        eventType: "logout",
+        userId: targetUserId,
+        sessionId: session?._id,
+        ipAddress: args.ipAddress || session?.ipAddress,
+        userAgent: args.userAgent || session?.userAgent,
+        createdAt: now,
+      });
+    }
+
+    return { success: true };
+  },
+});
+
+export const validateSession = query({
+  args: {
+    sessionId: v.optional(v.id("sessions")),
+    sessionHash: v.optional(v.string()),
+    refreshToken: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    let session = null;
+    if (args.sessionId) {
+      session = await ctx.db.get(args.sessionId);
+    }
+    if (!session && args.sessionHash) {
+      session = await ctx.db
+        .query("sessions")
+        .withIndex("by_sessionHash", (q) => q.eq("sessionHash", args.sessionHash))
+        .first();
+    }
+    if (!session && args.refreshToken) {
+      session = await ctx.db
+        .query("sessions")
+        .withIndex("by_refreshToken", (q) => q.eq("refreshToken", args.refreshToken))
+        .first();
+    }
+
+    if (!session) {
+      return { valid: false, error: "SESSION_NOT_FOUND" };
+    }
+
+    if (session.revokedAt) {
+      return { valid: false, error: "SESSION_REVOKED" };
+    }
+
+    if (session.expiresAt <= Date.now()) {
+      return { valid: false, error: "SESSION_EXPIRED" };
+    }
+
+    const user = await ctx.db.get(session.userId);
+    if (!user || user.status === "DELETED" || user.status === "deleted") {
+      return { valid: false, error: "USER_INACTIVE" };
+    }
+    if (user.status === "SUSPENDED" || user.status === "suspended") {
+      return {
+        valid: false,
+        error: "USER_SUSPENDED",
+        reason: user.suspensionReason || "Account suspended",
+      };
+    }
+    if (user.status === "INACTIVE" || user.status === "inactive") {
+      return { valid: false, error: "USER_INACTIVE" };
+    }
+
+    const currentTokenVersion = user.tokenVersion ?? 0;
+    if (session.tokenVersion !== currentTokenVersion) {
+      return { valid: false, error: "SESSION_INVALIDATED" };
+    }
+
+    return {
+      valid: true,
+      session: {
+        id: session._id,
+        userId: user._id,
+        email: user.email,
+        tokenVersion: currentTokenVersion,
+      },
     };
   },
 });
@@ -300,6 +447,56 @@ export const touchSessionActivity = mutation({
         lastActiveAt: Date.now(),
       });
     }
+  },
+});
+
+export const updateSessionContext = mutation({
+  args: {
+    sessionId: v.id("sessions"),
+    lastVisitedUrl: v.optional(v.string()),
+    lastVisitedSubdomain: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const session = await ctx.db.get(args.sessionId);
+    if (!session || session.revokedAt || session.expiresAt < Date.now()) {
+      return { success: false, error: "SESSION_NOT_ACTIVE" };
+    }
+    const now = Date.now();
+    await ctx.db.patch(args.sessionId, {
+      lastVisitedUrl: args.lastVisitedUrl,
+      lastVisitedSubdomain: args.lastVisitedSubdomain,
+      lastVisitedAt: now,
+      lastActiveAt: now,
+      updatedAt: now,
+    });
+    return { success: true };
+  },
+});
+
+export const getSessionById = query({
+  args: {
+    sessionId: v.id("sessions"),
+  },
+  handler: async (ctx, args) => {
+    const session = await ctx.db.get(args.sessionId);
+    if (!session) return null;
+    return {
+      id: session._id,
+      userId: session.userId,
+      deviceId: session.deviceId,
+      deviceName: session.deviceName,
+      userAgent: session.userAgent,
+      ipAddress: session.ipAddress,
+      authenticationMethod: session.authenticationMethod,
+      tokenVersion: session.tokenVersion,
+      lastVisitedUrl: session.lastVisitedUrl,
+      lastVisitedSubdomain: session.lastVisitedSubdomain,
+      lastVisitedAt: session.lastVisitedAt,
+      lastActiveAt: session.lastActiveAt,
+      expiresAt: session.expiresAt,
+      isRevoked: Boolean(session.revokedAt),
+      revokedAt: session.revokedAt,
+    };
   },
 });
 

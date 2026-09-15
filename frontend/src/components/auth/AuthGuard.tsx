@@ -1,8 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../../stores/useAuthStore';
-import { Loader2 } from 'lucide-react';
-import { getLoginUrl, getAccountsUrl, isAllowedReturnTo } from '@orviohub/shared';
+import { getLoginUrl, getHomeUrl, isAllowedReturnTo } from '@orviohub/shared';
 import { useHost } from '../../host/useHost';
 
 interface AuthGuardProps {
@@ -31,16 +30,23 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({
 
   if (!isInitialized) {
     return (
-      <div className="min-h-screen bg-black flex flex-col items-center justify-center space-y-4">
-        <Loader2 className="w-8 h-8 text-[#714b67] animate-spin" />
-        <p className="text-slate-400 text-xs animate-pulse">Loading workspace session...</p>
+      <div className="min-h-screen bg-black text-slate-100 flex flex-col justify-between animate-pulse">
+        <div className="h-20 border-b border-white/5 bg-black/90 px-6 sm:px-12 flex items-center justify-between">
+          <div className="w-24 h-7 rounded-xs bg-white/10" />
+          <div className="w-20 h-8 rounded-xs bg-white/10" />
+        </div>
+        <div className="flex-1 max-w-5xl w-full mx-auto px-6 py-12 space-y-6">
+          <div className="w-1/3 h-8 rounded-xs bg-white/10" />
+          <div className="w-1/2 h-4 rounded-xs bg-white/5" />
+          <div className="h-64 rounded-sm bg-[#120b10] border border-white/5" />
+        </div>
       </div>
     );
   }
 
   // 1. Unauthenticated user trying to access a protected route
   if (requireAuth && !requireGuest && !isAuthenticated) {
-    // If on a dedicated product subdomain (e.g. inventory, launcher, home), redirect to central accounts login with returnTo
+    // If on a dedicated product subdomain (e.g. inventory, launcher, home), redirect to central accounts login with redirect
     if (host.application !== 'accounts' && host.application !== 'marketing') {
       const returnUrl = typeof window !== 'undefined' ? window.location.href : '';
       const loginUrl = getLoginUrl(returnUrl, host.environment);
@@ -61,7 +67,7 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({
       return <>{children}</>;
     }
 
-    const returnTo = urlParams.get('returnTo');
+    const returnTo = urlParams.get('redirect') || urlParams.get('returnTo') || urlParams.get('return_to');
     const token = localStorage.getItem('orvio_auth_token');
     const refreshToken = localStorage.getItem('orvio_refresh_token');
 
@@ -79,7 +85,8 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({
     }
 
     if (host.application === 'accounts') {
-      return <Navigate to="/profile" replace />;
+      window.location.href = getHomeUrl(host.environment);
+      return null;
     }
 
     return <Navigate to="/" replace />;
@@ -95,30 +102,59 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({
         location.pathname.startsWith('/organizations/new')) &&
       location.pathname !== '/verify-email'
     ) {
-      if (host.application !== 'accounts') {
-        window.location.href = `${getAccountsUrl(host.environment)}/verify-email`;
-        return null;
-      }
       return <Navigate to="/verify-email" replace />;
     }
 
-    const isOnboardingRoute = location.pathname.startsWith('/onboarding');
-    // If organization onboarding is already completed, redirect to home workspace
-    if (onboardingStatus?.status === 'COMPLETED' && isOnboardingRoute) {
-      if (host.application === 'accounts') {
-        return <Navigate to="/profile" replace />;
+    // Personal Onboarding Guard:
+    // If user has verified their email but has not completed personal onboarding,
+    // ensure they complete /onboard/personal before accessing dashboard or org wizard.
+    const isPersonalOnboardingRoute =
+      location.pathname === '/onboard/personal' ||
+      location.pathname === '/onboarding/personal';
+    const isInviteRoute =
+      location.pathname.startsWith('/invite') ||
+      location.pathname.startsWith('/invitations');
+    const isAuthUtilityRoute =
+      location.pathname === '/verify-email' ||
+      location.pathname === '/logout';
+
+    if (
+      user?.emailVerified &&
+      user?.personalOnboardingCompleted === false &&
+      !isPersonalOnboardingRoute &&
+      !isInviteRoute &&
+      !isAuthUtilityRoute
+    ) {
+      if (host.application === 'home' || host.application === 'launcher') {
+        return <Navigate to="/onboard/personal" replace />;
       }
-      const homeBase = getAccountsUrl(host.environment).replace('accounts', 'home');
-      window.location.href = homeBase;
+      window.location.href = `${getHomeUrl(host.environment)}/onboard/personal`;
       return null;
     }
 
-    // Step progression guard: Prevent skipping ahead without an organization
+    // If user has already completed personal onboarding, prevent access to /onboard/personal
+    if (
+      user?.personalOnboardingCompleted === true &&
+      isPersonalOnboardingRoute
+    ) {
+      return <Navigate to="/" replace />;
+    }
+
+    const isPlatformOnboardingSurface = host.application === 'launcher' || host.application === 'accounts';
+    const isOnboardingRoute = isPlatformOnboardingSurface && location.pathname.startsWith('/onboarding');
+
+    // If platform onboarding is already completed, prevent getting stuck in onboarding on platform surfaces
+    if (onboardingStatus?.status === 'COMPLETED' && isOnboardingRoute) {
+      return <Navigate to="/inventory/dashboard" replace />;
+    }
+
+    // Step progression guard: Prevent skipping ahead without an organization on platform surfaces
     const isAdvancedStep =
-      location.pathname === '/onboarding/modules' ||
-      location.pathname === '/onboarding/workspace' ||
-      location.pathname === '/onboarding/team' ||
-      location.pathname === '/onboarding/complete';
+      isPlatformOnboardingSurface &&
+      (location.pathname === '/onboarding/modules' ||
+        location.pathname === '/onboarding/workspace' ||
+        location.pathname === '/onboarding/team' ||
+        location.pathname === '/onboarding/complete');
 
     if (isAdvancedStep && !onboardingStatus?.organization?.id) {
       return <Navigate to="/onboarding/organization" replace />;

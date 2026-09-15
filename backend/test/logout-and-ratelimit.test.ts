@@ -157,7 +157,8 @@ describe('Server-Side Logout and Login Rate Limiting Test Suite', () => {
 
     assert.equal(rateLimitedRes.statusCode, 429);
     const body = JSON.parse(rateLimitedRes.payload);
-    assert.equal(body.statusCode, 429);
+    assert.equal(body.success, false);
+    assert.equal(body.error?.code || body.code, ERROR_CODES.RATE_LIMITED);
   });
 
   test('6. User account lockout: locks account after 5 consecutive failed passwords', async () => {

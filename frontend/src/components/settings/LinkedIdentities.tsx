@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Key, Loader2, CheckCircle2, Unlink, Plus } from 'lucide-react';
+import { Key, CheckCircle2, Unlink, Plus } from 'lucide-react';
 import { api } from '../../lib/api';
 import { LinkedIdentityItem } from '../../lib/types';
 import { toast } from 'sonner';
@@ -53,9 +53,26 @@ export const LinkedIdentities: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-12 text-slate-400">
-        <Loader2 className="w-6 h-6 animate-spin mr-2" />
-        <span>Loading linked login methods...</span>
+      <div className="space-y-4">
+        <div className="space-y-1.5 pb-4 border-b border-slate-200 dark:border-slate-800">
+          <div className="w-40 h-4 rounded-xs bg-white/10 animate-pulse" />
+          <div className="w-64 h-3 rounded-xs bg-white/5 animate-pulse" />
+        </div>
+        {[1, 2, 3].map((i) => (
+          <div
+            key={i}
+            className="p-4 rounded-xs border border-slate-200/80 dark:border-slate-800 bg-white/50 dark:bg-slate-900/40 flex items-center justify-between gap-4 animate-pulse"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xs bg-white/10" />
+              <div className="space-y-2">
+                <div className="w-28 h-4 rounded-xs bg-white/10" />
+                <div className="w-40 h-3 rounded-xs bg-white/5" />
+              </div>
+            </div>
+            <div className="w-20 h-7 rounded-xs bg-white/10" />
+          </div>
+        ))}
       </div>
     );
   }

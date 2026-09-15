@@ -59,7 +59,13 @@ export const createUser = mutation({
     passwordHash: v.string(),
     emailVerificationToken: v.optional(v.string()),
     emailVerificationExpiresAt: v.optional(v.number()),
+    emailVerificationCode: v.optional(v.string()),
+    emailVerificationCodeExpiresAt: v.optional(v.number()),
     emailVerified: v.optional(v.boolean()),
+    planKey: v.optional(v.string()),
+    billingInterval: v.optional(v.union(v.literal("monthly"), v.literal("annual"))),
+    paymentMethod: v.optional(v.union(v.literal("bank_transfer"), v.literal("paystack"))),
+    paidPlanRef: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const emailNorm = args.email.toLowerCase().trim();
@@ -90,6 +96,8 @@ export const createUser = mutation({
       emailVerified: args.emailVerified ?? false,
       emailVerificationToken: args.emailVerificationToken,
       emailVerificationExpiresAt: args.emailVerificationExpiresAt,
+      emailVerificationCode: args.emailVerificationCode,
+      emailVerificationCodeExpiresAt: args.emailVerificationCodeExpiresAt,
       status: "ACTIVE",
       tokenVersion: 1,
       createdAt: now,
@@ -107,6 +115,8 @@ export const createUser = mutation({
       lastUsedAt: now,
       updatedAt: now,
     });
+
+    // Users are free. Subscriptions are strictly per-organization and created during organization setup.
 
     // Initialize onboarding progress immediately upon account creation
     const isVerified = args.emailVerified ?? false;
@@ -128,11 +138,14 @@ export const setVerificationToken = mutation({
     userId: v.id("users"),
     token: v.string(),
     expiresAt: v.number(),
+    code: v.optional(v.string()),
+    codeExpiresAt: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     await ctx.db.patch(args.userId, {
       emailVerificationToken: args.token,
       emailVerificationExpiresAt: args.expiresAt,
+      ...(args.code ? { emailVerificationCode: args.code, emailVerificationCodeExpiresAt: args.codeExpiresAt } : {}),
       updatedAt: Date.now(),
     });
   },
@@ -140,25 +153,63 @@ export const setVerificationToken = mutation({
 
 export const verifyUserEmail = mutation({
   args: {
-    token: v.string(),
+    token: v.optional(v.string()),
+    code: v.optional(v.string()),
+    email: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const user = await ctx.db
-      .query("users")
-      .withIndex("by_verification_token", (q) =>
-        q.eq("emailVerificationToken", args.token)
-      )
-      .first();
+    let user;
+    if (args.token) {
+      user = await ctx.db
+        .query("users")
+        .withIndex("by_verification_token", (q) =>
+          q.eq("emailVerificationToken", args.token!)
+        )
+        .first();
 
-    if (!user) {
-      throw new Error("INVALID_TOKEN");
-    }
+      if (!user) {
+        throw new Error("INVALID_TOKEN");
+      }
 
-    if (
-      user.emailVerificationExpiresAt &&
-      user.emailVerificationExpiresAt < Date.now()
-    ) {
-      throw new Error("TOKEN_EXPIRED");
+      if (
+        user.emailVerificationExpiresAt &&
+        user.emailVerificationExpiresAt < Date.now()
+      ) {
+        throw new Error("TOKEN_EXPIRED");
+      }
+    } else if (args.code) {
+      const cleanCode = args.code.trim();
+      if (args.email) {
+        const emailNorm = args.email.toLowerCase().trim();
+        user = await ctx.db
+          .query("users")
+          .withIndex("by_email", (q) => q.eq("email", emailNorm))
+          .first();
+
+        if (!user || user.emailVerificationCode !== cleanCode) {
+          throw new Error("INVALID_CODE");
+        }
+      } else {
+        user = await ctx.db
+          .query("users")
+          .withIndex("by_verification_code", (q) =>
+            q.eq("emailVerificationCode", cleanCode)
+          )
+          .first();
+
+        if (!user) {
+          throw new Error("INVALID_CODE");
+        }
+      }
+
+      if (
+        user.emailVerificationCodeExpiresAt &&
+        user.emailVerificationCodeExpiresAt < Date.now()
+      ) {
+        throw new Error("CODE_EXPIRED");
+      }
+    } else {
+      throw new Error("TOKEN_OR_CODE_REQUIRED");
     }
 
     const now = Date.now();
@@ -167,6 +218,8 @@ export const verifyUserEmail = mutation({
       emailVerifiedAt: now,
       emailVerificationToken: undefined,
       emailVerificationExpiresAt: undefined,
+      emailVerificationCode: undefined,
+      emailVerificationCodeExpiresAt: undefined,
       updatedAt: now,
     });
 
@@ -201,18 +254,108 @@ export const verifyUserEmail = mutation({
       });
     }
 
+    // Create in-dashboard notifications for any existing pending invitations
+    const pendingOrgInvites = await ctx.db
+      .query("invitations")
+      .withIndex("by_email", (q) => q.eq("email", user.email.toLowerCase()))
+      .filter((q) => q.eq(q.field("status"), "PENDING"))
+      .collect();
+
+    for (const inv of pendingOrgInvites) {
+      if (inv.expiresAt > now) {
+        const org = await ctx.db.get(inv.organizationId);
+        const inviter = await ctx.db.get(inv.invitedBy);
+        const orgName = org?.name || "an organization";
+        const inviterName = inviter?.name || "A teammate";
+
+        await ctx.db.insert("notifications", {
+          userId: user._id,
+          type: "org_invite",
+          title: `You've been invited to join ${orgName}`,
+          body: `${inviterName} invited you as ${inv.role}.`,
+          data: {
+            inviteId: inv._id,
+            inviteType: "organization",
+            organizationId: inv.organizationId,
+            organizationName: orgName,
+            role: inv.role,
+            inviterName,
+          },
+          severity: "INFO",
+          channel: "IN_APP",
+          status: "UNREAD",
+          createdAt: now,
+        });
+      }
+    }
+
+    try {
+      const pendingWsInvites = await ctx.db
+        .query("workspaceInvitations")
+        .withIndex("by_email_status", (q) =>
+          q.eq("emailNormalized", user.email.toLowerCase().trim()).eq("status", "pending")
+        )
+        .collect();
+
+      for (const inv of pendingWsInvites) {
+        if (inv.expiresAt > now) {
+          const ws = await ctx.db.get(inv.workspaceId);
+          const inviter = await ctx.db.get(inv.invitedBy);
+          const wsName = ws?.name || "Workspace";
+          const inviterName = inviter?.name || "A team member";
+          const role = inv.organizationRole || inv.role;
+
+          await ctx.db.insert("notifications", {
+            userId: user._id,
+            workspaceId: inv.workspaceId,
+            productKey: inv.productKey,
+            type: "workspace_invite",
+            title: `You've been invited to join ${wsName}`,
+            body: `${inviterName} invited you as ${role}.`,
+            data: {
+              inviteId: inv._id,
+              inviteType: "workspace",
+              workspaceId: inv.workspaceId,
+              workspaceName: wsName,
+              role,
+              inviterName,
+              tokenHash: inv.tokenHash,
+            },
+            severity: "INFO",
+            channel: "IN_APP",
+            status: "UNREAD",
+            createdAt: now,
+          });
+        }
+      }
+    } catch {}
+
     return { userId: user._id, email: user.email };
   },
 });
 
 export const touchLastLogin = mutation({
   args: {
-    userId: v.id("users"),
+    userId: v.union(v.id("users"), v.string()),
+    ipAddress: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    let user: any = null;
+    try {
+      user = await ctx.db.get(args.userId as any);
+    } catch {
+      // not a valid convex ID format
+    }
+    if (!user) {
+      user = await ctx.db.query("users").filter((q) => q.eq(q.field("_id"), args.userId as any)).first();
+    }
+    if (!user) return;
+
     const now = Date.now();
-    await ctx.db.patch(args.userId, {
+    await ctx.db.patch(user._id, {
       lastLoginAt: now,
+      lastLoginIp: args.ipAddress,
+      totalLoginCount: (user.totalLoginCount || 0) + 1,
       updatedAt: now,
     });
   },
@@ -347,7 +490,7 @@ export const unlinkIdentity = mutation({
   args: {
     userId: v.id("users"),
     identityId: v.optional(v.union(v.id("authIdentities"), v.string())),
-    provider: v.optional(v.union(v.literal("password"), v.literal("google"), v.literal("facebook"), v.literal("phone"), v.literal("apple"), v.string())),
+    provider: v.optional(v.union(v.literal("password"), v.literal("google"), v.literal("facebook"), v.literal("phone"), v.string())),
   },
   handler: async (ctx, args) => {
     const user = await ctx.db.get(args.userId);
@@ -548,6 +691,7 @@ export const updatePassword = mutation({
   args: {
     userId: v.id("users"),
     passwordHash: v.string(),
+    keepSessionId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const user = await ctx.db.get(args.userId);
@@ -561,6 +705,15 @@ export const updatePassword = mutation({
       tokenVersion: nextVersion,
       updatedAt: now,
     });
+
+    if (args.keepSessionId) {
+      try {
+        const keepSession = await ctx.db.get(args.keepSessionId as any);
+        if (keepSession) {
+          await ctx.db.patch(keepSession._id, { tokenVersion: nextVersion, updatedAt: now });
+        }
+      } catch {}
+    }
 
     // Enqueue security notification email
     await ctx.db.insert("emailOutbox", {
@@ -604,7 +757,7 @@ export const invalidateUserSessions = mutation({
 
 export const updateUserProfile = mutation({
   args: {
-    userId: v.id("users"),
+    userId: v.union(v.id("users"), v.string()),
     name: v.optional(v.string()),
     firstName: v.optional(v.string()),
     lastName: v.optional(v.string()),
@@ -631,9 +784,19 @@ export const updateUserProfile = mutation({
     firstDayOfWeek: v.optional(v.union(v.literal("monday"), v.literal("sunday"))),
     theme: v.optional(v.union(v.literal("dark"), v.literal("light"), v.literal("system"))),
     layoutDensity: v.optional(v.union(v.literal("compact"), v.literal("comfortable"))),
+    personalOnboardingCompleted: v.optional(v.boolean()),
+    profileCompletedAt: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    const user = await ctx.db.get(args.userId);
+    let user: any = null;
+    try {
+      user = await ctx.db.get(args.userId as any);
+    } catch {
+      // not a valid convex ID format
+    }
+    if (!user) {
+      user = await ctx.db.query("users").filter((q) => q.eq(q.field("_id"), args.userId as any)).first();
+    }
     if (!user) {
       throw new Error("USER_NOT_FOUND");
     }
@@ -657,30 +820,39 @@ export const updateUserProfile = mutation({
       updates.avatar = args.avatarUrl;
     }
 
-    await ctx.db.patch(args.userId, updates);
-    return await ctx.db.get(args.userId);
+    await ctx.db.patch(user._id, updates);
+    return await ctx.db.get(user._id);
   },
 });
 
 export const updateAvatar = mutation({
   args: {
-    userId: v.id("users"),
+    userId: v.union(v.id("users"), v.string()),
     avatarUrl: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    let user: any = null;
+    try {
+      user = await ctx.db.get(args.userId as any);
+    } catch {}
+    if (!user) {
+      user = await ctx.db.query("users").filter((q) => q.eq(q.field("_id"), args.userId as any)).first();
+    }
+    if (!user) throw new Error("USER_NOT_FOUND");
+
     const now = Date.now();
-    await ctx.db.patch(args.userId, {
+    await ctx.db.patch(user._id, {
       avatar: args.avatarUrl || undefined,
       avatarUrl: args.avatarUrl || undefined,
       updatedAt: now,
     });
-    return await ctx.db.get(args.userId);
+    return await ctx.db.get(user._id);
   },
 });
 
 export const updatePersonalDetails = mutation({
   args: {
-    userId: v.id("users"),
+    userId: v.union(v.id("users"), v.string()),
     firstName: v.optional(v.string()),
     lastName: v.optional(v.string()),
     displayName: v.optional(v.string()),
@@ -690,7 +862,13 @@ export const updatePersonalDetails = mutation({
     bio: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const user = await ctx.db.get(args.userId);
+    let user: any = null;
+    try {
+      user = await ctx.db.get(args.userId as any);
+    } catch {}
+    if (!user) {
+      user = await ctx.db.query("users").filter((q) => q.eq(q.field("_id"), args.userId as any)).first();
+    }
     if (!user) throw new Error("USER_NOT_FOUND");
 
     const { userId, ...updates } = args;
@@ -703,14 +881,14 @@ export const updatePersonalDetails = mutation({
       const lName = updates.lastName ?? user.lastName ?? "";
       cleanUpdates.name = `${fName} ${lName}`.trim() || user.name;
     }
-    await ctx.db.patch(userId, cleanUpdates);
-    return await ctx.db.get(userId);
+    await ctx.db.patch(user._id, cleanUpdates);
+    return await ctx.db.get(user._id);
   },
 });
 
 export const updateContactDetails = mutation({
   args: {
-    userId: v.id("users"),
+    userId: v.union(v.id("users"), v.string()),
     phone: v.optional(v.string()),
     phoneVisibility: v.optional(v.union(v.literal("private"), v.literal("workspace"))),
     country: v.optional(v.string()),
@@ -721,7 +899,13 @@ export const updateContactDetails = mutation({
     timezone: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const user = await ctx.db.get(args.userId);
+    let user: any = null;
+    try {
+      user = await ctx.db.get(args.userId as any);
+    } catch {}
+    if (!user) {
+      user = await ctx.db.query("users").filter((q) => q.eq(q.field("_id"), args.userId as any)).first();
+    }
     if (!user) throw new Error("USER_NOT_FOUND");
 
     const { userId, ...updates } = args;
@@ -729,8 +913,8 @@ export const updateContactDetails = mutation({
     for (const [k, val] of Object.entries(updates)) {
       if (val !== undefined) cleanUpdates[k] = val;
     }
-    await ctx.db.patch(userId, cleanUpdates);
-    return await ctx.db.get(userId);
+    await ctx.db.patch(user._id, cleanUpdates);
+    return await ctx.db.get(user._id);
   },
 });
 
@@ -796,16 +980,20 @@ export const confirmEmailChange = mutation({
     }
 
     const now = Date.now();
+    const newEmail = user.pendingEmail.toLowerCase().trim();
+    const oldEmail = user.email;
     await ctx.db.patch(user._id, {
-      email: user.pendingEmail,
+      email: newEmail,
+      emailNormalized: newEmail,
       pendingEmail: undefined,
       emailChangeToken: undefined,
       emailChangeExpiresAt: undefined,
       emailVerified: true,
+      emailVerifiedAt: now,
       updatedAt: now,
     });
 
-    return { userId: user._id, email: user.pendingEmail };
+    return { userId: user._id, email: newEmail, oldEmail };
   },
 });
 
@@ -1067,6 +1255,22 @@ export const consumeBackupCode = mutation({
   },
 });
 
+export const setBackupCodes = mutation({
+  args: {
+    userId: v.id("users"),
+    backupCodes: v.array(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.userId);
+    if (!user) throw new Error("USER_NOT_FOUND");
+    await ctx.db.patch(args.userId, {
+      twoFactorBackupCodes: args.backupCodes,
+      updatedAt: Date.now(),
+    });
+    return { success: true };
+  },
+});
+
 
 
 export const recordFailedLogin = mutation({
@@ -1128,7 +1332,7 @@ export const incrementTokenVersion = mutation({
 
 export const handleSocialAuth = mutation({
   args: {
-    provider: v.union(v.literal("google"), v.literal("facebook"), v.literal("apple")),
+    provider: v.union(v.literal("google"), v.literal("facebook")),
     providerUserId: v.string(),
     email: v.string(),
     emailVerified: v.boolean(),

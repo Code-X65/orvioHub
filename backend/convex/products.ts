@@ -4,10 +4,12 @@ import { v } from "convex/values";
 const DEFAULT_PRODUCTS = [
   {
     key: "inventory",
-    name: "Inventory & POS",
+    name: "Inventory",
     description: "Multi-branch warehouse stock, barcode POS checkout, receipts, sales history & telemetry.",
     subdomain: "inventory.orviohub.com",
     status: "active" as const,
+    isVisibleToUsers: true,
+    isActivatable: true,
     isBeta: false,
     isFeatured: true,
     displayOrder: 1,
@@ -18,9 +20,11 @@ const DEFAULT_PRODUCTS = [
     name: "Task & Project Management",
     description: "Agile sprints, interactive kanban boards, team workflows & milestone tracking.",
     subdomain: "tasks.orviohub.com",
-    status: "active" as const,
+    status: "coming_soon" as const,
+    isVisibleToUsers: false,
+    isActivatable: false,
     isBeta: false,
-    isFeatured: true,
+    isFeatured: false,
     displayOrder: 2,
     iconUrl: "/icons/tasks.svg",
   },
@@ -30,6 +34,8 @@ const DEFAULT_PRODUCTS = [
     description: "Client contact directories, communication history, pipelines, and deal conversions.",
     subdomain: "crm.orviohub.com",
     status: "coming_soon" as const,
+    isVisibleToUsers: false,
+    isActivatable: false,
     isBeta: true,
     isFeatured: false,
     displayOrder: 3,
@@ -41,6 +47,8 @@ const DEFAULT_PRODUCTS = [
     description: "Online calendar reservations, service scheduling, reminders, and client appointments.",
     subdomain: "booking.orviohub.com",
     status: "coming_soon" as const,
+    isVisibleToUsers: false,
+    isActivatable: false,
     isBeta: false,
     isFeatured: false,
     displayOrder: 4,
@@ -52,6 +60,8 @@ const DEFAULT_PRODUCTS = [
     description: "Member passes, attendance tracking, trainer schedules, and class subscriptions.",
     subdomain: "gym.orviohub.com",
     status: "coming_soon" as const,
+    isVisibleToUsers: false,
+    isActivatable: false,
     isBeta: false,
     isFeatured: false,
     displayOrder: 5,
@@ -76,8 +86,10 @@ export const listVisible = query({
     const all = await ctx.db.query("products").collect();
     const source = all.length > 0 ? all : DEFAULT_PRODUCTS;
     const visible = source.filter((p) => {
-      const status = (p.status || "").toLowerCase();
-      return status === "active" || status === "coming_soon" || status === "beta";
+      if (p.isVisibleToUsers !== undefined) {
+        return p.isVisibleToUsers === true;
+      }
+      return p.key === "inventory";
     });
     return visible.sort((a, b) => (a.displayOrder ?? 99) - (b.displayOrder ?? 99));
   },
@@ -86,6 +98,7 @@ export const listVisible = query({
 export const getByKey = query({
   args: { productKey: v.string() },
   handler: async (ctx, args) => {
+    const normKey = args.productKey.toLowerCase();
     const product = await ctx.db
       .query("products")
       .withIndex("by_key", (q) => q.eq("key", args.productKey))
@@ -93,8 +106,17 @@ export const getByKey = query({
 
     if (!product) {
       const fallback = DEFAULT_PRODUCTS.find((p) => p.key === args.productKey);
-      if (fallback) return fallback;
+      if (fallback) {
+        if (fallback.isVisibleToUsers === false) {
+          throw new Error("PRODUCT_NOT_AVAILABLE");
+        }
+        return fallback;
+      }
       throw new Error(`Product '${args.productKey}' not found`);
+    }
+
+    if (product.isVisibleToUsers === false) {
+      throw new Error("PRODUCT_NOT_AVAILABLE");
     }
 
     return product;
@@ -135,8 +157,10 @@ export const getAvailableForWorkspace = query({
     const allProducts = await ctx.db.query("products").collect();
     const source = allProducts.length > 0 ? allProducts : DEFAULT_PRODUCTS;
     const visible = source.filter((p) => {
-      const status = (p.status || "").toLowerCase();
-      return status === "active" || status === "coming_soon" || status === "beta";
+      if (p.isVisibleToUsers !== undefined) {
+        return p.isVisibleToUsers === true;
+      }
+      return p.key === "inventory";
     });
 
     const workspaceProducts = await ctx.db

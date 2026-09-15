@@ -1,27 +1,39 @@
 import { query, mutation } from "./_generated/server.js";
 import { v } from "convex/values";
 
+// Helper to resolve user
+async function resolveUser(ctx: any, userIdArg: any) {
+  let user = null;
+  try {
+    user = await ctx.db.get(userIdArg);
+  } catch {}
+  if (!user) {
+    user = await ctx.db.query("users").filter((q: any) => q.eq(q.field("_id"), userIdArg)).first();
+  }
+  return user;
+}
+
 // Get user profile details
 export const getUserProfile = query({
-  args: { userId: v.id("users") },
+  args: { userId: v.union(v.id("users"), v.string()) },
   handler: async (ctx, args) => {
-    const user = await ctx.db.get(args.userId);
+    const user = await resolveUser(ctx, args.userId);
     if (!user) return null;
 
     const preferences = await ctx.db
       .query("userPreferences")
-      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
+      .withIndex("by_userId", (q: any) => q.eq("userId", user._id))
       .first();
 
     const consents = await ctx.db
       .query("userConsents")
-      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
+      .withIndex("by_userId", (q: any) => q.eq("userId", user._id))
       .collect();
 
     const deletionRequest = await ctx.db
       .query("accountDeletionRequests")
-      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
-      .filter((q) =>
+      .withIndex("by_userId", (q: any) => q.eq("userId", user._id))
+      .filter((q: any) =>
         q.or(
           q.eq(q.field("status"), "PENDING"),
           q.eq(q.field("status"), "COOLING_OFF")
@@ -41,7 +53,7 @@ export const getUserProfile = query({
 // Update personal details
 export const updatePersonalDetails = mutation({
   args: {
-    userId: v.id("users"),
+    userId: v.union(v.id("users"), v.string()),
     firstName: v.optional(v.string()),
     lastName: v.optional(v.string()),
     displayName: v.optional(v.string()),
@@ -51,7 +63,7 @@ export const updatePersonalDetails = mutation({
     bio: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const user = await ctx.db.get(args.userId);
+    const user = await resolveUser(ctx, args.userId);
     if (!user) throw new Error("USER_NOT_FOUND");
 
     const { userId, ...updates } = args;
@@ -68,32 +80,34 @@ export const updatePersonalDetails = mutation({
       cleanUpdates.name = `${fName} ${lName}`.trim() || user.name;
     }
 
-    await ctx.db.patch(userId, cleanUpdates);
-    return await ctx.db.get(userId);
+    await ctx.db.patch(user._id, cleanUpdates);
+    return await ctx.db.get(user._id);
   },
 });
 
 // Update avatar URL
 export const updateAvatar = mutation({
   args: {
-    userId: v.id("users"),
+    userId: v.union(v.id("users"), v.string()),
     avatarUrl: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    const user = await resolveUser(ctx, args.userId);
+    if (!user) throw new Error("USER_NOT_FOUND");
     const now = Date.now();
-    await ctx.db.patch(args.userId, {
+    await ctx.db.patch(user._id, {
       avatar: args.avatarUrl,
       avatarUrl: args.avatarUrl,
       updatedAt: now,
     });
-    return await ctx.db.get(args.userId);
+    return await ctx.db.get(user._id);
   },
 });
 
 // Update contact info & location
 export const updateContactDetails = mutation({
   args: {
-    userId: v.id("users"),
+    userId: v.union(v.id("users"), v.string()),
     phone: v.optional(v.string()),
     phoneVisibility: v.optional(v.union(v.literal("private"), v.literal("workspace"))),
     country: v.optional(v.string()),
@@ -104,7 +118,7 @@ export const updateContactDetails = mutation({
     timezone: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const user = await ctx.db.get(args.userId);
+    const user = await resolveUser(ctx, args.userId);
     if (!user) throw new Error("USER_NOT_FOUND");
 
     const { userId, ...updates } = args;
@@ -115,21 +129,23 @@ export const updateContactDetails = mutation({
       if (val !== undefined) cleanUpdates[k] = val;
     }
 
-    await ctx.db.patch(userId, cleanUpdates);
-    return await ctx.db.get(userId);
+    await ctx.db.patch(user._id, cleanUpdates);
+    return await ctx.db.get(user._id);
   },
 });
 
 // Request Phone verification code
 export const setPhoneVerificationCode = mutation({
   args: {
-    userId: v.id("users"),
+    userId: v.union(v.id("users"), v.string()),
     phone: v.string(),
     code: v.string(),
     expiresAt: v.number(),
   },
   handler: async (ctx, args) => {
-    await ctx.db.patch(args.userId, {
+    const user = await resolveUser(ctx, args.userId);
+    if (!user) throw new Error("USER_NOT_FOUND");
+    await ctx.db.patch(user._id, {
       phone: args.phone,
       phoneVerificationCode: args.code,
       phoneVerificationExpiresAt: args.expiresAt,
@@ -141,11 +157,11 @@ export const setPhoneVerificationCode = mutation({
 // Confirm Phone verification code
 export const verifyPhoneCode = mutation({
   args: {
-    userId: v.id("users"),
+    userId: v.union(v.id("users"), v.string()),
     code: v.string(),
   },
   handler: async (ctx, args) => {
-    const user = await ctx.db.get(args.userId);
+    const user = await resolveUser(ctx, args.userId);
     if (!user) throw new Error("USER_NOT_FOUND");
 
     if (!user.phoneVerificationCode || user.phoneVerificationCode !== args.code) {
@@ -157,31 +173,33 @@ export const verifyPhoneCode = mutation({
     }
 
     const now = Date.now();
-    await ctx.db.patch(args.userId, {
+    await ctx.db.patch(user._id, {
       phoneVerifiedAt: now,
       phoneVerificationCode: undefined,
       phoneVerificationExpiresAt: undefined,
       updatedAt: now,
     });
 
-    return await ctx.db.get(args.userId);
+    return await ctx.db.get(user._id);
   },
 });
 
 // Get or upsert user preferences
 export const getUserPreferences = query({
-  args: { userId: v.id("users") },
+  args: { userId: v.union(v.id("users"), v.string()) },
   handler: async (ctx, args) => {
+    const user = await resolveUser(ctx, args.userId);
+    if (!user) return null;
     return await ctx.db
       .query("userPreferences")
-      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
+      .withIndex("by_userId", (q: any) => q.eq("userId", user._id))
       .first();
   },
 });
 
 export const updateUserPreferences = mutation({
   args: {
-    userId: v.id("users"),
+    userId: v.union(v.id("users"), v.string()),
     theme: v.optional(v.union(v.literal("dark"), v.literal("light"), v.literal("system"))),
     language: v.optional(v.string()),
     timezone: v.optional(v.string()),
@@ -199,12 +217,14 @@ export const updateUserPreferences = mutation({
     billingAlertsEnabled: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
+    const user = await resolveUser(ctx, args.userId);
+    if (!user) throw new Error("USER_NOT_FOUND");
     const { userId, ...prefUpdates } = args;
     const now = Date.now();
 
     const existing = await ctx.db
       .query("userPreferences")
-      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .withIndex("by_userId", (q: any) => q.eq("userId", user._id))
       .first();
 
     const cleanUpdates: Record<string, any> = { updatedAt: now };
@@ -217,7 +237,7 @@ export const updateUserPreferences = mutation({
       return await ctx.db.get(existing._id);
     } else {
       const id = await ctx.db.insert("userPreferences", {
-        userId,
+        userId: user._id,
         ...cleanUpdates,
       } as any);
       return await ctx.db.get(id);
@@ -228,7 +248,7 @@ export const updateUserPreferences = mutation({
 // User audit logs & security activity
 export const logUserActivity = mutation({
   args: {
-    userId: v.id("users"),
+    userId: v.union(v.id("users"), v.string()),
     eventType: v.string(),
     targetType: v.optional(v.string()),
     targetId: v.optional(v.string()),
@@ -239,8 +259,11 @@ export const logUserActivity = mutation({
     userAgent: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    const user = await resolveUser(ctx, args.userId);
+    if (!user) return;
     return await ctx.db.insert("userAuditLogs", {
       ...args,
+      userId: user._id,
       createdAt: Date.now(),
     });
   },
@@ -248,15 +271,17 @@ export const logUserActivity = mutation({
 
 export const getUserActivityLogs = query({
   args: {
-    userId: v.id("users"),
+    userId: v.union(v.id("users"), v.string()),
     limit: v.optional(v.number()),
     eventType: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    const user = await resolveUser(ctx, args.userId);
+    if (!user) return [];
     const limit = args.limit || 50;
     let query = ctx.db
       .query("userAuditLogs")
-      .withIndex("by_user_and_created", (q) => q.eq("userId", args.userId))
+      .withIndex("by_user_and_created", (q: any) => q.eq("userId", user._id))
       .order("desc");
 
     const logs = await query.take(limit);
@@ -271,13 +296,15 @@ export const getUserActivityLogs = query({
 
 export const reportSuspiciousActivity = mutation({
   args: {
-    userId: v.id("users"),
+    userId: v.union(v.id("users"), v.string()),
     activityId: v.id("userAuditLogs"),
     reason: v.string(),
   },
   handler: async (ctx, args) => {
+    const user = await resolveUser(ctx, args.userId);
+    if (!user) throw new Error("USER_NOT_FOUND");
     const activity = await ctx.db.get(args.activityId);
-    if (!activity || activity.userId !== args.userId) {
+    if (!activity || activity.userId !== user._id) {
       throw new Error("ACTIVITY_NOT_FOUND");
     }
 
@@ -289,7 +316,7 @@ export const reportSuspiciousActivity = mutation({
 
     // Also record security event
     await ctx.db.insert("userAuditLogs", {
-      userId: args.userId,
+      userId: user._id,
       eventType: "SUSPICIOUS_ACTIVITY_REPORTED",
       targetType: "userAuditLogs",
       targetId: args.activityId,
@@ -305,17 +332,19 @@ export const reportSuspiciousActivity = mutation({
 // Consents
 export const recordConsent = mutation({
   args: {
-    userId: v.id("users"),
+    userId: v.union(v.id("users"), v.string()),
     consentType: v.string(),
     version: v.string(),
     granted: v.boolean(),
     source: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    const user = await resolveUser(ctx, args.userId);
+    if (!user) throw new Error("USER_NOT_FOUND");
     const existing = await ctx.db
       .query("userConsents")
-      .withIndex("by_user_and_consentType", (q) =>
-        q.eq("userId", args.userId).eq("consentType", args.consentType)
+      .withIndex("by_user_and_consentType", (q: any) =>
+        q.eq("userId", user._id).eq("consentType", args.consentType)
       )
       .first();
 
@@ -331,7 +360,7 @@ export const recordConsent = mutation({
       return await ctx.db.get(existing._id);
     } else {
       const id = await ctx.db.insert("userConsents", {
-        userId: args.userId,
+        userId: user._id,
         consentType: args.consentType,
         version: args.version,
         granted: args.granted,
@@ -345,11 +374,13 @@ export const recordConsent = mutation({
 });
 
 export const getUserConsents = query({
-  args: { userId: v.id("users") },
+  args: { userId: v.union(v.id("users"), v.string()) },
   handler: async (ctx, args) => {
+    const user = await resolveUser(ctx, args.userId);
+    if (!user) return [];
     return await ctx.db
       .query("userConsents")
-      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
+      .withIndex("by_userId", (q: any) => q.eq("userId", user._id))
       .collect();
   },
 });
@@ -357,84 +388,270 @@ export const getUserConsents = query({
 // Account Deletion Requests
 export const requestAccountDeletion = mutation({
   args: {
-    userId: v.id("users"),
+    userId: v.union(v.id("users"), v.string()),
     reason: v.optional(v.string()),
     coolingOffDays: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
+    const user = await resolveUser(ctx, args.userId);
+    if (!user) throw new Error("USER_NOT_FOUND");
     const now = Date.now();
-    const days = args.coolingOffDays ?? 14;
+
+    // 1. Critical Check: Does user own active workspaces?
+    const ownedWorkspaces = await ctx.db
+      .query("workspaces")
+      .withIndex("by_owner", (q: any) => q.eq("ownerId", user._id))
+      .filter((q: any) => q.neq(q.field("status"), "deleted"))
+      .collect();
+
+    if (ownedWorkspaces.length > 0) {
+      const err: any = new Error(
+        "You must transfer ownership or close your workspaces before deleting your account."
+      );
+      err.code = "SOLE_OWNER_CANNOT_LEAVE_WORKSPACE";
+      err.ownedWorkspaces = ownedWorkspaces.map((w: any) => ({
+        workspaceId: w._id,
+        workspace: { name: w.name, slug: w.slug },
+      }));
+      throw err;
+    }
+
+    // 2. Critical Check: Is user the only superadmin?
+    if (user.role === "superadmin") {
+      const allUsers = await ctx.db.query("users").collect();
+      const superadmins = allUsers.filter(
+        (u: any) =>
+          u.role === "superadmin" &&
+          u.status !== "SUSPENDED" &&
+          u.status !== "suspended" &&
+          u.status !== "DELETED" &&
+          u.status !== "deleted"
+      );
+      if (superadmins.length <= 1) {
+        throw new Error("Cannot delete the only superadmin. Add another superadmin first.");
+      }
+    }
+
+    // 3. Grace period calculation (default 7 days)
+    const days = args.coolingOffDays ?? 7;
     const scheduledDeletionAt = now + days * 24 * 60 * 60 * 1000;
+
+    // 4. Generate cancellation token
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    const token = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 
     const existing = await ctx.db
       .query("accountDeletionRequests")
-      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
-      .filter((q) =>
+      .withIndex("by_userId", (q: any) => q.eq("userId", user._id))
+      .filter((q: any) =>
         q.or(
           q.eq(q.field("status"), "PENDING"),
-          q.eq(q.field("status"), "COOLING_OFF")
+          q.eq(q.field("status"), "COOLING_OFF"),
+          q.eq(q.field("status"), "pending"),
+          q.eq(q.field("status"), "cooling_off")
         )
       )
       .first();
 
+    let deletionRequestId;
     if (existing) {
       await ctx.db.patch(existing._id, {
         reason: args.reason,
         scheduledDeletionAt,
         status: "COOLING_OFF",
+        deletionTokenHash: token,
+        requestedAt: now,
+        requestedBy: user._id,
       });
-      return await ctx.db.get(existing._id);
+      deletionRequestId = existing._id;
+    } else {
+      deletionRequestId = await ctx.db.insert("accountDeletionRequests", {
+        userId: user._id,
+        status: "COOLING_OFF",
+        reason: args.reason,
+        requestedBy: user._id,
+        requestedAt: now,
+        scheduledDeletionAt,
+        deletionTokenHash: token,
+        adminForceDelete: false,
+      });
     }
 
-    const id = await ctx.db.insert("accountDeletionRequests", {
-      userId: args.userId,
-      status: "COOLING_OFF",
-      reason: args.reason,
-      requestedAt: now,
-      scheduledDeletionAt,
+    // 5. Update user deletion tracking
+    await ctx.db.patch(user._id, {
+      deletionRequestedAt: now,
+      deletionScheduledAt: scheduledDeletionAt,
+      updatedAt: now,
     });
 
-    return await ctx.db.get(id);
+    // 6. Queue confirmation email with cancellation link
+    const cancellationLink = `https://accounts.orviohub.com/profile/delete?cancelToken=${token}`;
+    await ctx.db.insert("emailOutbox", {
+      to: user.email,
+      template: "userDeletionRequested",
+      payload: {
+        name: user.name || user.firstName || "there",
+        email: user.email,
+        scheduledDate: new Date(scheduledDeletionAt).toLocaleDateString(),
+        cancellationLink,
+        gracePeriodDays: String(days),
+      },
+      status: "PENDING",
+      attempts: 0,
+      nextAttemptAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // 7. Audit log event: user.deletion_requested
+    await ctx.db.insert("auditLogs", {
+      actorId: user._id,
+      actorUserId: user._id,
+      targetUserId: user._id,
+      eventType: "user.deletion_requested",
+      action: "user.deletion_requested",
+      entityType: "user",
+      entityId: user._id,
+      resource: "users",
+      severity: "medium",
+      metadata: {
+        reason: args.reason,
+        gracePeriodDays: days,
+        scheduledDeletionAt,
+      },
+      createdAt: now,
+      timestamp: now,
+    });
+
+    return {
+      deletionRequestId,
+      scheduledDeletionAt,
+      gracePeriodDays: days,
+      token,
+      message: "Account deletion scheduled. Check email for cancellation link.",
+    };
   },
 });
 
 export const cancelAccountDeletion = mutation({
-  args: { userId: v.id("users") },
+  args: {
+    userId: v.optional(v.union(v.id("users"), v.string())),
+    token: v.optional(v.string()),
+  },
   handler: async (ctx, args) => {
-    const existing = await ctx.db
+    let existing: any = null;
+
+    if (args.token) {
+      existing = await ctx.db
+        .query("accountDeletionRequests")
+        .withIndex("by_token_hash", (q: any) => q.eq("deletionTokenHash", args.token!))
+        .first();
+    } else if (args.userId) {
+      const user = await resolveUser(ctx, args.userId);
+      if (user) {
+        existing = await ctx.db
+          .query("accountDeletionRequests")
+          .withIndex("by_userId", (q: any) => q.eq("userId", user._id))
+          .filter((q: any) =>
+            q.or(
+              q.eq(q.field("status"), "PENDING"),
+              q.eq(q.field("status"), "COOLING_OFF"),
+              q.eq(q.field("status"), "pending"),
+              q.eq(q.field("status"), "cooling_off")
+            )
+          )
+          .first();
+      }
+    }
+
+    if (!existing) throw new Error("NO_ACTIVE_DELETION_REQUEST");
+
+    const now = Date.now();
+    await ctx.db.patch(existing._id, {
+      status: "CANCELLED",
+      cancelledAt: now,
+    });
+
+    // Clear user tracking flags
+    await ctx.db.patch(existing.userId, {
+      deletionRequestedAt: undefined,
+      deletionScheduledAt: undefined,
+      updatedAt: now,
+    });
+
+    // Audit log event: user.deletion_cancelled
+    await ctx.db.insert("auditLogs", {
+      actorId: existing.userId,
+      actorUserId: existing.userId,
+      targetUserId: existing.userId,
+      eventType: "user.deletion_cancelled",
+      action: "user.deletion_cancelled",
+      entityType: "user",
+      entityId: existing.userId,
+      resource: "users",
+      severity: "medium",
+      metadata: { cancelledBy: existing.userId },
+      createdAt: now,
+      timestamp: now,
+    });
+
+    return { success: true, message: "Account deletion has been successfully cancelled." };
+  },
+});
+
+export const getAccountDeletionStatus = query({
+  args: { userId: v.union(v.id("users"), v.string()) },
+  handler: async (ctx, args) => {
+    const user = await resolveUser(ctx, args.userId);
+    if (!user) return null;
+
+    const request = await ctx.db
       .query("accountDeletionRequests")
-      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
-      .filter((q) =>
+      .withIndex("by_userId", (q: any) => q.eq("userId", user._id))
+      .filter((q: any) =>
         q.or(
           q.eq(q.field("status"), "PENDING"),
-          q.eq(q.field("status"), "COOLING_OFF")
+          q.eq(q.field("status"), "COOLING_OFF"),
+          q.eq(q.field("status"), "pending"),
+          q.eq(q.field("status"), "cooling_off")
         )
       )
       .first();
 
-    if (!existing) throw new Error("NO_ACTIVE_DELETION_REQUEST");
+    if (!request) return { hasActiveRequest: false, status: "NONE" };
+    const now = Date.now();
+    const daysRemaining = Math.max(
+      0,
+      Math.ceil((request.scheduledDeletionAt - now) / (24 * 60 * 60 * 1000))
+    );
 
-    await ctx.db.patch(existing._id, {
-      status: "CANCELLED",
-      cancelledAt: Date.now(),
-    });
-
-    return true;
+    return {
+      id: request._id,
+      hasActiveRequest: true,
+      status: request.status,
+      reason: request.reason,
+      requestedAt: request.requestedAt,
+      scheduledDeletionAt: request.scheduledDeletionAt,
+      daysRemaining,
+    };
   },
 });
 
 // Data Export Requests
 export const createDataExportRequest = mutation({
   args: {
-    userId: v.id("users"),
+    userId: v.union(v.id("users"), v.string()),
     data: v.optional(v.any()),
   },
   handler: async (ctx, args) => {
+    const user = await resolveUser(ctx, args.userId);
+    if (!user) throw new Error("USER_NOT_FOUND");
     const now = Date.now();
     const expiresAt = now + 7 * 24 * 60 * 60 * 1000; // 7 days
 
     const id = await ctx.db.insert("dataExportRequests", {
-      userId: args.userId,
+      userId: user._id,
       status: "READY",
       requestedAt: now,
       completedAt: now,
@@ -448,12 +665,14 @@ export const createDataExportRequest = mutation({
 
 export const getDataExportRequest = query({
   args: {
-    userId: v.id("users"),
+    userId: v.union(v.id("users"), v.string()),
     exportId: v.id("dataExportRequests"),
   },
   handler: async (ctx, args) => {
+    const user = await resolveUser(ctx, args.userId);
+    if (!user) return null;
     const exportReq = await ctx.db.get(args.exportId);
-    if (!exportReq || exportReq.userId !== args.userId) {
+    if (!exportReq || exportReq.userId !== user._id) {
       return null;
     }
     return exportReq;

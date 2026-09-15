@@ -26,7 +26,7 @@ describe('Orviohub Subdomain & Hostname Resolution System', () => {
 
     it('resolves production launcher domain', () => {
       const ctx = resolveHost('app.orviohub.com');
-      assert.equal(ctx.application, 'launcher');
+      assert.equal(ctx.application, 'home');
       assert.equal(ctx.environment, 'production');
     });
 
@@ -42,6 +42,11 @@ describe('Orviohub Subdomain & Hostname Resolution System', () => {
       assert.equal(ctx.environment, 'production');
     });
 
+    it('rejects admin.orviohub.* explicitly', () => {
+      assert.throws(() => resolveHost('admin.orviohub.com'), UnknownHostError);
+      assert.throws(() => resolveHost('admin.orviohub.localhost'), UnknownHostError);
+    });
+
     it('rejects unknown or workspace-like subdomains (e.g. acme.orviohub.com)', () => {
       assert.throws(() => resolveHost('acme.orviohub.com'), UnknownHostError);
       assert.throws(() => resolveHost('codexstores.orviohub.com'), UnknownHostError);
@@ -55,10 +60,14 @@ describe('Orviohub Subdomain & Hostname Resolution System', () => {
       assert.equal(ctx.environment, 'development');
     });
 
-    it('resolves development accounts subdomain', () => {
-      const ctx = resolveHost('accounts.orviohub.localhost:4000');
-      assert.equal(ctx.application, 'accounts');
-      assert.equal(ctx.environment, 'development');
+    it('resolves development accounts and account subdomain', () => {
+      const ctx1 = resolveHost('account.orviohub.localhost:4000');
+      assert.equal(ctx1.application, 'accounts');
+      assert.equal(ctx1.environment, 'development');
+
+      const ctx2 = resolveHost('accounts.orviohub.localhost:4000');
+      assert.equal(ctx2.application, 'accounts');
+      assert.equal(ctx2.environment, 'development');
     });
 
     it('resolves development inventory subdomain', () => {
@@ -67,10 +76,14 @@ describe('Orviohub Subdomain & Hostname Resolution System', () => {
       assert.equal(ctx.environment, 'development');
     });
 
-    it('resolves development launcher subdomain', () => {
-      const ctx = resolveHost('app.orviohub.localhost:4000');
-      assert.equal(ctx.application, 'launcher');
-      assert.equal(ctx.environment, 'development');
+    it('resolves development home and launcher subdomain', () => {
+      const ctx1 = resolveHost('home.orviohub.localhost:4000');
+      assert.equal(ctx1.application, 'home');
+      assert.equal(ctx1.environment, 'development');
+
+      const ctx2 = resolveHost('app.orviohub.localhost:4000');
+      assert.equal(ctx2.application, 'home');
+      assert.equal(ctx2.environment, 'development');
     });
 
     it('handles uppercase hostnames and port stripping', () => {
@@ -91,7 +104,7 @@ describe('Orviohub Subdomain & Hostname Resolution System', () => {
       );
       assert.equal(
         getLoginUrl('https://inventory.orviohub.com/dashboard', 'production'),
-        'https://accounts.orviohub.com/login?returnTo=https%3A%2F%2Finventory.orviohub.com%2Fdashboard'
+        'https://accounts.orviohub.com/login?redirect=https%3A%2F%2Finventory.orviohub.com%2Fdashboard'
       );
     });
 
@@ -104,6 +117,7 @@ describe('Orviohub Subdomain & Hostname Resolution System', () => {
       assert.equal(isValidReturnUrl('https://evil-phishing-site.com', 'production'), false);
       assert.equal(isValidReturnUrl('https://attacker.orviohub.com.attacker.com', 'production'), false);
       assert.equal(isValidReturnUrl('javascript:alert(1)', 'production'), false);
+      assert.equal(isValidReturnUrl('http://admin.orviohub.localhost:3000', 'development'), false);
     });
   });
 
@@ -152,5 +166,48 @@ describe('Orviohub Subdomain & Hostname Resolution System', () => {
       assert.equal(json.error, 'Bad Request');
       await app.close();
     });
+
+    it('rejects admin.orviohub.localhost from user-facing backend context', async () => {
+      const app = await buildApp();
+      const adminRes = await app.inject({
+        method: 'GET',
+        url: '/v1/host-context',
+        headers: {
+          host: 'admin.orviohub.localhost:4000',
+        },
+      });
+
+      assert.equal(adminRes.statusCode, 400);
+      const json = JSON.parse(adminRes.body);
+      assert.equal(json.error, 'Bad Request');
+      await app.close();
+    });
+
+    it('redirects legacy /v1/* routes to /api/v1/* with 308/307', async () => {
+      const app = await buildApp();
+      const getRes = await app.inject({
+        method: 'GET',
+        url: '/v1/products',
+        headers: {
+          host: 'inventory.orviohub.localhost:3000',
+        },
+      });
+
+      assert.equal(getRes.statusCode, 308);
+      assert.equal(getRes.headers.location, '/api/v1/products');
+
+      const postRes = await app.inject({
+        method: 'POST',
+        url: '/v1/billing/checkout',
+        headers: {
+          host: 'inventory.orviohub.localhost:3000',
+        },
+      });
+
+      assert.equal(postRes.statusCode, 307);
+      assert.equal(postRes.headers.location, '/api/v1/billing/checkout');
+      await app.close();
+    });
   });
 });
+

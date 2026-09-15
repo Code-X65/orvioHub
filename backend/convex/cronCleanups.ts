@@ -18,7 +18,9 @@ export const purgeExpiredAccountDeletions = mutation({
         q.and(
           q.or(
             q.eq(q.field("status"), "COOLING_OFF"),
-            q.eq(q.field("status"), "PENDING")
+            q.eq(q.field("status"), "PENDING"),
+            q.eq(q.field("status"), "cooling_off"),
+            q.eq(q.field("status"), "pending")
           ),
           q.lte(q.field("scheduledDeletionAt"), now)
         )
@@ -28,6 +30,9 @@ export const purgeExpiredAccountDeletions = mutation({
     let purgedCount = 0;
     for (const req of expiredDeletions) {
       const userId = req.userId;
+      const user = await ctx.db.get(userId);
+      const originalEmail = user?.email;
+      const originalName = user?.name || user?.firstName || "there";
 
       // 1. Delete all auth and social identities
       const authIdentities = await ctx.db
@@ -92,23 +97,83 @@ export const purgeExpiredAccountDeletions = mutation({
 
       // 6. Delete onboarding progress
       const onboarding = await ctx.db
-        .query("onboardingProgress")
-        .withIndex("by_userId", (q) => q.eq("userId", userId))
+        .query("onboardingProgress" as any)
+        .withIndex("by_userId" as any, (q: any) => q.eq("userId", userId))
         .first();
       if (onboarding) {
         await ctx.db.delete(onboarding._id);
       }
 
-      // 7. Delete user record
-      const user = await ctx.db.get(userId);
+      // 7. NDPA Data Anonymization / Erasure:
+      // Strip personal credentials & PII while preserving references in historical business records (sales, receipts, audit logs)
       if (user) {
-        await ctx.db.delete(userId);
+        const anonymizedEmail = `deleted_${userId}@deleted.local`;
+        await ctx.db.patch(userId, {
+          name: "Deleted User",
+          firstName: "Deleted",
+          lastName: "User",
+          displayName: "Deleted User",
+          email: anonymizedEmail,
+          emailNormalized: anonymizedEmail,
+          passwordHash: undefined,
+          twoFactorEnabled: false,
+          twoFactorSecret: undefined,
+          twoFactorPendingSecret: undefined,
+          twoFactorBackupCodes: undefined,
+          phone: undefined,
+          phoneVerifiedAt: undefined,
+          phoneVerificationCode: undefined,
+          avatar: undefined,
+          avatarUrl: undefined,
+          bio: undefined,
+          status: "DELETED",
+          deletedAt: now,
+          updatedAt: now,
+        });
       }
 
       // 8. Mark deletion request as completed
       await ctx.db.patch(req._id, {
         status: "COMPLETED",
         completedAt: now,
+      });
+
+      // 9. Send final confirmation email if original email was recorded
+      if (originalEmail && !originalEmail.endsWith("@deleted.local")) {
+        await ctx.db.insert("emailOutbox", {
+          to: originalEmail,
+          template: "userDeletionFinal",
+          payload: {
+            name: originalName,
+            email: originalEmail,
+          },
+          status: "PENDING",
+          attempts: 0,
+          nextAttemptAt: now,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+
+      // 10. Audit log: user.deletion_completed
+      await ctx.db.insert("auditLogs", {
+        actorId: req.requestedBy || userId,
+        actorUserId: req.requestedBy || userId,
+        targetUserId: userId,
+        eventType: "user.deletion_completed",
+        action: "user.deletion_completed",
+        entityType: "user",
+        entityId: userId,
+        resource: "users",
+        severity: "high",
+        metadata: {
+          deletedBy: req.requestedBy || userId,
+          anonymizedRecords: true,
+          scheduledDeletionAt: req.scheduledDeletionAt,
+          completedAt: now,
+        },
+        createdAt: now,
+        timestamp: now,
       });
 
       purgedCount++;

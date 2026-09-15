@@ -7,6 +7,7 @@ import { getAccountsUrl } from '@orviohub/shared';
 import { ERROR_CODES, AUDIT_EVENTS, PRODUCT_CATALOG, type ProductKey } from '../config/constants.js';
 import { setAuthCookies, clearAuthCookies } from '../utils/cookies.js';
 import { toPublicUser } from '../utils/userSerializer.js';
+import type { JwtPayload } from '../plugins/auth.js';
 
 const accountsBaseUrl = () => {
   try {
@@ -51,6 +52,10 @@ const signupSchema = z
     phone: z.string().optional(),
     password: strongPasswordSchema,
     passwordConfirmation: z.string().optional(),
+    planKey: z.string().optional(),
+    billingInterval: z.enum(['monthly', 'annual']).optional(),
+    paymentMethod: z.string().optional(),
+    paidPlanRef: z.string().optional(),
     acceptTerms: z.boolean().optional(),
     acceptPrivacy: z.boolean().optional(),
     marketingConsent: z.boolean().optional(),
@@ -72,9 +77,15 @@ const resendVerificationSchema = z.object({
   email: z.string().email('Invalid email address'),
 });
 
-const verifyEmailSchema = z.object({
-  token: z.string().min(1, 'Token is required'),
-});
+const verifyEmailSchema = z
+  .object({
+    token: z.string().optional(),
+    code: z.string().optional(),
+    email: z.string().email('Invalid email address').optional(),
+  })
+  .refine((data) => !!data.token || (!!data.code && data.code.trim().length >= 6), {
+    message: 'Verification token or 6-digit code is required.',
+  });
 
 const forgotPasswordSchema = z.object({
   email: z.string().email('Invalid email address'),
@@ -91,7 +102,7 @@ const changePasswordSchema = z.object({
 });
 
 export const updateProfileSchema = z.object({
-  name: z.string().min(1).optional(),
+  name: z.string().min(2, 'Name must be at least 2 characters').optional(),
   firstName: z.string().min(1, 'First name is required').optional(),
   lastName: z.string().min(1, 'Last name is required').optional(),
   displayName: z.string().optional(),
@@ -224,6 +235,15 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           },
         });
       } catch (err: any) {
+        if (err.message === 'USER_SUSPENDED' || err.code === 'USER_SUSPENDED') {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: 'ACCOUNT_SUSPENDED',
+              message: 'Your account has been suspended. Please contact support.',
+            },
+          });
+        }
         if (err.code === 'INVALID_TOKEN' || err.code === 'SESSION_INVALIDATED' || err.code === 'USER_NOT_ACTIVE') {
           return reply.status(401).send({
             success: false,
@@ -302,7 +322,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       try {
-        const { user } = await dataService.createUser(parsed.data);
+        const { planKey, billingInterval, paymentMethod, paidPlanRef, ...userPayload } = parsed.data;
+        const { user } = await dataService.createUser(userPayload as any);
         const session = await dataService.createSession(user.id, {
           userAgent: request.headers['user-agent'],
           ipAddress: request.ip,
@@ -389,6 +410,12 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
 
       const user = await dataService.getUserByEmail(parsed.data.email);
       if (!user) {
+        await dataService.logAuthEvent({
+          eventType: 'login_failed',
+          ipAddress: request.ip,
+          userAgent: request.headers['user-agent'],
+          metadata: { email: parsed.data.email, reason: 'USER_NOT_FOUND' },
+        });
         await dataService.logAudit({
           eventType: AUDIT_EVENTS.AUTH_LOGIN_FAILED,
           severity: 'warning',
@@ -405,9 +432,50 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
+      // Check if account is suspended
+      if ((user.status as any) === 'SUSPENDED' || (user.status as any) === 'suspended') {
+        await dataService.logAuthEvent({
+          eventType: 'login_failed',
+          userId: user.id,
+          ipAddress: request.ip,
+          userAgent: request.headers['user-agent'],
+          metadata: {
+            email: parsed.data.email,
+            reason: 'ACCOUNT_SUSPENDED',
+            suspensionReason: (user as any).suspensionReason,
+          },
+        });
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: 'ACCOUNT_SUSPENDED',
+            message: 'Your account has been suspended by our administration team. Please contact support.',
+            reason: (user as any).suspensionReason || 'Policy violation',
+          },
+        });
+      }
+
+      // Check if account is deleted
+      if ((user.status as any) === 'DELETED' || (user.status as any) === 'deleted' || (user as any).deletedAt) {
+        return reply.status(401).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.UNAUTHENTICATED,
+            message: 'Invalid email or password.',
+          },
+        });
+      }
+
       // Check if account is temporarily locked
       if (user.lockedUntil && user.lockedUntil > Date.now()) {
         const remainingMinutes = Math.ceil((user.lockedUntil - Date.now()) / (60 * 1000));
+        await dataService.logAuthEvent({
+          eventType: 'login_failed',
+          userId: user.id,
+          ipAddress: request.ip,
+          userAgent: request.headers['user-agent'],
+          metadata: { email: parsed.data.email, reason: 'ACCOUNT_LOCKED', lockedUntil: user.lockedUntil },
+        });
         return reply.status(429).send({
           success: false,
           error: {
@@ -422,6 +490,13 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       const isMatch = await dataService.verifyPassword(user, parsed.data.password);
       if (!isMatch) {
         const failedResult = await dataService.recordFailedLogin(user.id);
+        await dataService.logAuthEvent({
+          eventType: 'login_failed',
+          userId: user.id,
+          ipAddress: request.ip,
+          userAgent: request.headers['user-agent'],
+          metadata: { email: parsed.data.email, reason: 'INVALID_CREDENTIALS', failedAttempts: failedResult.failedAttempts },
+        });
         if (failedResult.isLocked) {
           await dataService.logAudit({
             actorUserId: user.id,
@@ -476,7 +551,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      await dataService.touchLastLogin(user.id);
+      await dataService.touchLastLogin(user.id, request.ip);
       const session = await dataService.createSession(user.id, {
         userAgent: request.headers['user-agent'],
         ipAddress: request.ip,
@@ -494,6 +569,15 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       );
       const status = await dataService.getOnboardingStatus(user.id);
 
+      await dataService.logAuthEvent({
+        eventType: 'login_success',
+        userId: user.id,
+        sessionId: session.sessionId,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+        metadata: { authenticationMethod: 'password' },
+      });
+
       await dataService.logAudit({
         actorUserId: user.id,
         eventType: AUDIT_EVENTS.AUTH_LOGIN_SUCCESS,
@@ -506,19 +590,14 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.send({
         success: true,
         data: {
-          user: {
-            id: user.id,
-            email: user.email,
-            name: user.name,
-            firstName: user.firstName,
-            lastName: user.lastName,
-            displayName: user.displayName || user.name,
-            country: user.country,
-            emailVerified: user.emailVerified,
-            twoFactorEnabled: user.twoFactorEnabled,
-          },
+          user: toPublicUser(user),
           token: jwtToken,
           refreshToken: session.refreshToken,
+          session: {
+            id: session.sessionId,
+            lastVisitedUrl: session.lastVisitedUrl,
+            lastVisitedSubdomain: session.lastVisitedSubdomain,
+          },
           onboarding: status,
         },
       });
@@ -748,89 +827,170 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     }
   );
 
-  // POST /api/v1/auth/verify-email
+  // POST /api/v1/auth/send-otp (Alias for /resend-verification)
   fastify.post(
-    '/verify-email',
+    '/send-otp',
     {
+      config: {
+        rateLimit: { max: 5, timeWindow: '1 minute' },
+      },
       schema: {
         tags: ['Auth'],
-        summary: 'Verify user email address using token',
+        summary: 'Resend or send verification OTP code to email',
         body: {
           type: 'object',
-          required: ['token'],
+          required: ['email'],
           properties: {
-            token: { type: 'string' },
+            email: { type: 'string', format: 'email' },
           },
         },
       },
     },
     async (request, reply) => {
-      const parsed = verifyEmailSchema.safeParse(request.body);
+      const parsed = resendVerificationSchema.safeParse(request.body);
       if (!parsed.success) {
         return reply.status(400).send({
           success: false,
           error: {
             code: ERROR_CODES.VALIDATION_ERROR,
-            message: 'Verification token is required.',
+            message: 'A valid email address is required.',
           },
         });
       }
 
       try {
-        const { user } = await dataService.verifyEmail(parsed.data.token);
-        const jwtToken = fastify.jwt.sign({ userId: user.id, email: user.email, tokenVersion: user.tokenVersion ?? 0 });
-        const session = await dataService.createSession(user.id, request.headers['user-agent'], request.ip);
-
-        setAuthCookies(reply, { token: jwtToken, refreshToken: session.refreshToken });
-
+        await dataService.resendVerificationEmail(parsed.data.email);
         return reply.send({
           success: true,
-          data: {
-            user: {
-              id: user.id,
-              email: user.email,
-              name: user.name,
-              emailVerified: user.emailVerified,
-            },
-            token: jwtToken,
-            refreshToken: session.refreshToken,
-            onboarding: {
-              currentStep: 'ORGANIZATION_CREATION',
-              status: 'IN_PROGRESS',
-            },
-          },
-          message: 'Email successfully verified. You can now create your organization.',
+          message: 'If an account exists with this email, a new verification OTP has been sent.',
         });
-      } catch (err: any) {
-        const msg = err.message || '';
-        if (err.code === 'INVALID_TOKEN' || msg.includes('INVALID_TOKEN')) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: ERROR_CODES.VALIDATION_ERROR,
-              message: 'Invalid or already used verification token.',
-            },
-          });
-        }
-        if (err.code === 'TOKEN_EXPIRED' || msg.includes('TOKEN_EXPIRED')) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: ERROR_CODES.VALIDATION_ERROR,
-              message: 'Verification token has expired. Please request a new one.',
-            },
-          });
-        }
-        return reply.status(400).send({
-          success: false,
-          error: {
-            code: ERROR_CODES.VALIDATION_ERROR,
-            message: msg || 'Failed to verify email.',
-          },
+      } catch {
+        return reply.send({
+          success: true,
+          message: 'If an account exists with this email, a new verification OTP has been sent.',
         });
       }
     }
   );
+
+  // GET & POST /api/v1/auth/verify-email
+  const handleVerifyEmail = async (request: any, reply: any) => {
+    const rawData = (request.method === 'GET' ? request.query : request.body) || {};
+    const parsed = verifyEmailSchema.safeParse(rawData);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.VALIDATION_ERROR,
+          message: parsed.error.issues[0]?.message || 'Verification token or 6-digit code is required.',
+        },
+      });
+    }
+
+    try {
+      const { user } = await dataService.verifyEmail(parsed.data);
+      const jwtToken = fastify.jwt.sign({ userId: user.id, email: user.email, tokenVersion: user.tokenVersion ?? 0 });
+      const session = await dataService.createSession(user.id, request.headers['user-agent'], request.ip);
+
+      await dataService.logAuthEvent({
+        eventType: 'email_verified',
+        userId: user.id,
+        sessionId: session.sessionId,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+      });
+
+      setAuthCookies(reply, { token: jwtToken, refreshToken: session.refreshToken });
+
+      return reply.send({
+        success: true,
+        data: {
+          user: {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            emailVerified: user.emailVerified,
+          },
+          token: jwtToken,
+          refreshToken: session.refreshToken,
+          onboarding: {
+            currentStep: 'ORGANIZATION_CREATION',
+            status: 'IN_PROGRESS',
+          },
+        },
+        message: 'Email successfully verified. You can now create your organization.',
+      });
+    } catch (err: any) {
+      const msg = err.message || '';
+      if (err.code === 'INVALID_TOKEN' || msg.includes('INVALID_TOKEN')) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: 'Invalid or already used verification token.',
+          },
+        });
+      }
+      if (err.code === 'TOKEN_EXPIRED' || msg.includes('TOKEN_EXPIRED')) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: 'Verification token has expired. Please request a new one.',
+          },
+        });
+      }
+      if (err.code === 'INVALID_CODE' || msg.includes('INVALID_CODE')) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: 'Invalid verification code. Please check the 6 digits and try again.',
+          },
+        });
+      }
+      throw err;
+    }
+  };
+
+  fastify.post(
+    '/verify-email',
+    {
+      schema: {
+        tags: ['Auth'],
+        summary: 'Verify user email address using token or 6-digit code (POST)',
+        body: {
+          type: 'object',
+          properties: {
+            token: { type: 'string' },
+            code: { type: 'string' },
+            email: { type: 'string' },
+          },
+        },
+      },
+    },
+    handleVerifyEmail
+  );
+
+  fastify.get(
+    '/verify-email',
+    {
+      schema: {
+        tags: ['Auth'],
+        summary: 'Verify user email address using token link (GET)',
+        querystring: {
+          type: 'object',
+          properties: {
+            token: { type: 'string' },
+            code: { type: 'string' },
+            email: { type: 'string' },
+          },
+        },
+      },
+    },
+    handleVerifyEmail
+  );
+
 
   // GET /api/v1/auth/me
   fastify.get(
@@ -848,6 +1008,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       const userToSerialize = freshUser || request.user;
       const memberships = await dataService.getUserMemberships(request.user.id);
       const status = await dataService.getOnboardingStatus(request.user.id);
+      const sessionContext = request.sessionId ? await dataService.getSessionById(request.sessionId) : null;
 
       const jwtToken = fastify.jwt.sign({
         userId: request.user.id,
@@ -862,6 +1023,12 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         data: {
           token: jwtToken,
           user: toPublicUser(userToSerialize),
+          session: sessionContext ? {
+            id: sessionContext.id,
+            lastVisitedUrl: sessionContext.lastVisitedUrl,
+            lastVisitedSubdomain: sessionContext.lastVisitedSubdomain,
+            lastVisitedAt: sessionContext.lastVisitedAt,
+          } : (request.sessionId ? { id: request.sessionId } : undefined),
           memberships: memberships.map((m) => ({
             organization: {
               id: m.organization.id,
@@ -889,28 +1056,58 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
+      const sessionContext = request.sessionId ? await dataService.getSessionById(request.sessionId) : null;
       return reply.send({
         success: true,
         data: {
-          user: {
-            id: request.user.id,
-            email: request.user.email,
-            name: request.user.name,
-            displayName: request.user.displayName || request.user.name,
-            firstName: request.user.firstName,
-            lastName: request.user.lastName,
-            country: request.user.country,
-            timezone: request.user.timezone,
-            emailVerified: request.user.emailVerified,
-            avatarUrl: request.user.avatarUrl || request.user.avatar,
-            twoFactorEnabled: request.user.twoFactorEnabled,
-          },
+          user: toPublicUser(request.user),
           session: {
             id: request.sessionId,
             tokenVersion: request.user.tokenVersion ?? 1,
             ipAddress: request.ip,
             userAgent: request.headers['user-agent'],
+            lastVisitedUrl: sessionContext?.lastVisitedUrl,
+            lastVisitedSubdomain: sessionContext?.lastVisitedSubdomain,
+            lastVisitedAt: sessionContext?.lastVisitedAt,
           },
+        },
+      });
+    }
+  );
+
+  // POST /api/v1/auth/session/context
+  fastify.post(
+    '/session/context',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Auth'],
+        summary: 'Update active session last visited context (URL and subdomain)',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          properties: {
+            lastVisitedUrl: { type: 'string' },
+            lastVisitedSubdomain: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = (request.body as { lastVisitedUrl?: string; lastVisitedSubdomain?: string }) || {};
+      const sessionId = request.sessionId;
+      if (sessionId) {
+        await dataService.updateSessionContext(sessionId, {
+          lastVisitedUrl: body.lastVisitedUrl,
+          lastVisitedSubdomain: body.lastVisitedSubdomain,
+        });
+      }
+      return reply.send({
+        success: true,
+        data: {
+          sessionId,
+          lastVisitedUrl: body.lastVisitedUrl,
+          lastVisitedSubdomain: body.lastVisitedSubdomain,
         },
       });
     }
@@ -920,7 +1117,6 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     '/logout',
     {
-      preHandler: [fastify.authenticate],
       schema: {
         tags: ['Auth'],
         summary: 'Log out current user and invalidate active session tokens',
@@ -935,17 +1131,61 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
+      let userId: string | undefined = (request as any).user?.id;
+      let sessionId: string | undefined = (request as any).sessionId;
+
+      // Extract user and sessionId from authorization header if present
+      if ((!userId || !sessionId) && request.headers.authorization?.startsWith('Bearer ')) {
+        try {
+          const decoded = await request.jwtVerify<JwtPayload>();
+          if (!userId) userId = decoded.userId;
+          if (!sessionId && decoded.sessionId) sessionId = decoded.sessionId;
+        } catch {
+          // Ignore invalid/expired token on logout
+        }
+      }
+
+      // Extract user and sessionId from wildcard session cookies if present
+      const cookieSessionToken = request.cookies?.session || request.cookies?.orvio_session;
+      if ((!userId || !sessionId) && cookieSessionToken) {
+        try {
+          const decoded = fastify.jwt.verify<JwtPayload>(cookieSessionToken);
+          if (!userId) userId = decoded.userId;
+          if (!sessionId && decoded.sessionId) sessionId = decoded.sessionId;
+        } catch {
+          // Ignore invalid/expired token on logout
+        }
+      }
+
       const body = (request.body as { refreshToken?: string } | undefined) || {};
-      const userId = request.user?.id;
-      
-      if (userId) {
-        await dataService.logoutUser(userId, body.refreshToken);
-        await dataService.logAudit({
-          actorUserId: userId,
-          eventType: AUDIT_EVENTS.AUTH_LOGOUT,
+      const refreshToken = body.refreshToken || request.cookies?.refresh_token || request.cookies?.orvio_refresh_token;
+
+      if (!userId && !refreshToken && !sessionId) {
+        clearAuthCookies(reply);
+        return reply.status(401).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.UNAUTHENTICATED,
+            message: 'Authentication required. Please provide a valid session.',
+          },
+        });
+      }
+
+      try {
+        await dataService.logoutUser(userId || '', refreshToken, sessionId, {
           ipAddress: request.ip,
           userAgent: request.headers['user-agent'],
         });
+        if (userId) {
+          await dataService.logAudit({
+            actorUserId: userId,
+            eventType: AUDIT_EVENTS.AUTH_LOGOUT,
+            ipAddress: request.ip,
+            userAgent: request.headers['user-agent'],
+          });
+        }
+      } catch {
+        // Ignore DB revocation errors during logout
       }
 
       clearAuthCookies(reply);
@@ -969,6 +1209,13 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       await dataService.logoutAllSessions(request.user.id);
+      await dataService.logAuthEvent({
+        eventType: 'logout',
+        userId: request.user.id,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+        metadata: { allDevices: true },
+      });
       await dataService.logAudit({
         actorUserId: request.user.id,
         eventType: AUDIT_EVENTS.AUTH_LOGOUT_ALL,
@@ -1016,6 +1263,14 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           },
         });
       }
+      await dataService.logAuthEvent({
+        eventType: 'session_revoked',
+        userId: request.user.id,
+        sessionId: body.sessionId,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+        metadata: { sessionId: body.sessionId },
+      });
       await dataService.logAudit({
         actorUserId: request.user.id,
         eventType: AUDIT_EVENTS.AUTH_SESSION_REVOKED,
@@ -1320,7 +1575,15 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
+      const user = await dataService.getUserByEmail(parsed.data.email);
       await dataService.requestPasswordReset(parsed.data.email);
+      await dataService.logAuthEvent({
+        eventType: 'password_reset_requested',
+        userId: user?.id,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+        metadata: { email: parsed.data.email },
+      });
 
       return reply.send({
         success: true,
@@ -1365,6 +1628,12 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
 
       try {
         const { user } = await dataService.resetPassword(parsed.data.token, parsed.data.password);
+        await dataService.logAuthEvent({
+          eventType: 'password_reset_completed',
+          userId: user.id,
+          ipAddress: request.ip,
+          userAgent: request.headers['user-agent'],
+        });
         return reply.send({
           success: true,
           data: {
@@ -1439,6 +1708,12 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
 
       try {
         await dataService.changePassword(request.user.id, parsed.data.currentPassword, parsed.data.newPassword);
+        await dataService.logAuthEvent({
+          eventType: 'password_changed',
+          userId: request.user.id,
+          ipAddress: request.ip,
+          userAgent: request.headers['user-agent'],
+        });
         return reply.send({
           success: true,
           message: 'Password successfully updated.',
@@ -1687,119 +1962,6 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.redirect(`${accountsBaseUrl()}/auth/callback?token=${jwtToken}&refreshToken=${session.refreshToken}`);
       } catch (err: any) {
         console.error('[Facebook OAuth Error]:', err?.message || err, err?.stack);
-        const errorCode = err.code || (err.message?.includes('OAUTH_') ? err.message : ERROR_CODES.OAUTH_PROVIDER_ERROR);
-        return reply.redirect(`${accountsBaseUrl()}/auth/callback?error=${errorCode}`);
-      }
-    }
-  );
-
-  // --- Apple OAuth ---
-
-  // GET /api/v1/auth/apple
-  fastify.get(
-    '/apple',
-    {
-      schema: {
-        tags: ['Auth'],
-        summary: 'Initiate Apple OAuth authorization',
-        querystring: {
-          type: 'object',
-          properties: {
-            returnTo: { type: 'string' },
-            product: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { returnTo, product } = request.query as { returnTo?: string; product?: string };
-
-      if (env.NODE_ENV === 'production' && !env.APPLE_CLIENT_ID) {
-        if (request.headers.accept?.includes('application/json')) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: ERROR_CODES.OAUTH_NOT_CONFIGURED,
-              message: 'Apple OAuth credentials are not configured on the server.',
-            },
-          });
-        }
-        return reply.redirect(`${accountsBaseUrl()}/auth/callback?error=${ERROR_CODES.OAUTH_NOT_CONFIGURED}`);
-      }
-
-      const safeReturnTo = returnTo && returnTo.startsWith('/') && !returnTo.startsWith('//') ? returnTo : undefined;
-      const state = oauthService.generateState('apple', safeReturnTo, product);
-      const authUrl = oauthService.getAppleAuthUrl(state);
-
-      if (request.headers.accept?.includes('application/json')) {
-        return reply.send({ success: true, data: { url: authUrl, state } });
-      }
-
-      return reply.redirect(authUrl);
-    }
-  );
-
-  // GET /api/v1/auth/apple/callback
-  fastify.get(
-    '/apple/callback',
-    {
-      schema: {
-        tags: ['Auth'],
-        summary: 'Apple OAuth callback',
-        querystring: {
-          type: 'object',
-          properties: {
-            code: { type: 'string' },
-            state: { type: 'string' },
-            error: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { code, state, error } = request.query as {
-        code?: string;
-        state?: string;
-        error?: string;
-      };
-
-      if (error) {
-        return reply.redirect(`${accountsBaseUrl()}/auth/callback?error=${ERROR_CODES.OAUTH_ACCESS_DENIED}`);
-      }
-
-      if (!state) {
-        return reply.redirect(`${accountsBaseUrl()}/auth/callback?error=${ERROR_CODES.OAUTH_STATE_INVALID}`);
-      }
-
-      try {
-        oauthService.validateAndConsumeState(state, 'apple');
-
-        if (!code) {
-          return reply.redirect(`${accountsBaseUrl()}/auth/callback?error=${ERROR_CODES.OAUTH_CODE_INVALID}`);
-        }
-
-        const profile = await oauthService.exchangeAppleCode(code);
-        const { user } = await dataService.handleSocialAuth(profile);
-        const session = await dataService.createSession(user.id, {
-          userAgent: request.headers['user-agent'],
-          ipAddress: request.ip,
-          authenticationMethod: 'oauth',
-          tokenVersion: user.tokenVersion ?? 1,
-        });
-        const jwtToken = fastify.jwt.sign(
-          {
-            userId: user.id,
-            email: user.email,
-            sessionId: session.sessionId,
-            tokenVersion: user.tokenVersion ?? 1,
-          },
-          { expiresIn: '15m' }
-        );
-
-        setAuthCookies(reply, { token: jwtToken, refreshToken: session.refreshToken });
-        return reply.redirect(`${accountsBaseUrl()}/auth/callback?token=${jwtToken}&refreshToken=${session.refreshToken}`);
-      } catch (err: any) {
-        console.error('[Apple OAuth Error]:', err?.message || err, err?.stack);
         const errorCode = err.code || (err.message?.includes('OAUTH_') ? err.message : ERROR_CODES.OAUTH_PROVIDER_ERROR);
         return reply.redirect(`${accountsBaseUrl()}/auth/callback?error=${errorCode}`);
       }

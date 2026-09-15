@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/useAuthStore';
-import { useOnboardingStore } from '@/stores/useOnboardingStore';
 import { useLocationStore } from '@/stores/useLocationStore';
-import { useHost } from '@/host/useHost';
-import { getApplicationUrl, ApplicationKey } from '@orviohub/shared';
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
+import { useOrganizationEligibility } from '@/hooks/useOrganizationEligibility';
+import { OrganizationQuotaIndicator } from '@/components/organization/OrganizationQuotaIndicator';
+import { OrganizationLimitReachedState } from '@/components/organization/OrganizationLimitReachedState';
+import { FreeTrialLimitNotice } from '@/components/organization/FreeTrialLimitNotice';
 import { api } from '@/lib/api';
+import { getHomeUrl, getCrossSubdomainUrl } from '@/lib/domain';
 import { Header } from '@/components/landing/Header';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,919 +17,1047 @@ import { CustomSelect, type SelectOption } from '@/components/ui/custom-select';
 import { Spinner } from '@/components/ui/spinner';
 import { toast } from 'sonner';
 import {
-  MapPin,
+  Building2,
+  Phone,
+  CheckCircle2,
   ArrowRight,
   ArrowLeft,
-  ShieldCheck,
-  Plus,
-  Trash2,
+  Sparkles,
+  MapPin,
+  Coins,
+  Briefcase,
+  Package,
+  Check,
+  AlertTriangle,
+  Layers,
+  Crown,
+  Lock,
 } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
-const DRAFT_KEY = 'orvio_org_creation_draft';
-
-// Options Constants
-const ORG_TYPE_OPTIONS: SelectOption[] = [
-  { value: 'retail_store', label: 'Business / Retail Store', badge: 'Retail' },
-  { value: 'company_team', label: 'Company / Corporate Team', badge: 'Company' },
-  { value: 'supermarket', label: 'Supermarket / Grocery Chain', badge: 'Grocery' },
-  { value: 'pharmacy', label: 'Pharmacy & Health Store', badge: 'Pharmacy' },
-  { value: 'gym_club', label: 'Gym / Fitness Club', badge: 'Fitness' },
-  { value: 'school', label: 'School / Academic Institution', badge: 'Education' },
-  { value: 'personal', label: 'Personal / Sole Proprietor', badge: 'Solo' },
-  { value: 'other', label: 'Other Business Type', badge: 'Other' },
+// Business Categories
+const CATEGORY_OPTIONS: SelectOption[] = [
+  { value: 'Provision Store', label: 'Provision Store / Supermarket', badge: 'Retail' },
+  { value: 'Boutique', label: 'Boutique / Fashion & Apparel', badge: 'Fashion' },
+  { value: 'Electronics', label: 'Electronics & Gadgets', badge: 'Tech' },
+  { value: 'Cosmetics', label: 'Cosmetics & Beauty', badge: 'Beauty' },
+  { value: 'Pharmacy', label: 'Pharmacy & Health', badge: 'Healthcare' },
+  { value: 'Restaurant', label: 'Restaurant / Food & Beverage', badge: 'Food' },
+  { value: 'Automobile', label: 'Automobile & Spare Parts', badge: 'Auto' },
+  { value: 'Wholesale', label: 'Wholesale & Distribution', badge: 'Wholesale' },
+  { value: 'Service', label: 'Service Business', badge: 'Service' },
+  { value: 'Other', label: 'Other Business Type', badge: 'Other' },
 ];
 
-const ROLE_OPTIONS: SelectOption[] = [
-  { value: 'ADMIN', label: 'Admin (Full management access)', badge: 'Admin' },
-  { value: 'MANAGER', label: 'Branch Manager', badge: 'Manager' },
-  { value: 'SALES_ATTENDANT', label: 'Sales Attendant / Cashier', badge: 'Cashier' },
-  { value: 'STOCK_MANAGER', label: 'Stock & Inventory Manager', badge: 'Inventory' },
-  { value: 'ACCOUNTANT', label: 'Accountant / Financial Officer', badge: 'Finance' },
+// Business Description / Type (Optional context)
+const BUSINESS_TYPE_OPTIONS = [
+  { value: 'retail', label: 'Retail', desc: 'Direct sales to final customers' },
+  { value: 'wholesale', label: 'Wholesale', desc: 'Bulk supply to other businesses' },
+  { value: 'service', label: 'Service', desc: 'Providing skills, repairs, or labor' },
+  { value: 'manufacturing', label: 'Manufacturing', desc: 'Producing or assembling goods' },
+  { value: 'pharmacy/health', label: 'Pharmacy / Health', desc: 'Medicines, clinical items, wellness' },
+  { value: 'food & beverage', label: 'Food & Beverage', desc: 'Meals, drinks, groceries' },
+  { value: 'other', label: 'Other', desc: 'Specialized or mixed business model' },
 ];
 
-interface TeamInviteRow {
-  email: string;
-  role: string;
-  branchAccess: string[];
-}
+// Branch Count Options
+const BRANCH_COUNT_OPTIONS = [
+  { value: '1', label: '1 Location', desc: 'Single store or primary warehouse' },
+  { value: '2-5', label: '2–5 Locations', desc: 'A few branches or retail outlets' },
+  { value: '6-20', label: '6–20 Locations', desc: 'Growing chain of stores' },
+  { value: '20+', label: '20+ Locations', desc: 'Large enterprise footprint' },
+];
+
+// SKU Count Options
+const SKU_COUNT_OPTIONS = [
+  { value: '1-50', label: '1–50 Products', desc: 'Compact product catalog' },
+  { value: '51-200', label: '51–200 Products', desc: 'Medium variety of stock' },
+  { value: '201-1,000', label: '201–1,000 Products', desc: 'Broad inventory selection' },
+  { value: '1,000+', label: '1,000+ Products', desc: 'High-volume diverse catalog' },
+];
+
+// Primary Users Options
+const PRIMARY_USER_OPTIONS = [
+  { id: 'owner', label: 'Owner / Founder' },
+  { id: 'manager', label: 'Branch / General Manager' },
+  { id: 'sales attendants', label: 'Sales Attendants / Cashiers' },
+  { id: 'stock/store keepers', label: 'Stock & Store Keepers' },
+  { id: 'accountant/bookkeeper', label: 'Accountant / Bookkeeper' },
+  { id: 'other', label: 'Other Staff' },
+];
 
 export const OrganizationWizard: React.FC = () => {
   const navigate = useNavigate();
-  const location = useLocation();
-  const isOnboardingMode = location.pathname.startsWith('/onboarding');
-  const [searchParams] = useSearchParams();
-  const productParam = searchParams.get('product') || 'inventory';
-  const host = useHost();
   const { user, refreshSession } = useAuthStore();
-  const { states, fetchStates, fetchLgas, lgasByState } = useLocationStore();
-  const { updateProgress, completeFlow, skipPermanently } = useOnboardingStore();
+  const { states, fetchStates } = useLocationStore();
 
   const [step, setStep] = useState<number>(1);
   const [isLoading, setIsLoading] = useState(false);
-  const [isConfirmSkipModalOpen, setIsConfirmSkipModalOpen] = useState(false);
+  const [createdOrgData, setCreatedOrgData] = useState<{
+    organizationId: string;
+    name: string;
+    hasDefaultBranch: boolean;
+    planKey: string;
+  } | null>(null);
 
-  // Step 1: Org Details (Locked to Nigeria defaults)
-  const [orgName, setOrgName] = useState('');
-  const [orgType, setOrgType] = useState('retail_store');
-  const country = 'Nigeria';
-  const currency = 'NGN';
-  const timezone = 'Africa/Lagos';
-
-  // Step 2: Branch Setup
-  const [branchName, setBranchName] = useState('Main Store');
-  const [branchCode, setBranchCode] = useState('MAIN');
-  const [stateName, setStateName] = useState('Lagos');
-  const [lgaName, setLgaName] = useState('');
-  const [city, setCity] = useState('Ikeja');
-  const [area, setArea] = useState('');
+  // Step 1: Core Fields (Required)
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState(user?.phone || '');
+  const [category, setCategory] = useState('Provision Store');
+  const [currency, setCurrency] = useState('NGN');
   const [street, setStreet] = useState('');
-  const [blockNumber, setBlockNumber] = useState('');
-  const [landmark, setLandmark] = useState('');
+  const [city, setCity] = useState('');
+  const [stateName, setStateName] = useState('Lagos');
+  const [country] = useState('Nigeria');
 
-  // Step 3: Contact Details
-  const [useMyPhone, setUseMyPhone] = useState(Boolean(user?.phone));
-  const [businessPhone, setBusinessPhone] = useState(user?.phone || '');
-  const [isPhoneOtpModalOpen, setIsPhoneOtpModalOpen] = useState(false);
-  const [phoneOtp, setPhoneOtp] = useState('');
-  const [isSendingPhoneOtp, setIsSendingPhoneOtp] = useState(false);
-  const [isVerifyingPhoneOtp, setIsVerifyingPhoneOtp] = useState(false);
-  const [businessPhoneVerified, setBusinessPhoneVerified] = useState(Boolean(user?.phoneVerifiedAt));
+  // Step 2: Plan Selection
+  const [planKey, setPlanKey] = useState<'free_trial' | 'standard'>('free_trial');
+  const [billingCycle, setBillingCycle] = useState<'monthly' | 'annual'>('monthly');
+  const [freeTrialStatus, setFreeTrialStatus] = useState<{
+    hasFreeTrial: boolean;
+    organizationName?: string;
+    trialEndsAt?: number;
+  } | null>(null);
+  const { eligibility, isLimitReached, isFreeTrialAvailable, refreshEligibility } = useOrganizationEligibility();
 
-  // Step 4: Team Invitation (Optional)
-  const [teamInvites, setTeamInvites] = useState<TeamInviteRow[]>([
-    { email: '', role: 'SALES_ATTENDANT', branchAccess: ['MAIN'] },
-  ]);
-
-  // Load Saved Draft on Mount
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(DRAFT_KEY);
-      if (raw) {
-        const draft = JSON.parse(raw);
-        if (draft.orgName) setOrgName(draft.orgName);
-        if (draft.orgType) setOrgType(draft.orgType);
-        if (draft.branchName) setBranchName(draft.branchName);
-        if (draft.branchCode) setBranchCode(draft.branchCode);
-        if (draft.stateName) setStateName(draft.stateName);
-        if (draft.lgaName) setLgaName(draft.lgaName);
-        if (draft.city) setCity(draft.city);
-        if (draft.area) setArea(draft.area);
-        if (draft.street) setStreet(draft.street);
-        if (draft.blockNumber) setBlockNumber(draft.blockNumber);
-        if (draft.landmark) setLandmark(draft.landmark);
-        if (draft.businessPhone) setBusinessPhone(draft.businessPhone);
-        if (draft.teamInvites && Array.isArray(draft.teamInvites)) setTeamInvites(draft.teamInvites);
-        if (draft.step && draft.step >= 1 && draft.step <= 4) {
-          setStep(draft.step);
-        }
-      }
-    } catch {
-      // Ignore parse errors
-    }
-  }, []);
-
-  const handleSaveAndExit = async () => {
-    const draftData = {
-      step,
-      orgName,
-      orgType,
-      currency,
-      timezone,
-      branchName,
-      branchCode,
-      stateName,
-      lgaName,
-      city,
-      area,
-      street,
-      blockNumber,
-      landmark,
-      businessPhone,
-      teamInvites,
-      product: productParam,
-      updatedAt: Date.now(),
-    };
-    try {
-      localStorage.setItem(DRAFT_KEY, JSON.stringify(draftData));
-      await updateProgress(`org_step_${step}`, draftData);
-    } catch {
-      // Local fallback
-    }
-    toast.success('Progress saved! You can resume anytime from the App Launcher.');
-    navigate('/app');
-  };
-
-  const handleSkipPermanently = async () => {
-    try {
-      localStorage.removeItem(DRAFT_KEY);
-      await skipPermanently();
-    } catch {
-      // Fallback
-    }
-    setIsConfirmSkipModalOpen(false);
-    toast.success('Setup skipped. You can create an organization later from settings.');
-    navigate('/app');
-  };
+  // Step 3: Context Questions (Optional)
+  const [businessType, setBusinessType] = useState<string>('');
+  const [branchCountRange, setBranchCountRange] = useState<string>('1');
+  const [productCountRange, setProductCountRange] = useState<string>('');
+  const [primaryUsers, setPrimaryUsers] = useState<string[]>(['owner']);
 
   useEffect(() => {
     fetchStates();
+    checkUserFreeTrialStatus();
   }, [fetchStates]);
 
   useEffect(() => {
-    if (orgName && !branchCode) {
-      const code = orgName
-        .replace(/[^A-Za-z0-9]/g, '')
-        .slice(0, 4)
-        .toUpperCase();
-      if (code) setBranchCode(code);
+    if (!isFreeTrialAvailable) {
+      setPlanKey('standard');
     }
-  }, [orgName, branchCode]);
+  }, [isFreeTrialAvailable]);
 
-  const selectedStateObj = states.find(
-    (st) =>
-      st.name.toLowerCase() === stateName.toLowerCase() ||
-      st.code?.toLowerCase() === stateName.toLowerCase()
-  );
-  const resolvedStateCode = selectedStateObj?.code || selectedStateObj?.stateCode || stateName;
+  const checkUserFreeTrialStatus = async () => {
+    try {
+      const res = await api.get<{
+        hasFreeTrial: boolean;
+        organizationName?: string;
+        trialEndsAt?: number;
+      }>('/billing/user-free-trial-status');
 
-  useEffect(() => {
-    if (resolvedStateCode) {
-      fetchLgas(resolvedStateCode);
+      if (res?.hasFreeTrial) {
+        setFreeTrialStatus(res);
+        setPlanKey('standard');
+      } else {
+        setFreeTrialStatus({ hasFreeTrial: false });
+      }
+    } catch {
+      setFreeTrialStatus({ hasFreeTrial: false });
     }
-  }, [resolvedStateCode, fetchLgas]);
+  };
 
-  const availableLgaList = (lgasByState[resolvedStateCode.toUpperCase()] || []).map((l) => ({
-    value: l.name,
-    label: l.name,
-  }));
+  const stateOptions: SelectOption[] = states.length > 0
+    ? states.map((s) => ({ value: s.name, label: s.name }))
+    : [
+        { value: 'Lagos', label: 'Lagos' },
+        { value: 'Abuja (FCT)', label: 'Abuja (FCT)' },
+        { value: 'Rivers', label: 'Rivers' },
+        { value: 'Oyo', label: 'Oyo' },
+        { value: 'Kano', label: 'Kano' },
+        { value: 'Delta', label: 'Delta' },
+        { value: 'Ogun', label: 'Ogun' },
+        { value: 'Anambra', label: 'Anambra' },
+        { value: 'Kaduna', label: 'Kaduna' },
+        { value: 'Enugu', label: 'Enugu' },
+      ];
 
-  // Step Handlers
-  const handleNextStep1 = () => {
-    if (!orgName.trim()) {
-      toast.error('Please enter an organization or business name.');
+  const handleTogglePrimaryUser = (userId: string) => {
+    if (primaryUsers.includes(userId)) {
+      setPrimaryUsers(primaryUsers.filter((u) => u !== userId));
+    } else {
+      setPrimaryUsers([...primaryUsers, userId]);
+    }
+  };
+
+  const handleStep1Submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isLimitReached) {
+      toast.error('You already own the maximum of 3 organizations. You can still join other organizations by invitation.');
       return;
     }
-    updateProgress('org_step_1', { orgName, orgType, country, currency, timezone });
+    if (!name.trim() || name.trim().length < 2) {
+      toast.error('Please enter a valid business name (at least 2 characters).');
+      return;
+    }
+    if (!phone.trim()) {
+      toast.error('Please enter a business phone number.');
+      return;
+    }
+    if (!street.trim()) {
+      toast.error('Please enter the street address or area.');
+      return;
+    }
+    if (!city.trim()) {
+      toast.error('Please enter the city.');
+      return;
+    }
+
     setStep(2);
   };
 
-  const handleNextStep2 = () => {
-    if (!branchName.trim()) {
-      toast.error('Branch name is required.');
+  const handleStep2Submit = () => {
+    if (planKey === 'free_trial' && (!isFreeTrialAvailable || freeTrialStatus?.hasFreeTrial)) {
+      toast.error('You already have an organization on Free Trial. Please choose Standard for this new organization.');
+      setPlanKey('standard');
       return;
     }
-    if (!stateName || !city.trim() || !street.trim() || !blockNumber.trim()) {
-      toast.error('Please complete the required address fields (State, City, Street, Block Number).');
-      return;
-    }
-    updateProgress('org_step_2', {
-      branchName,
-      branchCode,
-      address: { country, state: stateName, lga: lgaName, city, area, street, blockNumber, landmark },
-    });
     setStep(3);
   };
 
-  const handleNextStep3 = () => {
-    updateProgress('org_step_3', {
-      useMyPhone,
-      businessPhone,
-    });
-    setStep(4);
-  };
-
-  const handleAddInviteRow = () => {
-    if (teamInvites.length >= 10) return;
-    setTeamInvites([...teamInvites, { email: '', role: 'SALES_ATTENDANT', branchAccess: [branchCode || 'MAIN'] }]);
-  };
-
-  const handleRemoveInviteRow = (idx: number) => {
-    setTeamInvites(teamInvites.filter((_, i) => i !== idx));
-  };
-
-  const handleUpdateInvite = (idx: number, field: keyof TeamInviteRow, val: any) => {
-    const updated = [...teamInvites];
-    updated[idx] = { ...updated[idx], [field]: val };
-    setTeamInvites(updated);
-  };
-
-  // OTP Verification Handlers
-  const handleSendBusinessPhoneOtp = async () => {
-    if (!businessPhone.trim()) {
-      toast.error('Please enter a valid phone number.');
+  const handleFinalSubmit = async (skipOptional: boolean = false) => {
+    if (planKey === 'free_trial' && (!isFreeTrialAvailable || freeTrialStatus?.hasFreeTrial)) {
+      toast.error('You already have an organization on Free Trial. Please choose Standard for this new organization.');
+      setPlanKey('standard');
+      setStep(2);
       return;
     }
-    setIsSendingPhoneOtp(true);
-    try {
-      await api.post('/users/me/phone/verify', { action: 'request_otp', phone: businessPhone });
-      toast.success(`Verification code sent to ${businessPhone}!`);
-      setIsPhoneOtpModalOpen(true);
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to send verification SMS.');
-    } finally {
-      setIsSendingPhoneOtp(false);
-    }
-  };
 
-  const handleVerifyBusinessPhoneOtp = async () => {
-    if (!phoneOtp || phoneOtp.length < 4) {
-      toast.error('Please enter the verification code.');
-      return;
-    }
-    setIsVerifyingPhoneOtp(true);
-    try {
-      await api.post('/users/me/phone/verify', { action: 'verify_code', code: phoneOtp });
-      setBusinessPhoneVerified(true);
-      setIsPhoneOtpModalOpen(false);
-      setPhoneOtp('');
-      toast.success('Phone number verified successfully!');
-    } catch (err: any) {
-      toast.error(err.message || 'Invalid or expired OTP code.');
-    } finally {
-      setIsVerifyingPhoneOtp(false);
-    }
-  };
-
-  // Submit & Create Organization in Backend
-  const handleFinishOrgCreation = async () => {
     setIsLoading(true);
     try {
-      // 1. Create Organization in backend
-      const orgRes = await api.post<{ organization: any; membership: any; workspace: any }>('/organizations', {
-        name: orgName.trim(),
-        industry: orgType,
-        country: 'Nigeria',
-        timezone,
+      const fullAddress = [street.trim(), city.trim(), stateName, country]
+        .filter(Boolean)
+        .join(', ');
+
+      const payload = {
+        name: name.trim(),
+        phone: phone.trim(),
+        category,
         currency,
-      });
+        street: street.trim(),
+        city: city.trim(),
+        state: stateName,
+        country,
+        address: fullAddress,
+        businessType: skipOptional ? undefined : businessType || undefined,
+        branchCountRange: skipOptional ? '1' : branchCountRange || '1',
+        productCountRange: skipOptional ? undefined : productCountRange || undefined,
+        primaryUsers: skipOptional ? undefined : primaryUsers.length > 0 ? primaryUsers : undefined,
+        planKey,
+        billingInterval: planKey === 'standard' ? billingCycle : 'monthly',
+      };
 
-      const organizationId = orgRes.organization?.id || orgRes.organization?._id;
-
-      // 2. Select Product (pre-selected from URL or defaults to inventory)
-      try {
-        await api.post('/onboarding/modules', {
-          organizationId,
-          modules: [productParam],
-        });
-      } catch {}
-
-      // 3. Initialize Workspace
-      try {
-        await api.post('/onboarding/initialize', {
-          organizationId,
-        });
-      } catch {}
-
-      // 4. Send Team Invites if any provided
-      const validInvites = teamInvites.filter((inv) => inv.email && inv.email.includes('@'));
-      for (const invite of validInvites) {
-        try {
-          await api.post('/onboarding/invite', {
-            organizationId,
-            email: invite.email.trim(),
-            role: invite.role,
-          });
-        } catch {
-          // ignore individual invite errors
-        }
-      }
-
-      await completeFlow({
-        organizationId,
-        orgName,
-        selectedProducts: [productParam],
-        selectedPlan: 'free',
-      });
-
-      // Clear cached draft
-      try {
-        localStorage.removeItem(DRAFT_KEY);
-      } catch {}
+      const res = await api.post<{
+        organizationId: string;
+        name: string;
+        hasDefaultBranch: boolean;
+        planKey: string;
+        status: string;
+      }>('/organizations/with-plan', payload);
 
       await refreshSession();
-      toast.success('Organization created successfully! 🎉');
-      setStep(5);
+      useWorkspaceStore.getState().invalidateCache();
+      refreshEligibility();
+
+      setCreatedOrgData({
+        organizationId: res.organizationId,
+        name: res.name || name.trim(),
+        hasDefaultBranch: res.hasDefaultBranch !== false,
+        planKey: res.planKey || planKey,
+      });
+
+      try {
+        localStorage.setItem('orvio_active_workspace_id', res.organizationId);
+      } catch {}
+
+      if (planKey === 'standard') {
+        toast.info(`Organization created. Redirecting to payment checkout for Standard plan...`);
+        const paymentUrl = `/onboard/payment?orgId=${res.organizationId}&plan=standard&cycle=${billingCycle}&orgName=${encodeURIComponent(res.name || name.trim())}`;
+        navigate(paymentUrl);
+      } else {
+        toast.success(`Organization "${name}" registered successfully!`);
+        setStep(4);
+      }
     } catch (err: any) {
-      toast.error(err.message || 'Failed to finalize organization setup.');
+      const code = err?.response?.data?.error?.code || err?.code;
+      const message = err?.response?.data?.error?.message || err?.message;
+      if (code === 'ORGANIZATION_LIMIT_REACHED' || message?.includes('ORGANIZATION_LIMIT_REACHED') || err?.status === 409) {
+        toast.error('You have reached the maximum of 3 organizations you can create. You can still join other organizations by invitation.');
+        refreshEligibility();
+      } else if (code === 'FREE_TRIAL_LIMIT_REACHED' || message?.includes('FREE_TRIAL_LIMIT_REACHED')) {
+        toast.error('You already have an organization on Free Trial. Please choose Standard for this new organization.');
+        setPlanKey('standard');
+        setStep(2);
+      } else {
+        toast.error(message || 'Failed to create organization. Please check your inputs.');
+      }
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleLaunchProduct = () => {
-    try {
-      const targetUrl = getApplicationUrl(productParam as ApplicationKey, host.environment);
-      window.location.href = targetUrl;
-    } catch {
-      navigate('/app');
-    }
-  };
-
   return (
-    <div className="min-h-screen bg-black text-slate-100 flex flex-col selection:bg-[#714b67]/30 selection:text-[#e2b9d8]">
+    <div className="min-h-screen bg-black text-slate-100 flex flex-col justify-between selection:bg-[#714b67] selection:text-white">
       <Header />
 
-      <main className="flex-1 max-w-[500px] w-full mx-auto px-4 py-8 sm:py-10 space-y-6">
-        {/* Step Progress Tracker */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between text-xs font-semibold text-slate-400">
-            <div className="flex items-center gap-2">
-              <span className="text-[#e2b9d8]">Step {step} of 5:</span>
-              <span className="text-white">
-                {step === 1 && 'Organization Details'}
-                {step === 2 && 'Branch Setup'}
-                {step === 3 && 'Contact Details'}
-                {step === 4 && 'Team Invitation'}
-                {step === 5 && 'Ready to Launch'}
-              </span>
-            </div>
-            {step < 5 && (
-              <button
-                type="button"
-                onClick={handleSaveAndExit}
-                className="text-xs text-slate-400 hover:text-white transition-colors cursor-pointer"
-              >
-                {isOnboardingMode ? 'Save & Exit' : 'Cancel & Save Draft'}
-              </button>
-            )}
-          </div>
-          <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
-            <div
-              className="bg-gradient-to-r from-[#714b67] to-[#8d5b80] h-full transition-all duration-300 rounded-full"
-              style={{ width: `${(step / 5) * 100}%` }}
-            />
-          </div>
-        </div>
-
-        {/* STEP 1: ORGANIZATION DETAILS */}
-        {step === 1 && (
-          <div className="space-y-5 animate-in fade-in duration-200">
-            <div className="space-y-1.5 text-center">
-              <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
-                {isOnboardingMode ? "Let's set up your organization" : "Create a new organization"}
-              </h1>
-              <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
-                {isOnboardingMode
-                  ? "This information helps us configure your account correctly."
-                  : "Set up your business profile, primary branch location, and team."}
-              </p>
-            </div>
-
-            <div className="space-y-3.5">
-              <div className="space-y-1">
-                <Label className="text-xs font-medium text-slate-300">
-                  What's your organization name? <span className="text-rose-400">*</span>
-                </Label>
-                <Input
-                  value={orgName}
-                  onChange={(e) => setOrgName(e.target.value)}
-                  placeholder="e.g. Code X Stores Ltd"
-                  className="h-10 bg-[#0e0a0d] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs focus:ring-1 focus:ring-[#714b67]"
-                  autoFocus
-                />
-              </div>
-
-              <div className="space-y-1">
-                <Label className="text-xs font-medium text-slate-300">What type of organization is this?</Label>
-                <CustomSelect
-                  value={orgType}
-                  onChange={setOrgType}
-                  options={ORG_TYPE_OPTIONS}
-                  searchable
-                  placeholder="Select organization type"
-                />
-              </div>
-
-              {/* Locked Nigerian Defaults Indicator */}
-              <div className="p-3.5 rounded-xs bg-[#0e0a0d] border border-white/10 flex items-center justify-between text-xs">
-                <div className="flex items-center gap-2.5">
-                  <span className="text-xl">🇳🇬</span>
-                  <div>
-                    <p className="text-slate-200 font-medium">Region & Currency</p>
-                    <p className="text-[11px] text-slate-400">Nigeria (West Africa) • Nigerian Naira (₦ NGN) • WAT (GMT+1)</p>
-                  </div>
+      <main className="flex-1 max-w-4xl w-full mx-auto px-4 sm:px-6 py-8 space-y-8">
+        {/* Progress Tracker */}
+        {step < 4 && !isLimitReached && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between border-b border-white/5 pb-4">
+              <div>
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#714b67]/20 border border-[#714b67]/30 text-[#c79dbd] text-[11px] font-bold mb-1.5">
+                  <Sparkles className="w-3 h-3 text-[#FDB02F]" />
+                  <span>Organization Billing Wizard</span>
                 </div>
-                <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                  Nigeria
-                </span>
+                <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
+                  {step === 1 && 'Create Your Organization'}
+                  {step === 2 && `Choose Plan for ${name || 'Your Organization'}`}
+                  {step === 3 && 'Tailor Your Experience'}
+                </h1>
+                <p className="text-xs sm:text-sm text-slate-400 mt-1">
+                  {step === 1 && 'Enter your business details to set up your organization on Orviohub.'}
+                  {step === 2 && 'Subscriptions are billed per organization and power all your integrated applications and branches.'}
+                  {step === 3 && 'Optional context questions to help us tailor inventory and operations for your team.'}
+                </p>
+              </div>
+              <div className="text-right flex flex-col items-end gap-1">
+                <span className="text-xs font-semibold text-slate-400">Step {step} of 3</span>
+                <OrganizationQuotaIndicator eligibility={eligibility} variant="minimal" />
               </div>
             </div>
 
-            <div className="pt-2 flex justify-end">
-              <Button
-                onClick={handleNextStep1}
-                className="w-full h-10 bg-gradient-to-r from-[#714b67] to-[#8d5b80] hover:from-[#8d5b80] hover:to-[#a06892] text-white rounded-xl text-xs font-semibold shadow-lg shadow-[#714b67]/25 flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <span>Continue</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </Button>
+            {/* Steps Progress Bar */}
+            <div className="grid grid-cols-3 gap-2">
+              <div
+                className={cn(
+                  'h-1.5 rounded-full transition-all duration-300',
+                  step >= 1 ? 'bg-[#714b67]' : 'bg-white/10'
+                )}
+              />
+              <div
+                className={cn(
+                  'h-1.5 rounded-full transition-all duration-300',
+                  step >= 2 ? 'bg-[#714b67]' : 'bg-white/10'
+                )}
+              />
+              <div
+                className={cn(
+                  'h-1.5 rounded-full transition-all duration-300',
+                  step >= 3 ? 'bg-[#714b67]' : 'bg-white/10'
+                )}
+              />
             </div>
           </div>
         )}
 
-        {/* STEP 2: BRANCH SETUP */}
-        {step === 2 && (
-          <div className="space-y-5 animate-in fade-in duration-200">
-            <div className="space-y-1.5 text-center">
-              <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">Where will you operate from?</h1>
-              <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">This is your primary business location. You can add more branches later.</p>
-            </div>
-
-            <div className="space-y-3.5">
-              <div className="grid grid-cols-2 gap-2.5">
+        {/* STEP 1: Core Organization Details OR Limit Reached Blocked State */}
+        {step === 1 && (
+          isLimitReached ? (
+            <OrganizationLimitReachedState
+              currentCount={eligibility.currentOwned}
+              maxCount={eligibility.maximumOwned}
+              onViewWorkspaces={() => {
+                window.location.href = '/workspaces';
+              }}
+              onViewInvitations={() => {
+                window.location.href = '/invitations';
+              }}
+            />
+          ) : (
+          <form onSubmit={handleStep1Submit} className="space-y-6">
+            {/* Organization Limit Reached Alert */}
+            {eligibility && !eligibility.allowed && (
+              <div className="p-4 rounded-2xl bg-[#1d101b] border border-[#714b67]/50 flex items-start gap-3.5 text-xs text-slate-200 shadow-lg shadow-[#714b67]/10">
+                <AlertTriangle className="w-5 h-5 text-[#FDB02F] shrink-0 mt-0.5" />
                 <div className="space-y-1">
-                  <Label className="text-xs font-medium text-slate-300">
-                    Branch name <span className="text-rose-400">*</span>
-                  </Label>
-                  <Input
-                    value={branchName}
-                    onChange={(e) => setBranchName(e.target.value)}
-                    placeholder="e.g. Main Store"
-                    className="h-10 bg-[#0e0a0d] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs focus:ring-1 focus:ring-[#714b67]"
-                  />
+                  <p className="font-bold text-white text-sm">Organization Limit Reached (3 of 3 used)</p>
+                  <p className="text-slate-300 leading-relaxed">
+                    You currently own {eligibility.currentOwnedOrganizations} organizations, which is the maximum allowed. You can still join other businesses freely by accepting invitations.
+                  </p>
+                  <div className="pt-2">
+                    <a
+                      href={getHomeUrl()}
+                      className="inline-flex items-center gap-1 text-[#e9c7df] font-bold hover:underline"
+                    >
+                      <span>Return to Dashboard</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </a>
+                  </div>
                 </div>
-                <div className="space-y-1">
-                  <Label className="text-xs font-medium text-slate-300">
-                    Branch code <span className="text-rose-400">*</span>
+              </div>
+            )}
+
+            <div className="p-6 sm:p-8 rounded-2xl bg-[#120b10] border border-white/10 shadow-xl space-y-6">
+              <div className="flex items-center gap-3 pb-4 border-b border-white/5">
+                <div className="w-10 h-10 rounded-xl bg-[#714b67]/20 border border-[#714b67]/40 flex items-center justify-center text-[#FDB02F]">
+                  <Building2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold text-white">Business Information</h2>
+                  <p className="text-xs text-slate-400">Required details for invoicing, stock tracking, and legal compliance</p>
+                </div>
+              </div>
+
+              {/* Business Name */}
+              <div className="space-y-2">
+                <Label htmlFor="orgName" className="text-xs font-semibold text-slate-200">
+                  Business Name <span className="text-rose-400">*</span>
+                </Label>
+                <Input
+                  id="orgName"
+                  placeholder="e.g., Prime Global Store or Adeola Supermarket"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  className="bg-black/40 border-white/10 text-white placeholder:text-slate-600 focus:border-[#714b67]"
+                  required
+                />
+              </div>
+
+              {/* Business Phone & Category */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="orgPhone" className="text-xs font-semibold text-slate-200">
+                    Business Phone <span className="text-rose-400">*</span>
                   </Label>
-                  <Input
-                    value={branchCode}
-                    onChange={(e) => setBranchCode(e.target.value.toUpperCase().slice(0, 4))}
-                    placeholder="MAIN"
-                    maxLength={4}
-                    className="h-10 bg-[#0e0a0d] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs font-mono uppercase focus:ring-1 focus:ring-[#714b67]"
+                  <div className="relative">
+                    <Phone className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
+                    <Input
+                      id="orgPhone"
+                      placeholder="e.g. 08012345678 or +234..."
+                      value={phone}
+                      onChange={(e) => setPhone(e.target.value)}
+                      className="pl-9 bg-black/40 border-white/10 text-white placeholder:text-slate-600 focus:border-[#714b67]"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-xs font-semibold text-slate-200">
+                    Business Category <span className="text-rose-400">*</span>
+                  </Label>
+                  <CustomSelect
+                    value={category}
+                    onChange={setCategory}
+                    options={CATEGORY_OPTIONS}
+                    placeholder="Select category"
                   />
                 </div>
               </div>
 
-              {/* Structured Address */}
-              <div className="pt-2 space-y-3">
-                <div className="flex items-center gap-1.5 text-xs font-medium text-slate-300">
-                  <MapPin className="w-3.5 h-3.5 text-[#e2b9d8]" />
-                  <span>Location & Address (Nigeria)</span>
+              {/* Address Fields */}
+              <div className="space-y-4 pt-2">
+                <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
+                  <MapPin className="w-4 h-4 text-[#FDB02F]" />
+                  <span>Physical Location & Address</span>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2.5">
-                  <div className="space-y-1">
-                    <Label className="text-xs text-slate-300">State <span className="text-rose-400">*</span></Label>
+                <div className="space-y-2">
+                  <Label htmlFor="street" className="text-xs font-medium text-slate-300">
+                    Street / Area Address <span className="text-rose-400">*</span>
+                  </Label>
+                  <Input
+                    id="street"
+                    placeholder="e.g. 14 Marina Road, Victoria Island"
+                    value={street}
+                    onChange={(e) => setStreet(e.target.value)}
+                    className="bg-black/40 border-white/10 text-white placeholder:text-slate-600 focus:border-[#714b67]"
+                    required
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="city" className="text-xs font-medium text-slate-300">
+                      City / Town <span className="text-rose-400">*</span>
+                    </Label>
+                    <Input
+                      id="city"
+                      placeholder="e.g. Ikeja"
+                      value={city}
+                      onChange={(e) => setCity(e.target.value)}
+                      className="bg-black/40 border-white/10 text-white placeholder:text-slate-600 focus:border-[#714b67]"
+                      required
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label className="text-xs font-medium text-slate-300">
+                      State <span className="text-rose-400">*</span>
+                    </Label>
                     <CustomSelect
                       value={stateName}
-                      onChange={(s) => {
-                        setStateName(s);
-                        setLgaName('');
-                      }}
-                      options={states.map((st) => ({ value: st.name, label: st.name }))}
-                      searchable
+                      onChange={setStateName}
+                      options={stateOptions}
                       placeholder="Select State"
                     />
                   </div>
 
-                  <div className="space-y-1">
-                    <Label className="text-xs text-slate-300">LGA (Local Govt)</Label>
-                    <CustomSelect
-                      value={lgaName}
-                      onChange={setLgaName}
-                      options={availableLgaList}
-                      searchable
-                      placeholder="Select LGA"
+                  <div className="space-y-2">
+                    <Label className="text-xs font-medium text-slate-300">Country</Label>
+                    <Input
+                      value={country}
+                      disabled
+                      className="bg-white/5 border-white/10 text-slate-400 cursor-not-allowed"
                     />
                   </div>
                 </div>
+              </div>
 
-                <div className="grid grid-cols-2 gap-2.5">
-                  <div className="space-y-1">
-                    <Label className="text-xs text-slate-300">City / Town <span className="text-rose-400">*</span></Label>
-                    <Input
-                      value={city}
-                      onChange={(e) => setCity(e.target.value)}
-                      placeholder="e.g. Ikeja"
-                      className="h-10 bg-[#0e0a0d] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs focus:ring-1 focus:ring-[#714b67]"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <Label className="text-xs text-slate-300">Area / District</Label>
-                    <Input
-                      value={area}
-                      onChange={(e) => setArea(e.target.value)}
-                      placeholder="e.g. Allen Avenue"
-                      className="h-10 bg-[#0e0a0d] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs focus:ring-1 focus:ring-[#714b67]"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-3 gap-2.5">
-                  <div className="col-span-2 space-y-1">
-                    <Label className="text-xs text-slate-300">Street Name <span className="text-rose-400">*</span></Label>
-                    <Input
-                      value={street}
-                      onChange={(e) => setStreet(e.target.value)}
-                      placeholder="e.g. Obafemi Awolowo Way"
-                      className="h-10 bg-[#0e0a0d] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs focus:ring-1 focus:ring-[#714b67]"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <Label className="text-xs text-slate-300">Block / No. <span className="text-rose-400">*</span></Label>
-                    <Input
-                      value={blockNumber}
-                      onChange={(e) => setBlockNumber(e.target.value)}
-                      placeholder="No. 12"
-                      className="h-10 bg-[#0e0a0d] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs focus:ring-1 focus:ring-[#714b67]"
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <Label className="text-xs text-slate-300">Nearest Landmark / Description</Label>
-                  <Input
-                    value={landmark}
-                    onChange={(e) => setLandmark(e.target.value)}
-                    placeholder="e.g. Beside Zenith Bank"
-                    className="h-10 bg-[#0e0a0d] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs focus:ring-1 focus:ring-[#714b67]"
-                  />
+              {/* Currency Selector */}
+              <div className="pt-2 space-y-2">
+                <Label className="text-xs font-semibold text-slate-200">
+                  Operating Currency
+                </Label>
+                <div className="flex gap-2 max-w-sm">
+                  <button
+                    type="button"
+                    onClick={() => setCurrency('NGN')}
+                    className={cn(
+                      'flex-1 py-2 px-3 rounded-xl border text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer',
+                      currency === 'NGN'
+                        ? 'bg-[#714b67] border-[#714b67] text-white shadow-md'
+                        : 'bg-black/40 border-white/10 text-slate-400 hover:border-white/20'
+                    )}
+                  >
+                    <Coins className="w-3.5 h-3.5" />
+                    <span>NGN (₦) - Default</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCurrency('USD')}
+                    className={cn(
+                      'flex-1 py-2 px-3 rounded-xl border text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer',
+                      currency === 'USD'
+                        ? 'bg-[#714b67] border-[#714b67] text-white shadow-md'
+                        : 'bg-black/40 border-white/10 text-slate-400 hover:border-white/20'
+                    )}
+                  >
+                    <span>USD ($)</span>
+                  </button>
                 </div>
               </div>
             </div>
 
-            <div className="pt-2 flex items-center justify-between gap-3">
-              <Button
-                variant="outline"
-                onClick={() => setStep(1)}
-                className="h-10 px-4 bg-white/5 border-white/10 text-xs text-slate-300 cursor-pointer"
+            {/* Navigation Buttons */}
+            <div className="flex items-center justify-between pt-2">
+              <a
+                href={getHomeUrl()}
+                className="text-xs text-slate-400 hover:text-white transition-colors"
               >
-                <ArrowLeft className="w-3.5 h-3.5 mr-1" /> Back
-              </Button>
+                Cancel
+              </a>
               <Button
-                onClick={handleNextStep2}
-                className="flex-1 h-10 bg-gradient-to-r from-[#714b67] to-[#8d5b80] hover:from-[#8d5b80] text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer"
+                type="submit"
+                disabled={isLoading || (eligibility?.allowed === false)}
+                className={cn(
+                  "font-bold text-xs px-6 py-2.5 shadow-lg transition-all",
+                  eligibility?.allowed === false
+                    ? "bg-slate-800 text-slate-400 cursor-not-allowed opacity-60"
+                    : "bg-[#714b67] hover:bg-[#86597a] text-white shadow-[#714b67]/30 cursor-pointer"
+                )}
               >
-                <span>Continue</span>
-                <ArrowRight className="w-3.5 h-3.5" />
+                <span>{eligibility?.allowed === false ? 'Limit Reached' : 'Next: Choose Plan'}</span>
+                <ArrowRight className="w-4 h-4 ml-1.5" />
               </Button>
             </div>
-          </div>
+          </form>
+          )
         )}
 
-        {/* STEP 3: CONTACT DETAILS */}
-        {step === 3 && (
-          <div className="space-y-5 animate-in fade-in duration-200">
-            <div className="space-y-1.5 text-center">
-              <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">How can customers contact this branch?</h1>
-              <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">This contact number will be printed on receipts and invoices.</p>
+        {/* STEP 2: Plan Selection Per Organization (US-B1 & US-B3) */}
+        {step === 2 && (
+          <div className="space-y-6">
+            {/* Warning if user already has a Free Trial organization */}
+            {(!isFreeTrialAvailable || freeTrialStatus?.hasFreeTrial) && (
+              <FreeTrialLimitNotice
+                organizationName={eligibility.freeTrial.organizationName || freeTrialStatus?.organizationName}
+                className="mb-4"
+              />
+            )}
+
+            {/* Billing Cycle Switcher */}
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-4 rounded-2xl bg-[#120b10] border border-white/10">
+              <div className="flex items-center gap-2.5">
+                <Layers className="w-5 h-5 text-[#FDB02F]" />
+                <div>
+                  <h3 className="text-sm font-bold text-white">Billing Cycle</h3>
+                  <p className="text-xs text-slate-400">Choose annual billing to save 16% on Standard plan</p>
+                </div>
+              </div>
+
+              <div className="flex items-center bg-black/50 p-1 rounded-xl border border-white/10">
+                <button
+                  type="button"
+                  onClick={() => setBillingCycle('monthly')}
+                  className={cn(
+                    'px-4 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer',
+                    billingCycle === 'monthly'
+                      ? 'bg-[#714b67] text-white shadow-sm'
+                      : 'text-slate-400 hover:text-white'
+                  )}
+                >
+                  Monthly
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBillingCycle('annual')}
+                  className={cn(
+                    'px-4 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer',
+                    billingCycle === 'annual'
+                      ? 'bg-[#714b67] text-white shadow-sm'
+                      : 'text-slate-400 hover:text-white'
+                  )}
+                >
+                  <span>Annual</span>
+                  <span className="text-[10px] font-extrabold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.2 rounded-full">
+                    2 Months Free
+                  </span>
+                </button>
+              </div>
             </div>
 
-            <div className="space-y-4">
-              {user?.phone && (
-                <div className="p-3 bg-white/5 rounded-xl border border-white/10 flex items-center justify-between">
+            {/* Plan Cards Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* 1. FREE TRIAL CARD */}
+              <div
+                onClick={() => {
+                  if (isFreeTrialAvailable && !freeTrialStatus?.hasFreeTrial) {
+                    setPlanKey('free_trial');
+                  }
+                }}
+                className={cn(
+                  'relative rounded-2xl p-6 sm:p-7 border transition-all flex flex-col justify-between',
+                  !isFreeTrialAvailable || freeTrialStatus?.hasFreeTrial
+                    ? 'bg-black/30 border-white/5 opacity-60 cursor-not-allowed'
+                    : planKey === 'free_trial'
+                    ? 'bg-[#1a0f16] border-[#714b67] ring-2 ring-[#714b67] shadow-xl cursor-pointer'
+                    : 'bg-[#120b10] border-white/10 hover:border-white/20 cursor-pointer'
+                )}
+              >
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[11px] font-bold">
+                      30 Days Free
+                    </span>
+                    {planKey === 'free_trial' && !freeTrialStatus?.hasFreeTrial && (
+                      <div className="w-5 h-5 rounded-full bg-[#714b67] text-white flex items-center justify-center">
+                        <Check className="w-3.5 h-3.5 stroke-[3]" />
+                      </div>
+                    )}
+                  </div>
+
                   <div>
-                    <p className="text-xs font-medium text-white">Use my registered phone number</p>
-                    <p className="text-[11px] text-slate-400 font-mono">{user.phone}</p>
+                    <h3 className="text-xl font-bold text-white">Free Trial</h3>
+                    <p className="text-xs text-slate-400 mt-0.5">Explore Orviohub with standard trial limits</p>
                   </div>
-                  <input
-                    type="checkbox"
-                    checked={useMyPhone}
-                    onChange={(e) => {
-                      setUseMyPhone(e.target.checked);
-                      if (e.target.checked && user?.phone) {
-                        setBusinessPhone(user.phone);
-                        setBusinessPhoneVerified(Boolean(user?.phoneVerifiedAt));
-                      }
-                    }}
-                    className="w-4 h-4 rounded accent-[#714b67]"
-                  />
-                </div>
-              )}
 
-              <div className="space-y-1.5">
-                <Label className="text-xs font-medium text-slate-300">Branch Phone Number</Label>
-                <div className="flex gap-2">
-                  <Input
-                    value={businessPhone}
-                    onChange={(e) => {
-                      setBusinessPhone(e.target.value);
-                      setBusinessPhoneVerified(false);
-                    }}
-                    placeholder="08012345678"
-                    className="h-10 bg-[#0e0a0d] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs font-mono focus:ring-1 focus:ring-[#714b67]"
-                  />
-                  {businessPhone && !businessPhoneVerified && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={handleSendBusinessPhoneOtp}
-                      disabled={isSendingPhoneOtp}
-                      className="h-10 px-3 bg-emerald-500/10 border-emerald-500/20 text-emerald-400 text-xs rounded-xl"
-                    >
-                      {isSendingPhoneOtp ? <Spinner size="sm" /> : 'Verify'}
-                    </Button>
-                  )}
-                  {businessPhoneVerified && (
-                    <div className="flex items-center gap-1 text-xs text-emerald-400 px-2 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-xl">
-                      <ShieldCheck className="w-4 h-4" />
-                      <span>Verified</span>
+                  <div className="py-2 border-y border-white/5">
+                    <span className="text-3xl font-extrabold text-white">₦0</span>
+                    <span className="text-xs text-slate-400 ml-1.5 font-medium">/ 30 days</span>
+                  </div>
+
+                  {/* Feature Limits */}
+                  <ul className="space-y-2.5 text-xs text-slate-300">
+                    <li className="flex items-center gap-2">
+                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span><strong>1 Application</strong> included (e.g. Inventory)</span>
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span><strong>1 Branch</strong> per application</span>
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>Basic reports & sales tracking</span>
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>Up to 2 team members</span>
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="pt-6">
+                  {!isFreeTrialAvailable || freeTrialStatus?.hasFreeTrial ? (
+                    <div className="w-full py-2.5 px-4 rounded-xl bg-white/5 border border-white/10 text-center text-xs text-slate-400 flex items-center justify-center gap-1.5">
+                      <Lock className="w-3.5 h-3.5" />
+                      <span>Trial Already Used</span>
                     </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="pt-2 flex items-center justify-between gap-3">
-              <Button
-                variant="outline"
-                onClick={() => setStep(2)}
-                className="h-10 px-4 bg-white/5 border-white/10 text-xs text-slate-300 cursor-pointer"
-              >
-                <ArrowLeft className="w-3.5 h-3.5 mr-1" /> Back
-              </Button>
-              <Button
-                onClick={handleNextStep3}
-                className="flex-1 h-10 bg-gradient-to-r from-[#714b67] to-[#8d5b80] hover:from-[#8d5b80] text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <span>Continue</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* STEP 4: TEAM INVITATION (OPTIONAL) */}
-        {step === 4 && (
-          <div className="space-y-5 animate-in fade-in duration-200">
-            <div className="space-y-1.5 text-center">
-              <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">Invite team members</h1>
-              <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">Invite your team to collaborate. You can also do this anytime later.</p>
-            </div>
-
-            <div className="space-y-3">
-              {teamInvites.map((row, idx) => (
-                <div key={idx} className="flex items-center gap-2">
-                  <div className="flex-1">
-                    <Input
-                      value={row.email}
-                      onChange={(e) => handleUpdateInvite(idx, 'email', e.target.value)}
-                      placeholder="colleague@example.com"
-                      className="h-10 bg-[#0e0a0d] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs focus:ring-1 focus:ring-[#714b67]"
-                    />
-                  </div>
-                  <div className="w-36 sm:w-44">
-                    <CustomSelect
-                      value={row.role}
-                      onChange={(r) => handleUpdateInvite(idx, 'role', r)}
-                      options={ROLE_OPTIONS}
-                    />
-                  </div>
-                  {teamInvites.length > 1 && (
+                  ) : (
                     <button
                       type="button"
-                      onClick={() => handleRemoveInviteRow(idx)}
-                      className="p-2 text-slate-400 hover:text-rose-400 cursor-pointer"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPlanKey('free_trial');
+                      }}
+                      className={cn(
+                        'w-full py-2.5 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer',
+                        planKey === 'free_trial'
+                          ? 'bg-[#714b67] text-white shadow-lg shadow-[#714b67]/30'
+                          : 'bg-white/5 hover:bg-white/10 border border-white/10 text-white'
+                      )}
                     >
-                      <Trash2 className="w-4 h-4" />
+                      <span>Start Free Trial</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
                     </button>
                   )}
                 </div>
-              ))}
+              </div>
 
-              {teamInvites.length < 5 && (
+              {/* 2. STANDARD PLAN CARD */}
+              <div
+                onClick={() => setPlanKey('standard')}
+                className={cn(
+                  'relative rounded-2xl p-6 sm:p-7 border transition-all flex flex-col justify-between cursor-pointer',
+                  planKey === 'standard'
+                    ? 'bg-[#1a0f16] border-[#714b67] ring-2 ring-[#714b67] shadow-2xl'
+                    : 'bg-[#120b10] border-white/10 hover:border-white/20'
+                )}
+              >
+                {/* Popular Badge */}
+                <div className="absolute -top-3 right-6 px-3 py-0.5 rounded-full bg-gradient-to-r from-[#714b67] to-[#FDB02F] text-white text-[10px] font-extrabold shadow-md flex items-center gap-1">
+                  <Crown className="w-3 h-3 text-amber-200" />
+                  <span>RECOMMENDED</span>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="px-2.5 py-0.5 rounded-full bg-[#714b67]/20 border border-[#714b67]/40 text-[#c79dbd] text-[11px] font-bold">
+                      Full Scale Organization
+                    </span>
+                    {planKey === 'standard' && (
+                      <div className="w-5 h-5 rounded-full bg-[#714b67] text-white flex items-center justify-center">
+                        <Check className="w-3.5 h-3.5 stroke-[3]" />
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <h3 className="text-xl font-bold text-white">Standard</h3>
+                    <p className="text-xs text-slate-400 mt-0.5">For active businesses & multi-location teams</p>
+                  </div>
+
+                  <div className="py-2 border-y border-white/5">
+                    <span className="text-3xl font-extrabold text-white">
+                      {currency === 'USD'
+                        ? billingCycle === 'annual' ? '$200' : '$20'
+                        : billingCycle === 'annual' ? '₦75,000' : '₦7,500'}
+                    </span>
+                    <span className="text-xs text-slate-400 ml-1.5 font-medium">
+                      / {billingCycle === 'annual' ? 'year' : 'month'}
+                    </span>
+                  </div>
+
+                  {/* Feature Inclusions */}
+                  <ul className="space-y-2.5 text-xs text-slate-300">
+                    <li className="flex items-center gap-2">
+                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span><strong>Multiple Applications</strong> (Inventory, Tasks, POS)</span>
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span><strong>Multiple Branches</strong> & warehouse transfers</span>
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>Advanced reports, insights & audit trails</span>
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>Up to 10 staff members with custom permissions</span>
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <Check className="w-4 h-4 text-[#FDB02F] shrink-0" />
+                      <span>Priority support & instant payment activation</span>
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="pt-6">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setPlanKey('standard');
+                    }}
+                    className={cn(
+                      'w-full py-2.5 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer',
+                      planKey === 'standard'
+                        ? 'bg-[#714b67] hover:bg-[#86597a] text-white shadow-lg shadow-[#714b67]/30'
+                        : 'bg-white/5 hover:bg-white/10 border border-white/10 text-white'
+                    )}
+                  >
+                    <span>Subscribe to Standard</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Navigation Buttons */}
+            <div className="flex items-center justify-between pt-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setStep(1)}
+                disabled={isLoading}
+                className="border-white/10 text-slate-300 hover:bg-white/5 text-xs cursor-pointer"
+              >
+                <ArrowLeft className="w-4 h-4 mr-1.5" />
+                <span>Back</span>
+              </Button>
+
+              <div className="flex items-center gap-3">
+             
                 <Button
                   type="button"
-                  variant="outline"
-                  onClick={handleAddInviteRow}
-                  className="h-9 px-3 bg-white/5 border-white/10 text-xs text-slate-300 flex items-center gap-1.5 rounded-xl cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Add team member</span>
-                </Button>
-              )}
-            </div>
-
-            <div className="pt-2 flex items-center justify-between gap-3">
-              <Button
-                variant="outline"
-                onClick={() => setStep(3)}
-                className="h-10 px-4 bg-white/5 border-white/10 text-xs text-slate-300 cursor-pointer"
-              >
-                <ArrowLeft className="w-3.5 h-3.5 mr-1" /> Back
-              </Button>
-
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  onClick={handleFinishOrgCreation}
+                  onClick={handleStep2Submit}
                   disabled={isLoading}
-                  className="text-xs text-slate-400 hover:text-white cursor-pointer"
+                  className="bg-[#714b67] hover:bg-[#86597a] text-white font-bold text-xs px-6 py-2.5 shadow-lg shadow-[#714b67]/30 cursor-pointer"
                 >
-                  Skip
-                </Button>
-
-                <Button
-                  onClick={handleFinishOrgCreation}
-                  disabled={isLoading}
-                  className="h-10 px-6 bg-gradient-to-r from-[#714b67] to-[#8d5b80] hover:from-[#8d5b80] text-white rounded-xl text-xs font-semibold flex items-center gap-2 cursor-pointer shadow-lg shadow-[#714b67]/25"
-                >
-                  {isLoading ? <Spinner size="sm" className="text-white" /> : <span>Create Organization</span>}
-                  <ArrowRight className="w-3.5 h-3.5" />
+                  <span>Next: Tailor Experience</span>
+                  <ArrowRight className="w-4 h-4 ml-1.5" />
                 </Button>
               </div>
             </div>
           </div>
         )}
 
-        {/* STEP 5: READY TO LAUNCH */}
-        {step === 5 && (
-          <div className="space-y-6 text-center py-6 animate-in zoom-in-95 duration-300">
-            <div className="w-16 h-16 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 flex items-center justify-center mx-auto text-3xl shadow-xl">
-              🎉
-            </div>
-
-            <div className="space-y-1.5">
-              <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">You're all set!</h1>
-              <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
-                Your organization <strong className="text-white">{orgName}</strong> is ready.
-              </p>
-            </div>
-
-            <div className="space-y-2 text-left text-xs max-w-sm mx-auto p-4 bg-white/5 border border-white/10 rounded-xl">
-              <div className="flex items-center justify-between text-slate-400">
-                <span>Application:</span>
-                <span className="font-semibold text-white capitalize">{productParam} Management</span>
+        {/* STEP 3: Optional Context Questions */}
+        {step === 3 && (
+          <div className="space-y-6">
+            <div className="p-6 sm:p-8 rounded-2xl bg-[#120b10] border border-white/10 shadow-xl space-y-8">
+              <div className="flex items-center justify-between pb-4 border-b border-white/5">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-[#714b67]/20 border border-[#714b67]/40 flex items-center justify-center text-[#FDB02F]">
+                    <Briefcase className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-bold text-white">Business Context (Optional)</h2>
+                    <p className="text-xs text-slate-400">Help us configure defaults and recommendations for your setup</p>
+                  </div>
+                </div>
+                <span className="text-[11px] font-semibold text-[#c79dbd] bg-[#714b67]/20 px-2.5 py-1 rounded-full border border-[#714b67]/30">
+                  Optional Questions
+                </span>
               </div>
-              <div className="flex items-center justify-between text-slate-400">
-                <span>Plan:</span>
-                <span className="font-semibold text-[#e2b9d8]">Free Plan (Upgrade anytime in billing)</span>
+
+              {/* 1. Description / Type */}
+              <div className="space-y-3">
+                <Label className="text-xs font-semibold text-slate-200">
+                  1. How would you describe this business?
+                </Label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+                  {BUSINESS_TYPE_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setBusinessType(opt.value)}
+                      className={cn(
+                        'p-3 rounded-xl border text-left transition-all cursor-pointer',
+                        businessType === opt.value
+                          ? 'bg-[#714b67]/20 border-[#714b67] text-white ring-1 ring-[#714b67]'
+                          : 'bg-black/30 border-white/5 text-slate-300 hover:border-white/20'
+                      )}
+                    >
+                      <div className="font-semibold text-xs text-white">{opt.label}</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">{opt.desc}</div>
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className="flex items-center justify-between text-slate-400">
-                <span>Main Branch:</span>
-                <span className="font-semibold text-white">{branchName} ({city}, {stateName})</span>
+
+              {/* 2. Branch Count */}
+              <div className="space-y-3">
+                <Label className="text-xs font-semibold text-slate-200">
+                  2. How many physical locations (branches) does this business have?
+                </Label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                  {BRANCH_COUNT_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setBranchCountRange(opt.value)}
+                      className={cn(
+                        'p-3 rounded-xl border text-left transition-all cursor-pointer',
+                        branchCountRange === opt.value
+                          ? 'bg-[#714b67]/20 border-[#714b67] text-white ring-1 ring-[#714b67]'
+                          : 'bg-black/30 border-white/5 text-slate-300 hover:border-white/20'
+                      )}
+                    >
+                      <div className="font-bold text-xs text-white">{opt.label}</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">{opt.desc}</div>
+                    </button>
+                  ))}
+                </div>
+                {branchCountRange === '1' && (
+                  <p className="text-[11px] text-[#FDB02F] flex items-center gap-1.5 mt-1">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>A default &ldquo;Main Branch&rdquo; will be automatically provisioned for you.</span>
+                  </p>
+                )}
+              </div>
+
+              {/* 3. SKU Count */}
+              <div className="space-y-3">
+                <Label className="text-xs font-semibold text-slate-200">
+                  3. Approximately how many products/SKUs do you manage?
+                </Label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                  {SKU_COUNT_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setProductCountRange(opt.value)}
+                      className={cn(
+                        'p-3 rounded-xl border text-left transition-all cursor-pointer',
+                        productCountRange === opt.value
+                          ? 'bg-[#714b67]/20 border-[#714b67] text-white ring-1 ring-[#714b67]'
+                          : 'bg-black/30 border-white/5 text-slate-300 hover:border-white/20'
+                      )}
+                    >
+                      <div className="font-bold text-xs text-white">{opt.label}</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">{opt.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 4. Primary Users */}
+              <div className="space-y-3">
+                <Label className="text-xs font-semibold text-slate-200">
+                  4. Who will primarily use Orviohub in this business? (Select all that apply)
+                </Label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+                  {PRIMARY_USER_OPTIONS.map((opt) => {
+                    const isSelected = primaryUsers.includes(opt.id);
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => handleTogglePrimaryUser(opt.id)}
+                        className={cn(
+                          'p-3 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer',
+                          isSelected
+                            ? 'bg-[#714b67]/25 border-[#714b67] text-white ring-1 ring-[#714b67]'
+                            : 'bg-black/30 border-white/5 text-slate-300 hover:border-white/20'
+                        )}
+                      >
+                        <span className="text-xs font-medium">{opt.label}</span>
+                        <div
+                          className={cn(
+                            'w-4 h-4 rounded flex items-center justify-center text-[10px] transition-all',
+                            isSelected
+                              ? 'bg-[#714b67] text-white'
+                              : 'border border-white/20'
+                          )}
+                        >
+                          {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
 
-            <div className="pt-4 flex flex-col gap-2.5 max-w-sm mx-auto">
-              <Button
-                onClick={handleLaunchProduct}
-                className="w-full h-11 bg-gradient-to-r from-[#714b67] to-[#8d5b80] hover:from-[#8d5b80] text-white rounded-xl text-xs font-semibold shadow-lg shadow-[#714b67]/25 flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <span>Launch {productParam.charAt(0).toUpperCase() + productParam.slice(1)} Workspace</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </Button>
-
-              <Button
-                variant="outline"
-                onClick={() => navigate('/app')}
-                className="w-full h-10 bg-white/5 hover:bg-white/10 border-white/10 text-slate-300 rounded-xl text-xs font-medium cursor-pointer"
-              >
-                <span>Go to App Launcher</span>
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* Skip Setup Permanently Modal trigger - ONLY for initial onboarding */}
-        {step < 5 && isOnboardingMode && (
-          <div className="mt-6 text-center">
-            <button
-              type="button"
-              onClick={() => setIsConfirmSkipModalOpen(true)}
-              className="text-xs text-slate-500 hover:text-slate-400 underline underline-offset-4 transition-colors cursor-pointer"
-            >
-              Skip organization setup permanently
-            </button>
-          </div>
-        )}
-        {step < 5 && !isOnboardingMode && (
-          <div className="mt-6 text-center">
-            <button
-              type="button"
-              onClick={() => navigate('/app')}
-              className="text-xs text-slate-500 hover:text-slate-400 underline underline-offset-4 transition-colors cursor-pointer"
-            >
-              Cancel and return to App Launcher
-            </button>
-          </div>
-        )}
-      </main>
-
-      {/* Confirm Permanent Skip Modal */}
-      {isConfirmSkipModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-sm rounded-2xl bg-[#0c080b] border border-white/10 p-6 space-y-4 shadow-2xl animate-in zoom-in-95">
-            <div className="text-center space-y-2">
-              <h3 className="text-sm font-bold text-white">Skip Organization Setup?</h3>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                You will be taken to the App Launcher. You can create an organization or join existing ones whenever you are ready.
-              </p>
-            </div>
-            <div className="flex gap-2 pt-2">
+            {/* Actions */}
+            <div className="flex items-center justify-between pt-2">
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setIsConfirmSkipModalOpen(false)}
-                className="flex-1 h-9 bg-white/5 border-white/10 text-xs text-slate-300"
-              >
-                Cancel
-              </Button>
-              <Button
-                type="button"
+                onClick={() => setStep(2)}
                 disabled={isLoading}
-                onClick={handleSkipPermanently}
-                className="flex-1 h-9 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-semibold"
+                className="border-white/10 text-slate-300 hover:bg-white/5 text-xs cursor-pointer"
               >
-                {isLoading ? 'Skipping...' : 'Yes, Skip'}
+                <ArrowLeft className="w-4 h-4 mr-1.5" />
+                <span>Back to Plan</span>
               </Button>
+
+              <div className="flex items-center gap-3">
+                
+                <Button
+                  type="button"
+                  onClick={() => handleFinalSubmit(false)}
+                  disabled={isLoading}
+                  className="bg-[#714b67] hover:bg-[#86597a] text-white font-bold text-xs px-6 py-2.5 shadow-lg shadow-[#714b67]/30 cursor-pointer"
+                >
+                  {isLoading ? (
+                    <>
+                      <Spinner className="w-4 h-4 mr-2" />
+                      <span>Creating Business...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>
+                        {planKey === 'standard' ? 'Continue to Payment' : 'Complete & Create Business'}
+                      </span>
+                      <CheckCircle2 className="w-4 h-4 ml-1.5" />
+                    </>
+                  )}
+                </Button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Phone OTP Verification Modal */}
-      {isPhoneOtpModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-sm rounded-2xl bg-[#0c080b] border border-white/10 p-5 space-y-4 shadow-2xl animate-in zoom-in-95">
-            <div className="text-center space-y-1">
-              <div className="w-10 h-10 rounded-full bg-[#714b67]/20 border border-[#714b67]/40 flex items-center justify-center mx-auto text-[#e2b9d8]">
-                <ShieldCheck className="w-5 h-5" />
-              </div>
-              <h3 className="text-sm font-semibold text-white">Verify Phone Number</h3>
-              <p className="text-[11px] text-slate-400">
-                Enter the 6-digit OTP sent to <strong className="text-slate-200">{businessPhone}</strong>
-              </p>
+        {/* STEP 4: Success Screen */}
+        {step === 4 && (
+          <div className="p-8 sm:p-10 rounded-2xl bg-[#120b10] border border-[#714b67]/40 shadow-2xl space-y-8 text-center max-w-xl mx-auto animate-in zoom-in-95 duration-300">
+            <div className="w-16 h-16 rounded-3xl bg-[#714b67]/20 border border-[#714b67]/50 flex items-center justify-center text-[#FDB02F] mx-auto shadow-lg shadow-[#714b67]/20">
+              <CheckCircle2 className="w-8 h-8" />
             </div>
 
             <div className="space-y-2">
-              <Input
-                value={phoneOtp}
-                onChange={(e) => setPhoneOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                placeholder="123456"
-                className="h-11 text-center text-lg tracking-widest font-mono bg-[#160f14] border-white/10 text-white rounded-xl"
-                autoFocus
-              />
+              <h2 className="text-2xl font-extrabold text-white tracking-tight">
+                {createdOrgData?.name} is Registered!
+              </h2>
+              <p className="text-xs text-slate-300 max-w-md mx-auto">
+                Your organization is active with Owner privileges on the <strong>30-Day Free Trial</strong>.
+              </p>
             </div>
 
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setIsPhoneOtpModalOpen(false)}
-                className="flex-1 h-9 bg-white/5 border-white/10 text-xs text-slate-300"
+            {/* Feature Highlights Card */}
+            <div className="p-4 rounded-xl bg-black/40 border border-white/10 text-left space-y-3">
+              <div className="flex items-center justify-between text-xs pb-2 border-b border-white/5">
+                <span className="text-slate-400">Subscription Tier</span>
+                <span className="text-emerald-400 font-bold flex items-center gap-1">
+                  <Sparkles className="w-3.5 h-3.5" /> 30-Day Free Trial
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-xs pb-2 border-b border-white/5">
+                <span className="text-slate-400">Owner Access</span>
+                <span className="text-white font-medium flex items-center gap-1">
+                  <Check className="w-3.5 h-3.5 text-emerald-400" /> Full Administrative Rights
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-400">Operating Currency</span>
+                <span className="text-white font-medium">{currency}</span>
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex flex-col sm:flex-row items-center gap-3 pt-2">
+              <a
+                href={getHomeUrl()}
+                className="w-full sm:w-1/2 py-3 px-4 rounded-xl bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/30 transition-all flex items-center justify-center gap-2 hover:scale-[1.02]"
               >
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                onClick={handleVerifyBusinessPhoneOtp}
-                disabled={isVerifyingPhoneOtp || phoneOtp.length < 4}
-                className="flex-1 h-9 bg-[#714b67] hover:bg-[#8d5b80] text-xs text-white"
+                <Building2 className="w-4 h-4" />
+                <span>Go to Dashboard</span>
+              </a>
+              <a
+                href={getCrossSubdomainUrl('inventory', `/onboard/activate?org=${createdOrgData?.organizationId || ''}`)}
+                className="w-full sm:w-1/2 py-3 px-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs font-semibold transition-all flex items-center justify-center gap-2"
               >
-                {isVerifyingPhoneOtp ? <Spinner size="sm" /> : 'Confirm OTP'}
-              </Button>
+                <Package className="w-4 h-4 text-[#FDB02F]" />
+                <span>Activate Inventory</span>
+              </a>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </main>
     </div>
   );
 };
-
-export default OrganizationWizard;

@@ -209,3 +209,346 @@ export const grantExtendedTrial = mutation({
     return { success: true, newTrialEndsAt };
   },
 });
+
+/**
+ * listApplicationWorkspaces
+ * Lists all workspaces that have activated a specific application (e.g. inventory)
+ */
+export const listApplicationWorkspaces = query({
+  args: {
+    sessionToken: v.string(),
+    appKey: v.string(),
+    status: v.optional(v.string()),
+    planKey: v.optional(v.string()),
+    search: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    await verifyAdminSession(ctx, args.sessionToken);
+
+    // 1. Fetch all workspaceProducts matching appKey
+    const allWp = await ctx.db
+      .query("workspaceProducts")
+      .withIndex("by_product_status", (q) => q.eq("productKey", args.appKey))
+      .collect();
+
+    const results = [];
+
+    for (const wp of allWp) {
+      const workspace = await ctx.db.get(wp.workspaceId);
+      if (!workspace || workspace.deletedAt) continue;
+
+      let owner = null;
+      if (workspace.ownerId) {
+        owner = await ctx.db.get(workspace.ownerId);
+      }
+
+      // Subscription
+      let sub = await ctx.db
+        .query("subscriptions")
+        .withIndex("by_workspace", (q: any) => q.eq("workspaceId", wp.workspaceId))
+        .first();
+
+      if (!sub && workspace.organizationId) {
+        sub = await ctx.db
+          .query("subscriptions")
+          .withIndex("by_organizationId", (q: any) => q.eq("organizationId", workspace.organizationId!))
+          .first();
+      }
+
+      const planKey = (sub?.planKey || sub?.planId || (workspace as any).planKey || (workspace as any).planId || wp.planId || "free_trial").toLowerCase();
+
+      // Branches count (deduplicated by ID)
+      const branchesByWs = await ctx.db
+        .query("branches")
+        .withIndex("by_workspace", (q: any) => q.eq("workspaceId", wp.workspaceId))
+        .collect();
+      let branchesByOrg: any[] = [];
+      if (workspace.organizationId) {
+        branchesByOrg = await ctx.db
+          .query("branches")
+          .withIndex("by_organizationId", (q: any) => q.eq("organizationId", workspace.organizationId!))
+          .collect();
+      }
+      const branchMap = new Map<string, any>();
+      for (const b of [...branchesByWs, ...branchesByOrg]) {
+        if (b.status === "active" && !b.deletedAt) {
+          branchMap.set(String(b._id), b);
+        }
+      }
+      const activeBranches = Array.from(branchMap.values());
+
+      // Onboarding Flow
+      const flow = await ctx.db
+        .query("onboardingFlows")
+        .withIndex("by_workspace_product", (q: any) =>
+          q.eq("workspaceId", wp.workspaceId).eq("productKey", args.appKey)
+        )
+        .first();
+
+      // Products count (for inventory)
+      let productCount = 0;
+      if (args.appKey === "inventory") {
+        const prods = await ctx.db
+          .query("inventoryProducts")
+          .withIndex("by_workspaceId", (q: any) => q.eq("workspaceId", wp.workspaceId))
+          .collect();
+        productCount = prods.filter((p: any) => !p.deletedAt).length;
+      }
+
+      const wpStatus = (wp.status || "active").toLowerCase();
+
+      // Filters
+      if (args.status && args.status !== "all" && wpStatus !== args.status.toLowerCase()) {
+        continue;
+      }
+      if (args.planKey && args.planKey !== "all" && planKey.toLowerCase() !== args.planKey.toLowerCase()) {
+        continue;
+      }
+      if (args.search) {
+        const q = args.search.toLowerCase();
+        const wsName = (workspace.name || "").toLowerCase();
+        const wsSlug = (workspace.slug || "").toLowerCase();
+        const ownerEmail = (owner?.email || "").toLowerCase();
+        const ownerName = (owner?.name || "").toLowerCase();
+        if (!wsName.includes(q) && !wsSlug.includes(q) && !ownerEmail.includes(q) && !ownerName.includes(q)) {
+          continue;
+        }
+      }
+
+      results.push({
+        id: wp._id,
+        workspaceId: workspace._id,
+        workspaceName: workspace.name,
+        workspaceSlug: workspace.slug,
+        ownerId: owner?._id,
+        ownerName: owner?.name || "Unknown Owner",
+        ownerEmail: owner?.email || "No email",
+        planKey,
+        status: wp.status,
+        activatedAt: wp.activatedAt,
+        trialStartedAt: wp.trialStartedAt,
+        trialEndsAt: wp.trialEndsAt,
+        branchCount: activeBranches.length,
+        productCount,
+        onboarding: {
+          status: flow?.status || "not_started",
+          currentStep: flow?.currentStep || "welcome",
+          completedSteps: flow?.completedSteps || [],
+          completedAt: flow?.completedAt,
+        },
+        lastActiveAt: workspace.updatedAt || wp.activatedAt,
+      });
+    }
+
+    return results.sort((a, b) => (b.activatedAt || 0) - (a.activatedAt || 0));
+  },
+});
+
+/**
+ * getApplicationStats
+ * Summary metrics for a specific application
+ */
+export const getApplicationStats = query({
+  args: {
+    sessionToken: v.string(),
+    appKey: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await verifyAdminSession(ctx, args.sessionToken);
+
+    const allWp = await ctx.db
+      .query("workspaceProducts")
+      .withIndex("by_product_status", (q) => q.eq("productKey", args.appKey))
+      .collect();
+
+    let totalActive = 0;
+    let totalSuspended = 0;
+    let totalTrial = 0;
+    let onboardingCompleted = 0;
+    let onboardingInProgress = 0;
+
+    for (const wp of allWp) {
+      const s = (wp.status || "").toLowerCase();
+      if (s === "active") totalActive++;
+      else if (s === "suspended") totalSuspended++;
+      else if (s === "trial" || s === "trialing") totalTrial++;
+
+      const flow = await ctx.db
+        .query("onboardingFlows")
+        .withIndex("by_workspace_product", (q: any) =>
+          q.eq("workspaceId", wp.workspaceId).eq("productKey", args.appKey)
+        )
+        .first();
+
+      if (flow?.status === "completed" || flow?.status === "COMPLETED") {
+        onboardingCompleted++;
+      } else {
+        onboardingInProgress++;
+      }
+    }
+
+    return {
+      appKey: args.appKey,
+      totalActivations: allWp.length,
+      totalActive,
+      totalSuspended,
+      totalTrial,
+      onboardingCompleted,
+      onboardingInProgress,
+    };
+  },
+});
+
+/**
+ * listAllBranchMembers (Admin)
+ * Lists branch team assignments across workspaces with populated user & branch details
+ */
+export const listAllBranchMembers = query({
+  args: {
+    sessionToken: v.string(),
+    workspaceId: v.optional(v.string()),
+    role: v.optional(v.string()),
+    status: v.optional(v.string()),
+    search: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    await verifyAdminSession(ctx, args.sessionToken);
+
+    let memberships = await ctx.db.query("branchMemberships").collect();
+
+    if (args.workspaceId) {
+      memberships = memberships.filter((m) => m.workspaceId === args.workspaceId);
+    }
+    if (args.role && args.role !== "all") {
+      memberships = memberships.filter((m) => m.role === args.role);
+    }
+    if (args.status && args.status !== "all") {
+      memberships = memberships.filter((m) => m.status === args.status);
+    }
+
+    const populated = await Promise.all(
+      memberships.map(async (m) => {
+        const user = await ctx.db.get(m.userId);
+        let branch: any = null;
+        let ws: any = null;
+        try {
+          branch = await ctx.db.get(m.branchId as any);
+        } catch {}
+        try {
+          ws = await ctx.db.get(m.workspaceId as any);
+        } catch {}
+
+        return {
+          id: m._id,
+          workspaceId: m.workspaceId,
+          workspaceName: ws?.name || "Workspace",
+          applicationKey: m.applicationKey,
+          branchId: m.branchId,
+          branchName: branch?.name || "Main Branch",
+          userId: m.userId,
+          userName: user?.name || user?.displayName || user?.email || "Unknown User",
+          userEmail: user?.email || "",
+          userAvatar: user?.avatar || user?.avatarUrl,
+          role: m.role,
+          permissions: m.permissions,
+          status: m.status,
+          assignedAt: m.assignedAt,
+          transferredFromBranchId: m.transferredFromBranchId,
+          transferredFromRole: m.transferredFromRole,
+          createdAt: m.createdAt,
+        };
+      })
+    );
+
+    if (args.search) {
+      const q = args.search.toLowerCase();
+      return populated.filter(
+        (p) =>
+          p.userName.toLowerCase().includes(q) ||
+          p.userEmail.toLowerCase().includes(q) ||
+          p.workspaceName.toLowerCase().includes(q) ||
+          p.branchName.toLowerCase().includes(q) ||
+          p.role.toLowerCase().includes(q)
+      );
+    }
+
+    return populated.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  },
+});
+
+/**
+ * listAllBranchTransfers (Admin)
+ * Lists staff branch transfer logs across workspaces
+ */
+export const listAllBranchTransfers = query({
+  args: {
+    sessionToken: v.string(),
+    workspaceId: v.optional(v.string()),
+    search: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    await verifyAdminSession(ctx, args.sessionToken);
+
+    let transfers = await ctx.db.query("branchTransfers").order("desc").collect();
+
+    if (args.workspaceId) {
+      transfers = transfers.filter((t) => t.workspaceId === args.workspaceId);
+    }
+
+    const populated = await Promise.all(
+      transfers.map(async (t) => {
+        const user = await ctx.db.get(t.userId);
+        const adminUser = await ctx.db.get(t.transferredBy);
+        let srcBranch: any = null;
+        let dstBranch: any = null;
+        let ws: any = null;
+
+        try {
+          srcBranch = await ctx.db.get(t.sourceBranchId as any);
+        } catch {}
+        try {
+          dstBranch = await ctx.db.get(t.targetBranchId as any);
+        } catch {}
+        try {
+          ws = await ctx.db.get(t.workspaceId as any);
+        } catch {}
+
+        return {
+          id: t._id,
+          workspaceId: t.workspaceId,
+          workspaceName: ws?.name || "Workspace",
+          userId: t.userId,
+          userName: user?.name || user?.email || "Unknown User",
+          userEmail: user?.email,
+          userAvatar: user?.avatar || user?.avatarUrl,
+          sourceBranchId: t.sourceBranchId,
+          sourceBranchName: srcBranch?.name || "Previous Branch",
+          targetBranchId: t.targetBranchId,
+          targetBranchName: dstBranch?.name || "Target Branch",
+          previousRole: t.previousRole,
+          newRole: t.newRole,
+          transferredByName: adminUser?.name || adminUser?.email || "Admin",
+          effectiveDate: t.effectiveDate,
+          message: t.message,
+          createdAt: t.createdAt,
+        };
+      })
+    );
+
+    if (args.search) {
+      const q = args.search.toLowerCase();
+      return populated.filter(
+        (p) =>
+          p.userName.toLowerCase().includes(q) ||
+          (p.userEmail && p.userEmail.toLowerCase().includes(q)) ||
+          p.workspaceName.toLowerCase().includes(q) ||
+          p.sourceBranchName.toLowerCase().includes(q) ||
+          p.targetBranchName.toLowerCase().includes(q)
+      );
+    }
+
+    return populated;
+  },
+});
+
+

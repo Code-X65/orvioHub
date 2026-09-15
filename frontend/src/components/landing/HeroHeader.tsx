@@ -1,18 +1,10 @@
 import React, { useEffect } from 'react';
 import { ArrowRight, LayoutDashboard, User } from 'lucide-react';
 import { useAuthStore } from '@/stores/useAuthStore';
-import { useHost } from '@/host/useHost';
-import {
-  getAccountsUrl,
-  getHomeUrl,
-  getApplicationUrl,
-} from '@orviohub/shared';
+
 
 export const HeroHeader: React.FC = () => {
   const { user, isAuthenticated, isInitialized, refreshSession } = useAuthStore();
-  const host = useHost();
-  const env = host.environment;
-  const isMarketing = host.application === 'marketing';
 
   useEffect(() => {
     if (!isInitialized) {
@@ -20,20 +12,20 @@ export const HeroHeader: React.FC = () => {
     }
   }, [isInitialized, refreshSession]);
 
-  const homeUrl = getHomeUrl(env);
-  const myAccountUrl = `${getAccountsUrl(env)}/profile/personal`;
-  const signupUrl = `${getAccountsUrl(env)}/signup`;
-  const pricingUrl = isMarketing ? '/pricing' : `${getApplicationUrl('marketing', env)}/pricing`;
+  const homeUrl = '/inventory/dashboard';
+  const myAccountUrl = '/profile/personal';
+  const signupUrl = '/signup';
+  const pricingUrl = '/pricing';
 
   return (
     <section className="relative w-full max-w-[1400px] mx-auto pt-12 sm:pt-16 pb-16 sm:pb-20 px-6 sm:px-8 text-center flex flex-col items-center">
       {/* Background Radial Glow */}
-      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[350px] bg-[#714b67]/15 blur-[120px] pointer-events-none -z-10 rounded-full" />
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[350px] bg-[#714b67]/15 blur-[120px] pointer-events-none -z-10 rounded-sm" />
 
       {/* Main Headline */}
       <h1 className="text-5xl sm:text-6xl md:text-7xl lg:text-8xl font-bold text-white tracking-tight leading-[1.1] max-w-4xl">
         All your business on{' '}
-        <span className="inline-block bg-[#714b67] text-white px-4 sm:px-6 py-0.5 sm:py-1 rounded-full shadow-xl shadow-[#714b67]/30 transform -rotate-1 hover:rotate-0 transition-transform duration-300">
+        <span className="inline-block bg-[#714b67] text-white px-4 sm:px-6 py-0.5 sm:py-1 rounded-sm shadow-xl shadow-[#714b67]/30 transform -rotate-1 hover:rotate-0 transition-transform duration-300">
           one platform.
         </span>
       </h1>
@@ -67,7 +59,7 @@ export const HeroHeader: React.FC = () => {
       </div>
 
       {/* Mobile-only compact price badge */}
-      <div className="md:hidden mt-3 inline-block font-handwritten text-[#c79dbd] text-xl font-bold bg-[#714b67]/15 px-3 py-1 rounded-full border border-[#714b67]/30">
+      <div className="md:hidden mt-3 inline-block font-handwritten text-[#c79dbd] text-xl font-bold bg-[#714b67]/15 px-3 py-1 rounded-sm border border-[#714b67]/30">
         US$ 7.25 / month for ALL apps
       </div>
 
@@ -77,7 +69,7 @@ export const HeroHeader: React.FC = () => {
           <>
             <a
               href={homeUrl}
-              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-7 py-3 rounded-xs bg-[#714b67] hover:bg-[#86597a] active:bg-[#603f57] text-white font-semibold text-sm shadow-lg shadow-[#714b67]/25 hover:shadow-xl hover:shadow-[#714b67]/35 hover:scale-[1.01] transition-all duration-200"
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-7 py-3 rounded-sm bg-[#714b67] hover:bg-[#86597a] active:bg-[#603f57] text-white font-semibold text-sm shadow-lg shadow-[#714b67]/25 hover:shadow-xl hover:shadow-[#714b67]/35 hover:scale-[1.01] transition-all duration-200"
             >
               <LayoutDashboard className="w-4 h-4" />
               <span>Open Workspace</span>
@@ -86,7 +78,7 @@ export const HeroHeader: React.FC = () => {
 
             <a
               href={myAccountUrl}
-              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xs bg-[#140d12] hover:bg-[#20141d] text-slate-200 hover:text-white font-semibold text-sm border border-[#2d1b27] hover:border-[#44283b] transition-all duration-200"
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3 rounded-sm bg-[#140d12] hover:bg-[#20141d] text-slate-200 hover:text-white font-semibold text-sm border border-[#2d1b27] hover:border-[#44283b] transition-all duration-200"
             >
               <User className="w-4 h-4 text-[#c79dbd]" />
               <span>Manage profile</span>
@@ -96,7 +88,7 @@ export const HeroHeader: React.FC = () => {
           <>
             <a
               href={signupUrl}
-              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-7 py-3 rounded-xs bg-[#714b67] hover:bg-[#86597a] active:bg-[#603f57] text-white font-semibold text-sm shadow-lg shadow-[#714b67]/25 hover:shadow-xl hover:shadow-[#714b67]/35 hover:scale-[1.01] transition-all duration-200"
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-7 py-3 rounded-sm bg-[#714b67] hover:bg-[#86597a] active:bg-[#603f57] text-white font-semibold text-sm shadow-lg shadow-[#714b67]/25 hover:shadow-xl hover:shadow-[#714b67]/35 hover:scale-[1.01] transition-all duration-200"
             >
               <span>Start now – It's free</span>
               <ArrowRight className="w-4 h-4" />
@@ -104,7 +96,7 @@ export const HeroHeader: React.FC = () => {
 
             <a
               href={pricingUrl}
-              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xs bg-[#140d12] hover:bg-[#20141d] text-slate-200 hover:text-white font-semibold text-sm border border-[#2d1b27] hover:border-[#44283b] transition-all duration-200"
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3 rounded-sm bg-[#140d12] hover:bg-[#20141d] text-slate-200 hover:text-white font-semibold text-sm border border-[#2d1b27] hover:border-[#44283b] transition-all duration-200"
             >
               <span>Explore pricing</span>
             </a>

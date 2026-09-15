@@ -7,56 +7,18 @@ import { ModuleCard, ModuleInfo } from '@/components/onboarding/ModuleCard';
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
 import { toast } from 'sonner';
-import { Package, Users, TrendingUp, PieChart, Briefcase, ClipboardList, ArrowRight, Layers } from 'lucide-react';
+import { InventoryIcon } from '@/components/icons/InventoryIcon';
+import { ArrowRight, Layers } from 'lucide-react';
 
 const MODULES_CATALOG: ModuleInfo[] = [
   {
     id: 'inventory',
     name: 'Inventory & Stock Management',
-    desc: 'Multi-warehouse stock tracking, low-stock alerts, barcodes, and POS terminal ready.',
-    icon: Package,
+    desc: 'Manage products, stock, sales, branches, and reports with real-time multi-branch warehouse support and POS checkout.',
+    icon: InventoryIcon,
     category: 'Operations',
+    planRequirement: 'Free & Standard',
     isComingSoon: false,
-  },
-  {
-    id: 'customers',
-    name: 'Customers CRM',
-    desc: 'Centralized customer directory, contact history, and pipeline lead stages.',
-    icon: Users,
-    category: 'Core CRM',
-    isComingSoon: true,
-  },
-  {
-    id: 'sales',
-    name: 'Sales & Deals',
-    desc: 'Quotes, orders, deal stage velocity, and revenue forecasting.',
-    icon: TrendingUp,
-    category: 'Revenue',
-    isComingSoon: true,
-  },
-  {
-    id: 'finance',
-    name: 'Finance & Ledger',
-    desc: 'Invoicing, expenses, general ledger, and financial reporting.',
-    icon: PieChart,
-    category: 'Accounting',
-    isComingSoon: true,
-  },
-  {
-    id: 'hr',
-    name: 'HR & People',
-    desc: 'Employee directory, payroll records, leave tracking, and departments.',
-    icon: Briefcase,
-    category: 'Workforce',
-    isComingSoon: true,
-  },
-  {
-    id: 'projects',
-    name: 'Projects & Tasks',
-    desc: 'Kanban boards, milestone tracking, team assignments, and time logs.',
-    icon: ClipboardList,
-    category: 'Productivity',
-    isComingSoon: true,
   },
 ];
 

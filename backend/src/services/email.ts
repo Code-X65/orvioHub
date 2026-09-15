@@ -81,15 +81,26 @@ function renderEmail(message: { template: string; payload: Record<string, string
   switch (message.template) {
     case 'verification':
       return {
-        subject: 'Verify your OrvioHub account email',
+        subject: 'Verify your email address - Orviohub',
         html: buildHtmlTemplate({
           title: 'Verify your email address',
-          preheader: 'Complete your OrvioHub registration by confirming your email address.',
+          preheader: message.payload.code ? `Your Orviohub verification code is ${message.payload.code}.` : 'Complete your Orviohub registration by confirming your email address.',
           contentHtml: `<p>Hello ${message.payload.name || 'there'},</p>
-          <p>Thank you for signing up for OrvioHub. Please click the button below to verify your email address and activate all business workspace features:</p>`,
+          <p>Thank you for choosing Orviohub! Please use the 6-digit verification code below to confirm your email and activate your account:</p>
+          ${
+            message.payload.code
+              ? `<div style="margin: 24px 0; text-align: center;">
+                  <div style="display: inline-block; background-color: #1a1118; border: 1.5px solid #FDB02F; border-radius: 6px; padding: 16px 36px; box-shadow: 0 4px 16px rgba(253, 176, 47, 0.15);">
+                    <span style="font-size: 32px; font-weight: 800; letter-spacing: 8px; color: #FDB02F; font-family: monospace;">${message.payload.code}</span>
+                  </div>
+                  <p style="margin-top: 10px; font-size: 12px; color: #94a3b8;">This code expires in <strong style="color: #cbd5e1;">10 minutes</strong>.</p>
+                </div>`
+              : ''
+          }
+          <p>Or click the button below to verify your email directly in your browser:</p>`,
           buttonText: 'Verify Email Address',
           buttonUrl: message.payload.url,
-          footerNote: 'This verification link will expire in 24 hours. If you did not create an account, you can safely ignore this email.',
+          footerNote: 'This link is valid for 24 hours. If you did not request this verification, you can safely ignore this message.',
         }),
       };
 
@@ -118,7 +129,7 @@ function renderEmail(message: { template: string; payload: Record<string, string
           <p>Congratulations! Your organization <strong>${message.payload.organizationName || 'Workspace'}</strong> has been successfully configured.</p>
           <p>You can now access your product suites including Inventory, POS, CRM, and Multi-Branch Management.</p>`,
           buttonText: 'Open Workspace Dashboard',
-          buttonUrl: message.payload.url || 'http://home.orviohub.localhost:4000',
+          buttonUrl: message.payload.url || `${env.BASE_URL_INVENTORY || env.APP_URL}/dashboard`,
         }),
       };
 
@@ -149,6 +160,252 @@ function renderEmail(message: { template: string; payload: Record<string, string
           buttonText: 'Confirm Email Change',
           buttonUrl: message.payload.url,
           footerNote: 'This link expires in 24 hours. If you did not request this change, please contact support immediately.',
+        }),
+      };
+
+    case 'trial_started':
+      return {
+        subject: 'Your Orviohub Free Trial Has Started! 🎉',
+        html: buildHtmlTemplate({
+          title: 'Your 14-Day Free Trial Has Started!',
+          preheader: `Welcome to OrvioHub. Your trial for ${message.payload.orgName || 'your organization'} is active.`,
+          contentHtml: `<p>Hello ${message.payload.firstName || message.payload.name || 'there'},</p>
+          <p>Your 14-day free trial for <strong>${message.payload.orgName || 'your organization'}</strong> is now officially active with full access to the Standard Plan suite (3 organizations, 3 applications, 10 team members, 3 branches, 5,000 products, and 5,000 transactions/mo).</p>
+          <p>Your trial ends on <strong>${message.payload.trialEndsAt || '14 days from now'}</strong>. No payment details are required during the trial.</p>`,
+          buttonText: 'Launch Workspace Apps',
+          buttonUrl: message.payload.url || `${env.BASE_URL_INVENTORY || env.APP_URL}/dashboard`,
+        }),
+      };
+
+    case 'trial_reminder_7days':
+      return {
+        subject: '7 Days Left in Your Orviohub Trial ⏰',
+        html: buildHtmlTemplate({
+          title: '7 Days Remaining on Your Trial',
+          preheader: 'Halfway through your OrvioHub trial. Upgrade anytime to continue.',
+          contentHtml: `<p>Hello ${message.payload.firstName || message.payload.name || 'there'},</p>
+          <p>You have <strong>7 days remaining</strong> on your free trial for <strong>${message.payload.orgName || 'your organization'}</strong> (ends on ${message.payload.trialEndsAt}).</p>
+          <p>Upgrade to the Standard Plan (₦7,500/month or ₦75,000/year) today to lock in uninterrupted business operations for your stores.</p>`,
+          buttonText: 'Upgrade to Standard Plan',
+          buttonUrl: message.payload.url || `${env.BASE_URL_HOME || env.APP_URL}/settings/billing`,
+        }),
+      };
+
+    case 'trial_reminder_2days':
+      return {
+        subject: '2 Days Left - Upgrade Now to Keep Access ⚠️',
+        html: buildHtmlTemplate({
+          title: '2 Days Remaining - Action Required',
+          preheader: 'Your trial expires in 48 hours.',
+          contentHtml: `<p>Hello ${message.payload.firstName || message.payload.name || 'there'},</p>
+          <p>Your OrvioHub trial for <strong>${message.payload.orgName || 'your organization'}</strong> will expire in <strong>2 days</strong> on ${message.payload.trialEndsAt}.</p>
+          <p>To avoid account suspension or interruption to your branches and catalog inventory, please upgrade to Standard plan.</p>`,
+          buttonText: 'Upgrade to Standard',
+          buttonUrl: message.payload.url || `${env.BASE_URL_HOME || env.APP_URL}/settings/billing`,
+        }),
+      };
+
+    case 'trial_reminder_today':
+      return {
+        subject: 'Your Orviohub Trial Expires Today 🔒',
+        html: buildHtmlTemplate({
+          title: 'Your Free Trial Expires Today',
+          preheader: 'Upgrade today to keep your workspace active.',
+          contentHtml: `<p>Hello ${message.payload.firstName || message.payload.name || 'there'},</p>
+          <p>Today is the final day of your free trial for <strong>${message.payload.orgName || 'your organization'}</strong>.</p>
+          <p>Upgrade to the Standard Plan right now via Paystack or Bank Transfer to keep your products, sales, and members active.</p>`,
+          buttonText: 'Upgrade Now',
+          buttonUrl: message.payload.url || `${env.BASE_URL_HOME || env.APP_URL}/settings/billing`,
+        }),
+      };
+
+    case 'trial_expired':
+      return {
+        subject: 'Your Orviohub Trial Has Expired 🔒',
+        html: buildHtmlTemplate({
+          title: 'Your Trial Has Ended',
+          preheader: 'Your workspace has entered read-only mode.',
+          contentHtml: `<p>Hello ${message.payload.firstName || message.payload.name || 'there'},</p>
+          <p>The 14-day free trial for <strong>${message.payload.orgName || 'your organization'}</strong> has expired, and your workspace has been temporarily suspended into read-only mode.</p>
+          <p>All your data, branches, products, and configurations are securely preserved. Simply upgrade to reactivate full workspace capabilities instantly.</p>`,
+          buttonText: 'Reactivate with Standard Plan',
+          buttonUrl: message.payload.url || `${env.BASE_URL_HOME || env.APP_URL}/settings/billing`,
+        }),
+      };
+
+    case 'invoice_generated':
+    case 'payment_success': {
+      const invoiceUrl =
+        message.payload.invoiceUrl ||
+        (message.payload.invoiceId
+          ? `${env.BASE_URL_HOME || 'http://home.orviohub.localhost:3000'}/invoices/${message.payload.invoiceId}`
+          : `${env.BASE_URL_HOME || 'http://home.orviohub.localhost:3000'}/settings/billing`);
+      const orgName = message.payload.orgName || 'your organization';
+      const formattedAmount = message.payload.amount ? Number(message.payload.amount).toLocaleString() : '7,500';
+
+      return {
+        subject: `Payment received – Orviohub`,
+        html: buildHtmlTemplate({
+          title: `Invoice for ${orgName} – Orviohub`,
+          preheader: `Payment confirmation and invoice ${message.payload.invoiceNumber || ''} for ${orgName}.`,
+          contentHtml: `<p>Hello ${message.payload.firstName || message.payload.name || 'there'},</p>
+          <p>We've received your payment of <strong>₦${formattedAmount}</strong> for <strong>${orgName}</strong>.</p>
+          <div style="margin: 20px 0; padding: 16px; background-color: #1a1118; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px;">
+            <p style="margin: 4px 0;"><strong>Invoice Number:</strong> ${message.payload.invoiceNumber || 'N/A'}</p>
+            <p style="margin: 4px 0;"><strong>Plan:</strong> ${message.payload.planName || 'Standard Plan'} (${message.payload.billingInterval || 'Monthly'})</p>
+            <p style="margin: 4px 0;"><strong>Amount Paid:</strong> ₦${formattedAmount}</p>
+            <p style="margin: 4px 0;"><strong>Date:</strong> ${message.payload.date || new Date().toLocaleDateString('en-NG', { year: 'numeric', month: 'short', day: 'numeric' })}</p>
+            <p style="margin: 4px 0;"><strong>Transaction Reference:</strong> ${message.payload.paymentReference || 'N/A'}</p>
+            <p style="margin: 4px 0;"><strong>Status:</strong> <span style="color: #4ade80; font-weight: 600;">PAID</span></p>
+          </div>
+          <p>Your subscription is active and all features have been unlocked.</p>`,
+          buttonText: 'Download / View Invoice',
+          buttonUrl: invoiceUrl,
+          footerNote: 'You can also view and download all past invoices from your Organization Billing settings.',
+        }),
+      };
+    }
+
+    case 'payment_failed':
+      return {
+        subject: 'Payment Failed - Action Required ⚠️',
+        html: buildHtmlTemplate({
+          title: 'Payment / Verification Issue',
+          preheader: 'Action required regarding your subscription payment.',
+          contentHtml: `<p>Hello ${message.payload.firstName || message.payload.name || 'there'},</p>
+          <p>We encountered an issue processing or verifying your subscription payment for <strong>${message.payload.orgName || 'your organization'}</strong>.</p>
+          <p>${message.payload.reason || 'Please check your payment method or contact support for assistance.'}</p>`,
+          buttonText: 'Update Payment Method',
+          buttonUrl: message.payload.url || `${env.BASE_URL_HOME || env.APP_URL}/settings/billing`,
+        }),
+      };
+
+    case 'renewal_reminder':
+      return {
+        subject: 'Your Orviohub Subscription Renews in 7 Days',
+        html: buildHtmlTemplate({
+          title: 'Upcoming Subscription Renewal',
+          preheader: 'Your subscription will renew soon.',
+          contentHtml: `<p>Hello ${message.payload.firstName || message.payload.name || 'there'},</p>
+          <p>This is a quick notice that your Standard plan subscription for <strong>${message.payload.orgName || 'your organization'}</strong> is scheduled to renew on <strong>${message.payload.renewalDate || 'soon'}</strong> for <strong>₦${message.payload.amount || '7,500'}</strong>.</p>`,
+          buttonText: 'Manage Billing & Invoices',
+          buttonUrl: message.payload.url || `${env.BASE_URL_HOME || env.APP_URL}/settings/billing`,
+        }),
+      };
+
+
+    case 'userDeletionRequested':
+    case 'accountDeletionRequest':
+      return {
+        subject: 'Your Orviohub account deletion request',
+        html: buildHtmlTemplate({
+          title: 'Account Deletion Request Received',
+          preheader: `Your account is scheduled for deletion on ${message.payload.scheduledDate || '7 days from now'}.`,
+          contentHtml: `<p>Hi ${message.payload.name || 'there'},</p>
+          <p>We received your request to delete your Orviohub account.</p>
+          <p>Your account is scheduled for deletion on <strong>${message.payload.scheduledDate || '7 days from now'}</strong> (7-day grace period).</p>
+          <div style="margin: 20px 0; padding: 16px; background-color: #1a1118; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px;">
+            <p style="margin-bottom: 8px; font-weight: 600; color: #f87171;">What will be deleted:</p>
+            <ul style="margin: 0; padding-left: 20px; font-size: 13px; color: #cbd5e1;">
+              <li>Your personal profile</li>
+              <li>Your login credentials & active sessions</li>
+              <li>Your notification preferences</li>
+            </ul>
+            <p style="margin-top: 12px; margin-bottom: 8px; font-weight: 600; color: #94a3b8;">What will be preserved:</p>
+            <ul style="margin: 0; padding-left: 20px; font-size: 13px; color: #cbd5e1;">
+              <li>Business records (transactions, inventory) with your personal data anonymized</li>
+              <li>Audit logs for compliance</li>
+            </ul>
+          </div>
+          <p>If you change your mind, you can cancel your deletion request anytime during the grace period:</p>`,
+          buttonText: 'Cancel Deletion Request',
+          buttonUrl: message.payload.cancellationLink || `${env.BASE_URL_ACCOUNT || env.APP_URL}/profile/delete`,
+          footerNote: 'Questions? Reply to this email or contact support@orviohub.com.',
+        }),
+      };
+
+    case 'userDeletionFinal':
+      return {
+        subject: 'Your Orviohub account has been deleted',
+        html: buildHtmlTemplate({
+          title: 'Account Permanently Deleted',
+          preheader: 'Your OrvioHub account has been deleted.',
+          contentHtml: `<p>Hi ${message.payload.name || 'there'},</p>
+          <p>Your Orviohub account and associated personal data have been permanently deleted in accordance with NDPA 2023 regulations.</p>
+          <p>All active sessions, credentials, and profile details have been erased. Historical business records made on behalf of organizations have had your personal identifiers anonymized.</p>`,
+          footerNote: 'If you have questions or believe this was done in error, please contact support at support@orviohub.com.',
+        }),
+      };
+
+    case 'accountSuspended':
+    case 'userSuspended':
+      return {
+        subject: 'Your Orviohub account has been suspended',
+        html: buildHtmlTemplate({
+          title: 'Account Suspended',
+          preheader: 'Your Orviohub account has been suspended by an administrator.',
+          contentHtml: `<p>Hi ${message.payload.name || 'there'},</p>
+          <p>Your Orviohub account has been suspended by our admin team.</p>
+          <div style="margin: 20px 0; padding: 16px; background-color: #1a1118; border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 4px;">
+            <p style="margin: 0;"><strong>Reason:</strong> ${message.payload.reason || 'Policy Violation'}</p>
+            ${message.payload.notes ? `<p style="margin-top: 8px; margin-bottom: 0; font-size: 12px; color: #94a3b8;">${message.payload.notes}</p>` : ''}
+          </div>
+          <p>You cannot sign in to any Orviohub product until this suspension is lifted.</p>
+          <p>If you believe this is a mistake or need clarification, please contact our support team:</p>`,
+          buttonText: 'Contact Support',
+          buttonUrl: 'mailto:support@orviohub.com',
+          footerNote: 'Support email: support@orviohub.com',
+        }),
+      };
+
+    case 'accountAdminDeleted':
+    case 'userAdminDeleted':
+      return {
+        subject: 'Your Orviohub account has been deleted',
+        html: buildHtmlTemplate({
+          title: 'Account Deleted by Administrator',
+          preheader: 'Your Orviohub account has been deleted.',
+          contentHtml: `<p>Hi ${message.payload.name || 'there'},</p>
+          <p>Your Orviohub account has been deleted by our admin team.</p>
+          <div style="margin: 20px 0; padding: 16px; background-color: #1a1118; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px;">
+            <p style="margin: 0;"><strong>Reason:</strong> ${message.payload.reason || 'Administrative Action'}</p>
+          </div>
+          <p>All active sessions and credentials have been permanently removed.</p>`,
+          footerNote: 'If you have questions, contact support at support@orviohub.com.',
+        }),
+      };
+
+    case 'workspaceSuspended':
+      return {
+        subject: 'Your workspace has been suspended - OrvioHub',
+        html: buildHtmlTemplate({
+          title: 'Workspace Suspended',
+          preheader: `Workspace ${message.payload.workspaceName || ''} suspended.`,
+          contentHtml: `<p>Hi ${message.payload.name || 'there'},</p>
+          <p>Your workspace <strong>${message.payload.workspaceName || 'Organization Workspace'}</strong> has been suspended by our platform admin team.</p>
+          <div style="margin: 20px 0; padding: 16px; background-color: #1a1118; border: 1px solid rgba(239,68,68,0.3); border-radius: 4px;">
+            <p style="margin: 0;"><strong>Reason:</strong> ${message.payload.reason || 'Policy Violation / Non-payment'}</p>
+          </div>
+          <p>All member access has been temporarily halted and billing paused. Business data has been safely preserved.</p>`,
+          buttonText: 'Contact Support',
+          buttonUrl: 'mailto:support@orviohub.com',
+          footerNote: 'Contact support@orviohub.com to discuss restoring your workspace.',
+        }),
+      };
+
+    case 'workspaceDeleted':
+      return {
+        subject: 'Your workspace has been deleted - OrvioHub',
+        html: buildHtmlTemplate({
+          title: 'Workspace Deleted',
+          preheader: `Workspace ${message.payload.workspaceName || ''} has been closed.`,
+          contentHtml: `<p>Hi ${message.payload.name || 'there'},</p>
+          <p>Your workspace <strong>${message.payload.workspaceName || 'Organization Workspace'}</strong> has been deleted per administrative request.</p>
+          <div style="margin: 20px 0; padding: 16px; background-color: #1a1118; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px;">
+            <p style="margin: 0;"><strong>Reason:</strong> ${message.payload.reason || 'Closure'}</p>
+          </div>
+          <p>Business records have been archived per statutory NDPA retention regulations.</p>`,
+          footerNote: 'For inquiries, reach out to support@orviohub.com.',
         }),
       };
 
@@ -188,16 +445,16 @@ export class EmailService {
     let token = '';
     if (template === 'verification') {
       event = 'USER_VERIFICATION_REQUESTED';
-      token = payload.url?.split('verify-email/')[1]?.split('?')[0] || payload.url?.split('token=')[1] || payload.token || '';
+      token = payload.token || payload.url?.split('token=')[1]?.split('&')[0] || payload.url?.split('verify-email/')[1]?.split('?')[0] || '';
     } else if (template === 'passwordReset') {
       event = 'PASSWORD_RESET_REQUESTED';
-      token = payload.url?.split('reset-password/')[1]?.split('?')[0] || payload.url?.split('token=')[1] || payload.token || '';
+      token = payload.token || payload.url?.split('token=')[1]?.split('&')[0] || payload.url?.split('reset-password/')[1]?.split('?')[0] || '';
     } else if (template === 'invitation') {
       event = 'ORGANIZATION_INVITATION_CREATED';
-      token = payload.url?.split('invitations/')[1]?.split('?')[0] || payload.url?.split('invite/')[1]?.split('?')[0] || payload.url?.split('token=')[1] || payload.token || '';
+      token = payload.token || payload.url?.split('token=')[1]?.split('&')[0] || payload.url?.split('invitations/')[1]?.split('?')[0] || payload.url?.split('invite/')[1]?.split('?')[0] || '';
     } else if (template === 'emailChange') {
       event = 'EMAIL_CHANGE_REQUESTED';
-      token = payload.url?.split('confirm-email/')[1]?.split('?')[0] || payload.url?.split('token=')[1] || payload.token || '';
+      token = payload.token || payload.url?.split('token=')[1]?.split('&')[0] || payload.url?.split('confirm-email/')[1]?.split('?')[0] || '';
     }
 
     this.sentEmails.push({

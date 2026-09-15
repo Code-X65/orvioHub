@@ -2,6 +2,9 @@ export const ROLES = {
   OWNER: 'OWNER',
   ADMIN: 'ADMIN',
   MANAGER: 'MANAGER',
+  SALES_ATTENDANT: 'SALES_ATTENDANT',
+  STOCK_MANAGER: 'STOCK_MANAGER',
+  ACCOUNTANT: 'ACCOUNTANT',
   MEMBER: 'MEMBER',
 } as const;
 
@@ -168,6 +171,7 @@ export const ERROR_CODES = {
   PRODUCT_NOT_ENTITLED: 'PRODUCT_NOT_ENTITLED',
   PERMISSION_DENIED: 'PERMISSION_DENIED',
   PLAN_LIMIT_REACHED: 'PLAN_LIMIT_REACHED',
+  BRANCH_LIMIT_REACHED: 'BRANCH_LIMIT_REACHED',
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
@@ -238,7 +242,11 @@ export const AUDIT_EVENTS = {
   PROFILE_UPDATED: 'profile.updated',
   USER_PROFILE_UPDATED: 'user.profile_updated',
   USER_PASSWORD_CHANGED: 'user.password_changed',
+  USER_EMAIL_CHANGE_REQUESTED: 'user.email_change_requested',
   USER_EMAIL_CHANGED: 'user.email_changed',
+  USER_2FA_ENABLED: 'user.2fa_enabled',
+  USER_2FA_DISABLED: 'user.2fa_disabled',
+  USER_2FA_BACKUP_CODES_REGENERATED: 'user.2fa_backup_codes_regenerated',
   USER_PHONE_CHANGED: 'user.phone_changed',
   USER_PHONE_ADDED: 'user.phone_added',
   USER_PHONE_VERIFIED: 'user.phone_verified',

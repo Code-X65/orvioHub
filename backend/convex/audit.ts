@@ -91,6 +91,7 @@ export const logAuditEvent = mutation({
     actorUserId: v.optional(v.string()),
     targetUserId: v.optional(v.string()),
     workspaceId: v.optional(v.string()),
+    targetWorkspaceId: v.optional(v.id("workspaces")),
     organizationId: v.optional(v.id("organizations")),
     productKey: v.optional(v.string()),
     eventType: v.optional(v.string()),
@@ -99,7 +100,14 @@ export const logAuditEvent = mutation({
     entityId: v.optional(v.string()),
     resource: v.string(),
     severity: v.optional(
-      v.union(v.literal("info"), v.literal("warning"), v.literal("critical"))
+      v.union(
+        v.literal("info"),
+        v.literal("warning"),
+        v.literal("critical"),
+        v.literal("low"),
+        v.literal("medium"),
+        v.literal("high")
+      )
     ),
     ipAddress: v.optional(v.string()),
     userAgent: v.optional(v.string()),
@@ -114,6 +122,7 @@ export const logAuditEvent = mutation({
       actorUserId: actor,
       targetUserId: args.targetUserId,
       workspaceId: args.workspaceId,
+      targetWorkspaceId: args.targetWorkspaceId,
       organizationId: args.organizationId,
       productKey: args.productKey,
       eventType: args.eventType || args.action,

@@ -1,7 +1,6 @@
 import { Routes, Route, Navigate } from "react-router-dom";
-import { AuthGuard } from "../../components/auth/AuthGuard";
 import { AppProductLanding } from "../../pages/products/AppProductLanding";
-import { Dashboard } from "../../pages/Dashboard";
+import { ComingSoonPage } from "../../pages/ComingSoonPage";
 import { AcceptInvite } from "../../pages/auth/AcceptInvite";
 
 export default function TaskManagementApp() {
@@ -10,15 +9,10 @@ export default function TaskManagementApp() {
       <Route path="/invite/:token" element={<AcceptInvite />} />
       <Route path="/invitations/:token" element={<AcceptInvite />} />
       <Route path="/" element={<AppProductLanding />} />
-      <Route
-        path="/dashboard"
-        element={
-          <AuthGuard>
-            <Dashboard />
-          </AuthGuard>
-        }
-      />
+      <Route path="/onboarding" element={<ComingSoonPage appName="Task Management" />} />
+      <Route path="/dashboard" element={<ComingSoonPage appName="Task Management" />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }
+

@@ -1,7 +1,6 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import { AuthGuard } from "../../components/auth/AuthGuard";
 import { AppLauncher } from "../../pages/launcher/AppLauncher";
-import { CreateWorkspaceForm } from "../../pages/workspaces/CreateWorkspaceForm";
 import { AppProductLanding } from "../../pages/products/AppProductLanding";
 import { PricingPage } from "../../pages/pricing/PricingPage";
 import { BillingCallbackPage } from "../../pages/billing/BillingCallbackPage";
@@ -11,37 +10,17 @@ import { WelcomeChoice } from "../../pages/onboarding/WelcomeChoice";
 import { ProfileSetup } from "../../pages/onboarding/ProfileSetup";
 import { OrganizationWizard } from "../../pages/onboarding/OrganizationWizard";
 import { ModuleSelection } from "../../pages/onboarding/ModuleSelection";
-import { WorkspaceInit } from "../../pages/onboarding/WorkspaceInit";
 import { TeamInvite } from "../../pages/onboarding/TeamInvite";
 import { Complete } from "../../pages/onboarding/Complete";
+import { InventoryOnboarding } from "../../pages/inventory/InventoryOnboarding";
+import { ComingSoonPage } from "../../pages/ComingSoonPage";
 
 export default function LauncherApp() {
   return (
     <Routes>
-      <Route
-        path="/"
-        element={
-          <AuthGuard>
-            <AppLauncher />
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/app"
-        element={
-          <AuthGuard>
-            <AppLauncher />
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/launcher"
-        element={
-          <AuthGuard>
-            <AppLauncher />
-          </AuthGuard>
-        }
-      />
+      <Route path="/" element={<AppLauncher />} />
+      <Route path="/app" element={<AppLauncher />} />
+      <Route path="/launcher" element={<AppLauncher />} />
       <Route path="/pricing" element={<PricingPage />} />
       <Route path="/billing/callback" element={<BillingCallbackPage />} />
       <Route path="/invite/:token" element={<AcceptInvite />} />
@@ -52,7 +31,7 @@ export default function LauncherApp() {
         path="/organizations/new"
         element={
           <AuthGuard>
-            <CreateWorkspaceForm />
+            <OrganizationWizard />
           </AuthGuard>
         }
       />
@@ -60,7 +39,7 @@ export default function LauncherApp() {
         path="/app/organizations/new"
         element={
           <AuthGuard>
-            <CreateWorkspaceForm />
+            <OrganizationWizard />
           </AuthGuard>
         }
       />
@@ -68,7 +47,7 @@ export default function LauncherApp() {
         path="/workspaces/new"
         element={
           <AuthGuard>
-            <CreateWorkspaceForm />
+            <OrganizationWizard />
           </AuthGuard>
         }
       />
@@ -135,7 +114,7 @@ export default function LauncherApp() {
           path="workspace"
           element={
             <AuthGuard>
-              <WorkspaceInit />
+              <OrganizationWizard />
             </AuthGuard>
           }
         />
@@ -153,6 +132,20 @@ export default function LauncherApp() {
             <AuthGuard>
               <Complete />
             </AuthGuard>
+          }
+        />
+        <Route
+          path="inventory"
+          element={
+            <AuthGuard>
+              <InventoryOnboarding />
+            </AuthGuard>
+          }
+        />
+        <Route
+          path="tasks"
+          element={
+            <ComingSoonPage appName="Task Management" />
           }
         />
       </Route>

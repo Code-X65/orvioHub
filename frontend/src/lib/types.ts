@@ -47,6 +47,9 @@ export interface User {
   theme?: 'dark' | 'light' | 'system';
   layoutDensity?: 'compact' | 'comfortable';
   twoFactorEnabled?: boolean;
+  planKey?: 'free_trial' | 'standard' | 'premium' | string;
+  subscriptionStatus?: string;
+  personalOnboardingCompleted?: boolean;
 }
 
 export interface Organization {
@@ -175,9 +178,10 @@ export interface DeviceSession {
 
 export interface LinkedIdentityItem {
   id: string;
-  provider: 'password' | 'google' | 'facebook' | 'apple' | 'phone';
+  provider: 'password' | 'google' | 'facebook' | 'phone';
   providerEmail?: string;
   providerSubject?: string;
   createdAt: number;
   isPrimary?: boolean;
 }
+

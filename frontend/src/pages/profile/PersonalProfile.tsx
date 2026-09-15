@@ -135,7 +135,9 @@ export const PersonalProfile: React.FC = () => {
             </div>
 
             <div>
-              <h4 className="text-sm font-semibold text-white">{user?.name || 'User'}</h4>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h4 className="text-sm font-semibold text-white">{user?.name || 'User'}</h4>
+              </div>
               <p className="text-xs text-slate-400">{user?.email}</p>
               <p className="text-[11px] text-slate-500 mt-0.5">JPEG, PNG, or WEBP up to 5MB.</p>
             </div>

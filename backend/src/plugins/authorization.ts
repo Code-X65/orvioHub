@@ -37,6 +37,7 @@ declare module 'fastify' {
     requireWorkspaceMembership: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
     requireWorkspaceRole: (roles: string[]) => (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
     requireProductEntitlement: (productKey: string) => (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    requireApplicationAccess: (productKey?: string) => (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
     requireProductPermission: (
       productKey: string,
       permission: string,
@@ -53,6 +54,40 @@ declare module 'fastify' {
 }
 
 const plugin: FastifyPluginAsync = async (fastify) => {
+  // Centralized application-access guard
+  fastify.decorate('requireApplicationAccess', function (requiredProductKey = 'inventory') {
+    return async function (request: FastifyRequest, reply: FastifyReply) {
+      const productKey = ((request.params as any)?.productKey || (request.query as any)?.productKey || requiredProductKey).toLowerCase();
+
+      if (productKey !== 'inventory') {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: 'APPLICATION_NOT_AVAILABLE',
+            message: 'This application is not available.',
+          },
+        });
+      }
+
+      if (!request.user) {
+        return reply.status(401).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.UNAUTHENTICATED,
+            message: 'Authentication required.',
+          },
+        });
+      }
+
+      if (!request.workspace) {
+        await fastify.requireWorkspaceMembership(request, reply);
+        if (reply.sent) return;
+      }
+
+      await fastify.requireProductEntitlement('inventory')(request, reply);
+    };
+  });
+
   // Resolve workspace without requiring active membership
   fastify.decorate(
     'resolveWorkspace',
@@ -162,9 +197,20 @@ const plugin: FastifyPluginAsync = async (fastify) => {
     };
   });
 
-  // Require product entitlement (e.g. "inventory", "taskmanagement")
+  // Require product entitlement (e.g. "inventory")
   fastify.decorate('requireProductEntitlement', function (productKey: string) {
     return async function (request: FastifyRequest, reply: FastifyReply) {
+      const normKey = productKey.toLowerCase();
+      if (normKey !== 'inventory') {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: 'APPLICATION_NOT_AVAILABLE',
+            message: `Product '${productKey}' is not available.`,
+          },
+        });
+      }
+
       if (!request.workspace) {
         await fastify.requireWorkspaceMembership(request, reply);
         if (reply.sent) return;
@@ -172,7 +218,7 @@ const plugin: FastifyPluginAsync = async (fastify) => {
 
       const products = (await dataService.getWorkspaceProducts(request.workspace!.id)) as any[];
       const product = products.find(
-        (p: any) => p.productKey?.toLowerCase() === productKey.toLowerCase()
+        (p: any) => p.productKey?.toLowerCase() === normKey
       );
 
       const prodStatus = product?.status?.toLowerCase();

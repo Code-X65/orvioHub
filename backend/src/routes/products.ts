@@ -180,15 +180,25 @@ export const productsRoutes: FastifyPluginAsync = async (fastify) => {
       };
       const body = (request.body as { planId?: string }) || {};
 
+      if (productKey.toLowerCase() !== 'inventory') {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: 'APPLICATION_NOT_AVAILABLE',
+            message: 'This application is not available yet.',
+          },
+        });
+      }
+
       try {
         const product: any = await dataService.getProductByKey(productKey);
         const s = (product?.status || '').toLowerCase();
-        if (s !== 'active') {
+        if (s !== 'active' && s !== 'available') {
           return reply.status(400).send({
             success: false,
             error: {
-              code: 'PRODUCT_NOT_ACTIVE',
-              message: 'This product is not yet available for activation.',
+              code: 'APPLICATION_NOT_AVAILABLE',
+              message: 'This application is not available for activation.',
             },
           });
         }
@@ -231,4 +241,90 @@ export const productsRoutes: FastifyPluginAsync = async (fastify) => {
       }
     }
   );
+
+  // GET /api/v1/workspaces/:workspaceId/products/:productKey/is-active
+  fastify.get(
+    '/workspaces/:workspaceId/products/:productKey/is-active',
+    {
+      schema: {
+        tags: ['Products'],
+        summary: 'Check if a product is active for a workspace',
+        params: {
+          type: 'object',
+          required: ['workspaceId', 'productKey'],
+          properties: {
+            workspaceId: { type: 'string' },
+            productKey: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId, productKey } = request.params as {
+        workspaceId: string;
+        productKey: string;
+      };
+      try {
+        const isActive = await dataService.isWorkspaceProductActive(workspaceId, productKey);
+        return reply.send({
+          success: true,
+          data: { isActive, workspaceId, productKey },
+        });
+      } catch (err: any) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+            message: err.message || 'Failed to check product activation status.',
+          },
+        });
+      }
+    }
+  );
+
+  // GET /api/v1/products/:productKey - Get single product details
+  fastify.get(
+    '/:productKey',
+    {
+      schema: {
+        tags: ['Products'],
+        summary: 'Get product details by key',
+        params: {
+          type: 'object',
+          required: ['productKey'],
+          properties: {
+            productKey: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { productKey } = request.params as { productKey: string };
+      if (productKey.toLowerCase() !== 'inventory') {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: 'APPLICATION_NOT_AVAILABLE',
+            message: 'This application is not available yet.',
+          },
+        });
+      }
+      try {
+        const product = await dataService.getProductByKey(productKey);
+        return reply.send({
+          success: true,
+          data: { product },
+        });
+      } catch (err: any) {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: 'APPLICATION_NOT_AVAILABLE',
+            message: err.message || 'This application is not available yet.',
+          },
+        });
+      }
+    }
+  );
 };
+

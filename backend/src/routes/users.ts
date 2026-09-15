@@ -3,6 +3,7 @@ import { z } from 'zod';
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { dataService } from '../services/dataService.js';
+import { entitlementService } from '../services/entitlementService.js';
 import { smsService } from '../services/smsService.js';
 import { validateNigerianPhone } from '../utils/phoneValidation.js';
 import { ERROR_CODES, AUDIT_EVENTS } from '../config/constants.js';
@@ -311,121 +312,272 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
     }
   );
 
-  // 5. PATCH /api/v1/users/me/contact
-  fastify.patch(
-    '/me/contact',
-    {
-      preHandler: [fastify.authenticate],
-      schema: {
-        tags: ['Users'],
-        summary: 'Update contact info and regional location',
-        security: [{ bearerAuth: [] }],
-      },
-    },
-    async (request, reply) => {
-      const parsed = updateContactSchema.safeParse(request.body);
-      if (!parsed.success) {
-        return reply.status(400).send({
+  // 6b. POST /api/v1/users/me/email/change (and alias /me/email-change/request)
+  const handleEmailChangeRequest = async (request: any, reply: any) => {
+    const body = request.body as { newEmail: string; password?: string };
+    if (!body.newEmail) {
+      return reply.status(400).send({
+        success: false,
+        error: { code: ERROR_CODES.VALIDATION_ERROR, message: 'New email address is required.' },
+      });
+    }
+
+    const user = await dataService.getUserById(request.user.id);
+    if (!user) {
+      return reply.status(401).send({
+        success: false,
+        error: { code: ERROR_CODES.UNAUTHENTICATED, message: 'User not found.' },
+      });
+    }
+
+    if (user.passwordHash && body.password) {
+      const isMatch = await dataService.verifyPassword(user, body.password);
+      if (!isMatch) {
+        return reply.status(401).send({
           success: false,
-          error: {
-            code: ERROR_CODES.VALIDATION_ERROR,
-            message: 'Invalid contact parameters',
-          },
+          error: { code: ERROR_CODES.INVALID_CREDENTIALS, message: 'Incorrect password.' },
         });
       }
+    }
 
-      const updatedUser = await dataService.updateContact(request.user.id, parsed.data);
+    try {
+      await dataService.requestEmailChange(request.user.id, body.newEmail);
       await dataService.logAudit({
         actorUserId: request.user.id,
-        eventType: AUDIT_EVENTS.USER_PROFILE_UPDATED,
+        eventType: AUDIT_EVENTS.USER_EMAIL_CHANGE_REQUESTED,
         ipAddress: request.ip,
         userAgent: request.headers['user-agent'],
-        metadata: { updatedContact: Object.keys(parsed.data) },
+        metadata: { newEmail: body.newEmail },
       });
 
       return reply.send({
         success: true,
-        data: { user: toPublicUser(updatedUser) },
-        message: 'Contact details updated successfully.',
+        message: `Verification link sent to ${body.newEmail}. Please confirm via the link in your inbox.`,
       });
+    } catch (err: any) {
+      if (err.code === 'CONFLICT' || err.message?.includes('already in use')) {
+        return reply.status(409).send({
+          success: false,
+          error: { code: ERROR_CODES.CONFLICT, message: 'This email is already in use by another account.' },
+        });
+      }
+      throw err;
     }
-  );
+  };
 
-  // 6. POST /api/v1/users/me/phone/verify (Send OTP or verify OTP)
   fastify.post(
-    '/me/phone/verify',
+    '/me/email/change',
     {
       preHandler: [fastify.authenticate],
       schema: {
-        tags: ['Users'],
-        summary: 'Request phone verification OTP or confirm code',
+        tags: ['Users', 'Email'],
+        summary: 'Request email address change with verification link',
         security: [{ bearerAuth: [] }],
         body: {
           type: 'object',
+          required: ['newEmail'],
           properties: {
-            action: { type: 'string', enum: ['request_otp', 'verify_code'] },
-            phone: { type: 'string' },
-            code: { type: 'string' },
+            newEmail: { type: 'string', format: 'email' },
+            password: { type: 'string' },
           },
         },
       },
     },
-    async (request, reply) => {
-      const body = request.body as { action?: 'request_otp' | 'verify_code'; phone?: string; code?: string };
+    handleEmailChangeRequest
+  );
 
-      if (body.action === 'request_otp' || (!body.code && body.phone)) {
-        if (!body.phone) {
-          return reply.status(400).send({
-            success: false,
-            error: { code: ERROR_CODES.VALIDATION_ERROR, message: 'Phone number is required.' },
-          });
-        }
-        const res = await dataService.requestPhoneOtp(request.user.id, body.phone);
-        return reply.send({
-          success: true,
-          message: 'Verification OTP sent.',
-          data: res,
-        });
-      }
+  fastify.post(
+    '/me/email-change/request',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Users', 'Email'],
+        summary: 'Alias request email change endpoint',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    handleEmailChangeRequest
+  );
 
-      if (body.action === 'verify_code' || body.code) {
-        if (!body.code) {
-          return reply.status(400).send({
-            success: false,
-            error: { code: ERROR_CODES.VALIDATION_ERROR, message: 'Verification code is required.' },
-          });
-        }
-        try {
-          const user = await dataService.verifyPhoneOtp(request.user.id, body.code.trim());
-          await dataService.logAudit({
-            actorUserId: request.user.id,
-            eventType: AUDIT_EVENTS.USER_PHONE_CHANGED,
-            ipAddress: request.ip,
-            userAgent: request.headers['user-agent'],
-            metadata: { phone: user?.phone, verified: true },
-          });
-          return reply.send({
-            success: true,
-            message: 'Phone number verified successfully.',
-            data: { user },
-          });
-        } catch (err: any) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: ERROR_CODES.INVALID_PHONE_VERIFICATION_CODE,
-              message: 'Invalid or expired phone verification code.',
-            },
-          });
-        }
-      }
-
+  // 6c. POST /api/v1/users/me/email/verify & Public POST /api/v1/users/email/verify
+  const handleEmailVerify = async (request: any, reply: any) => {
+    const token = (request.body as any)?.token || (request.query as any)?.token;
+    if (!token) {
       return reply.status(400).send({
         success: false,
-        error: { code: ERROR_CODES.VALIDATION_ERROR, message: 'Invalid action specified.' },
+        error: { code: ERROR_CODES.VALIDATION_ERROR, message: 'Verification token is required.' },
       });
     }
+
+    try {
+      const { user } = await dataService.confirmEmailChange(token);
+      await dataService.logAudit({
+        actorUserId: user.id,
+        eventType: AUDIT_EVENTS.USER_EMAIL_CHANGED,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+        metadata: { newEmail: user.email },
+      });
+
+      return reply.send({
+        success: true,
+        message: 'Email address updated and verified successfully.',
+        data: { user: toPublicUser(user) },
+      });
+    } catch (err: any) {
+      if (err.message === 'INVALID_TOKEN' || err.message === 'TOKEN_EXPIRED') {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: err.message,
+            message: 'Invalid or expired email change token. Please request a new one.',
+          },
+        });
+      }
+      if (err.message === 'EMAIL_ALREADY_IN_USE' || err.code === 'CONFLICT') {
+        return reply.status(409).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.CONFLICT,
+            message: 'Email address is already in use by another account.',
+          },
+        });
+      }
+      throw err;
+    }
+  };
+
+  fastify.post(
+    '/me/email/verify',
+    {
+      schema: {
+        tags: ['Users', 'Email'],
+        summary: 'Confirm email change using token',
+        body: {
+          type: 'object',
+          required: ['token'],
+          properties: {
+            token: { type: 'string' },
+          },
+        },
+      },
+    },
+    handleEmailVerify
   );
+
+  fastify.post('/email/verify', { schema: { tags: ['Users', 'Email'], summary: 'Confirm email change public endpoint' } }, handleEmailVerify);
+  fastify.get('/email/verify', { schema: { tags: ['Users', 'Email'], summary: 'Confirm email change public GET endpoint' } }, handleEmailVerify);
+
+  // 6d. 2FA Security Endpoints under /me/security/2fa/* and /me/2fa/*
+  const handle2faStatus = async (request: any, reply: any) => {
+    const status = await dataService.getTwoFactorStatus(request.user.id);
+    return reply.send({
+      success: true,
+      data: status,
+    });
+  };
+  fastify.get('/me/security/2fa/status', { preHandler: [fastify.authenticate] }, handle2faStatus);
+  fastify.get('/me/2fa/status', { preHandler: [fastify.authenticate] }, handle2faStatus);
+
+  const handle2faStart = async (request: any, reply: any) => {
+    const data = await dataService.enableTwoFactorStart(request.user.id);
+    return reply.send({
+      success: true,
+      data,
+    });
+  };
+  fastify.post('/me/security/2fa/start', { preHandler: [fastify.authenticate] }, handle2faStart);
+  fastify.post('/me/2fa/start', { preHandler: [fastify.authenticate] }, handle2faStart);
+  fastify.post('/me/security/2fa/setup', { preHandler: [fastify.authenticate] }, handle2faStart);
+
+  const handle2faVerify = async (request: any, reply: any) => {
+    const body = request.body as { code?: string };
+    if (!body?.code) {
+      return reply.status(400).send({
+        success: false,
+        error: { code: ERROR_CODES.VALIDATION_ERROR, message: '6-digit verification code is required.' },
+      });
+    }
+    try {
+      const result = await dataService.verifyAndActivateTwoFactor(request.user.id, body.code);
+      await dataService.logAudit({
+        actorUserId: request.user.id,
+        eventType: AUDIT_EVENTS.USER_2FA_ENABLED,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+      });
+      return reply.send({
+        success: true,
+        data: { backupCodes: result.backupCodes },
+        message: 'Two-factor authentication successfully enabled.',
+      });
+    } catch (err: any) {
+      return reply.status(400).send({
+        success: false,
+        error: { code: ERROR_CODES.INVALID_2FA_CODE, message: 'Invalid verification code. Please check your authenticator app.' },
+      });
+    }
+  };
+  fastify.post('/me/security/2fa/verify', { preHandler: [fastify.authenticate] }, handle2faVerify);
+  fastify.post('/me/2fa/verify', { preHandler: [fastify.authenticate] }, handle2faVerify);
+
+  const handle2faDisable = async (request: any, reply: any) => {
+    const body = (request.body as { password?: string }) || {};
+    try {
+      await dataService.disableTwoFactor(request.user.id, body.password);
+      await dataService.logAudit({
+        actorUserId: request.user.id,
+        eventType: AUDIT_EVENTS.USER_2FA_DISABLED,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+      });
+      return reply.send({
+        success: true,
+        message: 'Two-factor authentication successfully disabled.',
+      });
+    } catch (err: any) {
+      if (err.code === 'INVALID_CREDENTIALS') {
+        return reply.status(401).send({
+          success: false,
+          error: { code: ERROR_CODES.INVALID_CREDENTIALS, message: 'Incorrect password.' },
+        });
+      }
+      throw err;
+    }
+  };
+  fastify.post('/me/security/2fa/disable', { preHandler: [fastify.authenticate] }, handle2faDisable);
+  fastify.post('/me/2fa/disable', { preHandler: [fastify.authenticate] }, handle2faDisable);
+
+  const handle2faRegenerateBackupCodes = async (request: any, reply: any) => {
+    const body = (request.body as { password?: string }) || {};
+    try {
+      const result = await dataService.regenerateBackupCodes(request.user.id, body.password);
+      await dataService.logAudit({
+        actorUserId: request.user.id,
+        eventType: 'USER_2FA_BACKUP_CODES_REGENERATED',
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+      });
+      return reply.send({
+        success: true,
+        data: { backupCodes: result.backupCodes },
+        message: 'Backup codes regenerated successfully.',
+      });
+    } catch (err: any) {
+      if (err.code === 'INVALID_CREDENTIALS') {
+        return reply.status(401).send({
+          success: false,
+          error: { code: ERROR_CODES.INVALID_CREDENTIALS, message: 'Incorrect password.' },
+        });
+      }
+      return reply.status(400).send({
+        success: false,
+        error: { code: err.code || 'REGENERATE_FAILED', message: err.message || 'Failed to regenerate backup codes.' },
+      });
+    }
+  };
+  fastify.post('/me/security/2fa/backup-codes/regenerate', { preHandler: [fastify.authenticate] }, handle2faRegenerateBackupCodes);
+  fastify.post('/me/security/2fa/regenerate-backup-codes', { preHandler: [fastify.authenticate] }, handle2faRegenerateBackupCodes);
 
   // 7. POST /api/v1/users/me/password/change
   fastify.post(
@@ -455,23 +607,34 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
       };
 
       try {
-        await dataService.changePassword(request.user.id, body.currentPassword, body.newPassword);
+        const currentSessionId = request.sessionId || (request.user as any)?.sessionId;
+        await dataService.changePassword(request.user.id, body.currentPassword, body.newPassword, currentSessionId);
         
         if (body.revokeOtherSessions) {
-          const currentSessionId = request.sessionId || (request.user as any)?.sessionId;
           await dataService.revokeAllOtherSessions(request.user.id, currentSessionId);
         }
 
-        await dataService.logAudit({
-          actorUserId: request.user.id,
-          eventType: AUDIT_EVENTS.USER_PASSWORD_CHANGED,
+        await dataService.logAuthEvent({
+          eventType: 'password_changed',
+          userId: request.user.id,
           ipAddress: request.ip,
           userAgent: request.headers['user-agent'],
+        });
+
+        const freshUser = await dataService.getUserById(request.user.id);
+        const newToken = fastify.jwt.sign({
+          userId: request.user.id,
+          email: request.user.email,
+          sessionId: currentSessionId,
+          tokenVersion: freshUser?.tokenVersion ?? 1,
         });
 
         return reply.send({
           success: true,
           message: 'Password changed successfully.',
+          data: {
+            token: newToken,
+          },
         });
       } catch (err: any) {
         if (err.code === 'INVALID_CREDENTIALS') {
@@ -542,6 +705,46 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
             sessionId: { type: 'string' },
           },
         },
+      },
+    },
+    async (request, reply) => {
+      const params = request.params as { sessionId: string };
+      try {
+        await dataService.revokeSessionById(params.sessionId, request.user.id);
+        await dataService.logAudit({
+          actorUserId: request.user.id,
+          eventType: AUDIT_EVENTS.AUTH_SESSION_REVOKED,
+          ipAddress: request.ip,
+          userAgent: request.headers['user-agent'],
+          metadata: { sessionId: params.sessionId },
+        });
+        return reply.send({
+          success: true,
+          message: 'Session revoked successfully.',
+        });
+      } catch (err: any) {
+        if (err.message === 'SESSION_NOT_FOUND' || err.code === 'SESSION_NOT_FOUND') {
+          return reply.status(404).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.NOT_FOUND,
+              message: 'Session not found.',
+            },
+          });
+        }
+        throw err;
+      }
+    }
+  );
+
+  fastify.post(
+    '/me/sessions/:sessionId/revoke',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Users'],
+        summary: 'Revoke a specific remote session via POST',
+        security: [{ bearerAuth: [] }],
       },
     },
     async (request, reply) => {
@@ -966,110 +1169,260 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
     }
   );
 
-  // 21. POST /api/v1/users/me/deletion-request
+  // 21. POST /api/v1/users/me/deletion/request & legacy /me/deletion-request
+  const handleDeletionRequest = async (request: any, reply: any) => {
+    const body =
+      (request.body as { reason?: string; password?: string; coolingOffDays?: number }) || {};
+
+    // Verify password if user has password authentication
+    const user = await dataService.getUserById(request.user.id);
+    if (user?.passwordHash && body.password) {
+      const isValid = await dataService.verifyPassword(user, body.password);
+      if (!isValid) {
+        return reply.status(401).send({
+          success: false,
+          error: { code: ERROR_CODES.INVALID_CREDENTIALS, message: 'Incorrect password.' },
+        });
+      }
+    }
+
+    try {
+      const deletionReq = await dataService.requestAccountDeletion(
+        request.user.id,
+        body.reason,
+        body.coolingOffDays ?? 7
+      );
+
+      await dataService.logAudit({
+        actorUserId: request.user.id,
+        eventType: AUDIT_EVENTS.USER_ACCOUNT_DELETION_REQUESTED,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+        metadata: { scheduledDeletionAt: deletionReq?.scheduledDeletionAt },
+      });
+
+      return reply.send({
+        success: true,
+        deletionRequestId: deletionReq?.deletionRequestId || deletionReq?._id || 'del_' + Date.now(),
+        scheduledDeletionAt: deletionReq?.scheduledDeletionAt,
+        gracePeriodDays: deletionReq?.gracePeriodDays ?? 7,
+        data: { deletionRequest: deletionReq },
+        message: 'Account deletion scheduled. Check email for cancellation link.',
+      });
+    } catch (err: any) {
+      if (err.code === 'SOLE_OWNER_CANNOT_LEAVE_WORKSPACE') {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.SOLE_OWNER_CANNOT_LEAVE_WORKSPACE,
+            message: err.message,
+            ownedWorkspaces: err.ownedWorkspaces,
+          },
+        });
+      }
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: err.code || 'DELETION_FAILED',
+          message: err.message || 'Failed to request account deletion.',
+        },
+      });
+    }
+  };
+
   fastify.post(
-    '/me/deletion-request',
+    '/me/deletion/request',
     {
       preHandler: [fastify.authenticate],
       schema: {
         tags: ['Users'],
-        summary: 'Request account deletion with optional cooling off period',
+        summary: 'Request account deletion with 7-day grace period per NDPA',
         security: [{ bearerAuth: [] }],
         body: {
           type: 'object',
           properties: {
             reason: { type: 'string' },
+            confirmPassword: { type: 'string' },
             password: { type: 'string' },
             coolingOffDays: { type: 'number' },
           },
         },
       },
     },
-    async (request, reply) => {
-      const body = (request.body as { reason?: string; password?: string; coolingOffDays?: number }) || {};
-
-      // Verify password if user has password authentication
-      const user = await dataService.getUserById(request.user.id);
-      if (user?.passwordHash && body.password) {
-        const isValid = await dataService.verifyPassword(user, body.password);
-        if (!isValid) {
-          return reply.status(401).send({
-            success: false,
-            error: { code: ERROR_CODES.INVALID_CREDENTIALS, message: 'Incorrect password.' },
-          });
-        }
-      }
-
-      try {
-        const deletionReq = await dataService.requestAccountDeletion(
-          request.user.id,
-          body.reason,
-          body.coolingOffDays ?? 14
-        );
-
-        await dataService.logAudit({
-          actorUserId: request.user.id,
-          eventType: AUDIT_EVENTS.USER_ACCOUNT_DELETION_REQUESTED,
-          ipAddress: request.ip,
-          userAgent: request.headers['user-agent'],
-          metadata: { scheduledDeletionAt: deletionReq?.scheduledDeletionAt },
-        });
-
-        return reply.send({
-          success: true,
-          data: { deletionRequest: deletionReq },
-          message: 'Account deletion scheduled. You may cancel it during the cooling-off period.',
-        });
-      } catch (err: any) {
-        if (err.code === 'SOLE_OWNER_CANNOT_LEAVE_WORKSPACE') {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: ERROR_CODES.SOLE_OWNER_CANNOT_LEAVE_WORKSPACE,
-              message: err.message,
-              ownedWorkspaces: err.ownedWorkspaces,
-            },
-          });
-        }
-        throw err;
-      }
-    }
+    handleDeletionRequest
   );
 
-  // 22. POST /api/v1/users/me/deletion-request/cancel
+  fastify.post(
+    '/me/deletion-request',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Users'],
+        summary: 'Legacy request account deletion endpoint',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    handleDeletionRequest
+  );
+
+  // 22. Cancellation endpoints: DELETE /me/deletion/cancel, POST /me/deletion/cancel, POST /me/deletion-request/cancel
+  const handleDeletionCancel = async (request: any, reply: any) => {
+    try {
+      await dataService.cancelAccountDeletion(request.user.id);
+      await dataService.logAudit({
+        actorUserId: request.user.id,
+        eventType: AUDIT_EVENTS.USER_ACCOUNT_DELETION_CANCELLED,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+      });
+      return reply.send({
+        success: true,
+        message: 'Account deletion request has been cancelled.',
+      });
+    } catch (err: any) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.NO_ACTIVE_DELETION_REQUEST,
+          message: 'No active deletion request found.',
+        },
+      });
+    }
+  };
+
+  fastify.delete(
+    '/me/deletion/cancel',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Users'],
+        summary: 'Cancel pending account deletion request via DELETE',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    handleDeletionCancel
+  );
+
+  fastify.post(
+    '/me/deletion/cancel',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Users'],
+        summary: 'Cancel pending account deletion request via POST',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    handleDeletionCancel
+  );
+
   fastify.post(
     '/me/deletion-request/cancel',
     {
       preHandler: [fastify.authenticate],
       schema: {
         tags: ['Users'],
-        summary: 'Cancel pending account deletion request',
+        summary: 'Legacy cancel pending account deletion request',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    handleDeletionCancel
+  );
+
+  // 23. GET /api/v1/users/me/deletion/status
+  fastify.get(
+    '/me/deletion/status',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Users'],
+        summary: 'Get active account deletion status and cooling off countdown',
         security: [{ bearerAuth: [] }],
       },
     },
     async (request, reply) => {
       try {
-        await dataService.cancelAccountDeletion(request.user.id);
-        await dataService.logAudit({
-          actorUserId: request.user.id,
-          eventType: AUDIT_EVENTS.USER_ACCOUNT_DELETION_CANCELLED,
-          ipAddress: request.ip,
-          userAgent: request.headers['user-agent'],
-        });
+        const status = await dataService.getAccountDeletionStatus(request.user.id);
         return reply.send({
           success: true,
-          message: 'Account deletion request has been cancelled.',
+          data: status,
         });
       } catch (err: any) {
-        return reply.status(400).send({
+        return reply.status(500).send({
           success: false,
           error: {
-            code: ERROR_CODES.NO_ACTIVE_DELETION_REQUEST,
-            message: 'No active deletion request found.',
+            code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+            message: err.message || 'Failed to retrieve deletion status.',
           },
         });
       }
     }
+  );
+
+  // 24. Public 1-Click Email Deletion Cancellation: POST & GET /api/v1/users/deletion/cancel
+  const handlePublicCancellationByToken = async (request: any, reply: any) => {
+    const token = (request.body as any)?.token || (request.query as any)?.token;
+    if (!token) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.VALIDATION_ERROR,
+          message: 'Cancellation token is required.',
+        },
+      });
+    }
+
+    try {
+      await dataService.cancelAccountDeletion(undefined, token);
+      return reply.send({
+        success: true,
+        message: 'Your account deletion request has been cancelled successfully.',
+      });
+    } catch (err: any) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.NO_ACTIVE_DELETION_REQUEST,
+          message: 'Invalid or expired cancellation link.',
+        },
+      });
+    }
+  };
+
+  fastify.post(
+    '/deletion/cancel',
+    {
+      schema: {
+        tags: ['Users'],
+        summary: 'Cancel account deletion using email link token',
+        body: {
+          type: 'object',
+          required: ['token'],
+          properties: {
+            token: { type: 'string' },
+          },
+        },
+      },
+    },
+    handlePublicCancellationByToken
+  );
+
+  fastify.get(
+    '/deletion/cancel',
+    {
+      schema: {
+        tags: ['Users'],
+        summary: 'Cancel account deletion using email link query param',
+        querystring: {
+          type: 'object',
+          required: ['token'],
+          properties: {
+            token: { type: 'string' },
+          },
+        },
+      },
+    },
+    handlePublicCancellationByToken
   );
 
   // 23. GET /api/v1/users/me/workspaces
@@ -1088,6 +1441,92 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.send({
         success: true,
         data: { workspaces: workspaces || [] },
+      });
+    }
+  );
+
+  // 23b. GET /api/v1/users/me/organization-creation-eligibility
+  fastify.get(
+    '/me/organization-creation-eligibility',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Users', 'Organizations'],
+        summary: 'Check if current user can create an organization (Max 3 owned)',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const eligibility = await entitlementService.getOrganizationCreationEligibility(request.user.id);
+      return reply.send({
+        success: true,
+        allowed: eligibility.allowed,
+        canCreate: eligibility.canCreate ?? eligibility.allowed,
+        currentOwned: eligibility.currentOwned ?? eligibility.currentOwnedOrganizations,
+        currentOwnedOrganizations: eligibility.currentOwnedOrganizations,
+        maximumOwned: eligibility.maximumOwned ?? eligibility.maximumOwnedOrganizations,
+        maximumOwnedOrganizations: eligibility.maximumOwnedOrganizations,
+        remainingOwned: eligibility.remainingOwned ?? eligibility.remainingOwnedOrganizations,
+        remainingOwnedOrganizations: eligibility.remainingOwnedOrganizations,
+        freeTrial: eligibility.freeTrial || {
+          used: 0,
+          maximum: 1,
+          available: true,
+        },
+        reasons: eligibility.reasons || (eligibility.allowed ? [] : ['organization_limit_reached']),
+        recommendedPlan: eligibility.recommendedPlan || 'free_trial',
+        override: eligibility.override,
+        ...(eligibility.code ? { code: eligibility.code } : {}),
+        ...(eligibility.message ? { message: eligibility.message } : {}),
+        data: {
+          allowed: eligibility.allowed,
+          canCreate: eligibility.canCreate ?? eligibility.allowed,
+          currentOwned: eligibility.currentOwned ?? eligibility.currentOwnedOrganizations,
+          currentOwnedOrganizations: eligibility.currentOwnedOrganizations,
+          maximumOwned: eligibility.maximumOwned ?? eligibility.maximumOwnedOrganizations,
+          maximumOwnedOrganizations: eligibility.maximumOwnedOrganizations,
+          remainingOwned: eligibility.remainingOwned ?? eligibility.remainingOwnedOrganizations,
+          remainingOwnedOrganizations: eligibility.remainingOwnedOrganizations,
+          freeTrial: eligibility.freeTrial || {
+            used: 0,
+            maximum: 1,
+            available: true,
+          },
+          reasons: eligibility.reasons || (eligibility.allowed ? [] : ['organization_limit_reached']),
+          recommendedPlan: eligibility.recommendedPlan || 'free_trial',
+          override: eligibility.override,
+          ...(eligibility.code ? { code: eligibility.code } : {}),
+          ...(eligibility.message ? { message: eligibility.message } : {}),
+        },
+      });
+    }
+  );
+
+  // 23c. GET /api/v1/users/me/organizations
+  fastify.get(
+    '/me/organizations',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Users', 'Organizations'],
+        summary: 'Get categorized organizations (owned, joined, archived) and creation limit for user',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const result = await dataService.getUserOrganizationsCategorized(request.user.id);
+      return reply.send({
+        success: true,
+        data: result,
+        owned: result?.owned || [],
+        joined: result?.joined || [],
+        archived: result?.archived || [],
+        creationLimit: result?.creationLimit || {
+          currentOwned: 0,
+          maximumOwned: 3,
+          remaining: 3,
+          canCreate: true,
+        },
       });
     }
   );
@@ -1283,6 +1722,22 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
+      // Check if this phone number is already verified by a different user
+      const alreadyTaken = await dataService.isPhoneRegistered(
+        validation.normalized,
+        request.user.id
+      );
+
+      if (alreadyTaken) {
+        return reply.status(409).send({
+          success: false,
+          error: {
+            code: 'PHONE_ALREADY_REGISTERED',
+            message: 'This phone number is already linked to another account. Please use a different number.',
+          },
+        });
+      }
+
       // Generate 6-digit numeric OTP code
       const otp = Math.floor(100000 + Math.random() * 900000).toString();
       const otpHash = await bcrypt.hash(otp, 10);
@@ -1399,7 +1854,7 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       // Mark verified
-      const verifiedResult = await dataService.verifyUserPhone(phoneRecord._id);
+      const verifiedResult = await dataService.verifyUserPhone(request.user.id, body.otp.trim());
 
       await dataService.logAudit({
         actorUserId: request.user.id,
@@ -1416,6 +1871,25 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
   );
+
+  // Aliases for singular /me/phone/send-otp and /me/phone/verify-otp
+  fastify.post('/me/phone/send-otp', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    return fastify.inject({
+      method: 'POST',
+      url: '/api/v1/users/me/phones/send-otp',
+      headers: { authorization: request.headers.authorization, 'user-agent': request.headers['user-agent'] },
+      payload: request.body as any,
+    }).then((res) => reply.status(res.statusCode).headers(res.headers).send(res.json()));
+  });
+
+  fastify.post('/me/phone/verify-otp', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    return fastify.inject({
+      method: 'POST',
+      url: '/api/v1/users/me/phones/verify-otp',
+      headers: { authorization: request.headers.authorization, 'user-agent': request.headers['user-agent'] },
+      payload: request.body as any,
+    }).then((res) => reply.status(res.statusCode).headers(res.headers).send(res.json()));
+  });
 
   // 20. POST /api/v1/users/me/phones/:phoneId/set-primary
   fastify.post(
@@ -1456,49 +1930,268 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
     }
   );
 
-  // 21. DELETE /api/v1/users/me/phones/:phoneId
-  fastify.delete(
-    '/me/phones/:phoneId',
+  // ==========================================
+  // Official Phone Verification & Contact APIs (Plan Specification)
+  // ==========================================
+
+  // 1. GET /api/v1/users/me/contact
+  fastify.get(
+    '/me/contact',
     {
       preHandler: [fastify.authenticate],
       schema: {
-        tags: ['Users', 'Phone'],
-        summary: 'Delete a phone number',
+        tags: ['Users', 'Contact'],
+        summary: 'Get current user contact details and phone verification status',
         security: [{ bearerAuth: [] }],
-        params: {
+      },
+    },
+    async (request, reply) => {
+      try {
+        const contact = await dataService.getUserContact(request.user.id);
+        return reply.send({
+          success: true,
+          data: contact,
+        });
+      } catch (err: any) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: 'FETCH_CONTACT_FAILED',
+            message: err.message || 'Failed to fetch contact details.',
+          },
+        });
+      }
+    }
+  );
+
+  // 2. PATCH /api/v1/users/me/contact
+  fastify.patch(
+    '/me/contact',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Users', 'Contact'],
+        summary: 'Update user contact details (phone, country, state, city, security preferences)',
+        security: [{ bearerAuth: [] }],
+        body: {
           type: 'object',
-          required: ['phoneId'],
           properties: {
-            phoneId: { type: 'string' },
+            phone: { type: 'string' },
+            country: { type: 'string' },
+            state: { type: 'string' },
+            city: { type: 'string' },
+            phoneUsedForRecovery: { type: 'boolean' },
+            phoneUsedForMfa: { type: 'boolean' },
           },
         },
       },
     },
     async (request, reply) => {
-      const { phoneId } = request.params as { phoneId: string };
       try {
-        const result = await dataService.deleteUserPhone(request.user.id, phoneId);
-        await dataService.logAudit({
-          actorUserId: request.user.id,
-          eventType: AUDIT_EVENTS.USER_PHONE_REMOVED,
-          ipAddress: request.ip,
-          userAgent: request.headers['user-agent'],
-          metadata: { phoneId },
-        });
+        const body = request.body as any;
+        await dataService.updateUserContact(request.user.id, body, request.ip, request.headers['user-agent']);
+        const updated = await dataService.getUserContact(request.user.id);
         return reply.send({
           success: true,
-          message: 'Phone number removed successfully.',
+          message: 'Contact details updated successfully.',
+          data: updated,
+        });
+      } catch (err: any) {
+        const status = err.message?.includes('PHONE_NOT_VERIFIED') ? 403 : 400;
+        return reply.status(status).send({
+          success: false,
+          error: {
+            code: err.message?.includes('PHONE_NOT_VERIFIED') ? 'PHONE_NOT_VERIFIED' : 'UPDATE_CONTACT_FAILED',
+            message: err.message || 'Failed to update contact details.',
+          },
+        });
+      }
+    }
+  );
+
+  // 3. POST /api/v1/users/me/phone/verification/start
+  fastify.post(
+    '/me/phone/verification/start',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Users', 'Phone Verification'],
+        summary: 'Start phone verification and send 6-digit OTP code',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          properties: {
+            phone: { type: 'string' },
+            purpose: { type: 'string', default: 'user_phone_verification' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const body = (request.body as { phone?: string; purpose?: string }) || {};
+        const challenge = await dataService.startUserPhoneVerification(
+          request.user.id,
+          body.phone,
+          body.purpose || 'user_phone_verification',
+          request.ip,
+          request.headers['user-agent']
+        );
+        return reply.send({
+          success: true,
+          message: `Verification code sent to ${challenge.phoneNormalized}.`,
+          data: {
+            challengeId: challenge.challengeId,
+            phoneNormalized: challenge.phoneNormalized,
+            expiresAt: challenge.expiresAt,
+          },
+        });
+      } catch (err: any) {
+        const isRateLimit = err.message?.includes('RATE_LIMIT_EXCEEDED');
+        return reply.status(isRateLimit ? 429 : 400).send({
+          success: false,
+          error: {
+            code: isRateLimit ? 'RATE_LIMIT_EXCEEDED' : 'VERIFICATION_START_FAILED',
+            message: err.message || 'Failed to start phone verification.',
+          },
+        });
+      }
+    }
+  );
+
+  // 4. POST /api/v1/users/me/phone/verification/verify
+  fastify.post(
+    '/me/phone/verification/verify',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Users', 'Phone Verification'],
+        summary: 'Verify 6-digit OTP code',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['code'],
+          properties: {
+            code: { type: 'string', minLength: 6, maxLength: 6 },
+            purpose: { type: 'string', default: 'user_phone_verification' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const body = request.body as { code: string; purpose?: string };
+        const result = await dataService.verifyUserPhone(
+          request.user.id,
+          body.code,
+          body.purpose || 'user_phone_verification',
+          request.ip,
+          request.headers['user-agent']
+        );
+
+        if (!result.success) {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: result.error || 'INVALID_CODE',
+              message: 'Invalid verification code.',
+              attemptsRemaining: result.attemptsRemaining,
+            },
+          });
+        }
+
+        return reply.send({
+          success: true,
+          message: 'Phone number verified successfully!',
           data: result,
         });
       } catch (err: any) {
         return reply.status(400).send({
           success: false,
           error: {
-            code: 'DELETE_PHONE_FAILED',
-            message: err.message || 'Failed to delete phone number.',
+            code: 'VERIFICATION_FAILED',
+            message: err.message || 'Failed to verify phone code.',
+          },
+        });
+      }
+    }
+  );
+
+  // 5. POST /api/v1/users/me/phone/verification/resend
+  fastify.post(
+    '/me/phone/verification/resend',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Users', 'Phone Verification'],
+        summary: 'Resend phone verification OTP code with cooldown and rate limit checks',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          properties: {
+            purpose: { type: 'string', default: 'user_phone_verification' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const body = (request.body as { purpose?: string }) || {};
+        const result = await dataService.resendUserPhoneVerification(
+          request.user.id,
+          body.purpose || 'user_phone_verification',
+          request.ip,
+          request.headers['user-agent']
+        );
+        return reply.send({
+          success: true,
+          message: `New verification code sent to ${result.phoneNormalized}.`,
+          data: result,
+        });
+      } catch (err: any) {
+        const isCooldown = err.message?.includes('COOLDOWN_ACTIVE');
+        const isLimit = err.message?.includes('RESEND_LIMIT_EXCEEDED');
+        const status = isCooldown ? 429 : isLimit ? 429 : 400;
+        return reply.status(status).send({
+          success: false,
+          error: {
+            code: isCooldown ? 'COOLDOWN_ACTIVE' : isLimit ? 'RESEND_LIMIT_EXCEEDED' : 'RESEND_FAILED',
+            message: err.message || 'Failed to resend verification code.',
+          },
+        });
+      }
+    }
+  );
+
+  // 6. DELETE /api/v1/users/me/phone
+  fastify.delete(
+    '/me/phone',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Users', 'Phone'],
+        summary: 'Remove personal phone number and unlink from recovery/MFA',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      try {
+        await dataService.removeUserPhone(request.user.id, request.ip, request.headers['user-agent']);
+        return reply.send({
+          success: true,
+          message: 'Phone number removed successfully.',
+        });
+      } catch (err: any) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: 'REMOVE_PHONE_FAILED',
+            message: err.message || 'Failed to remove phone number.',
           },
         });
       }
     }
   );
 };
+
+

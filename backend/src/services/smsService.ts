@@ -19,6 +19,16 @@ export class SmsService {
     const twilioToken = process.env.TWILIO_AUTH_TOKEN;
     const twilioPhone = process.env.TWILIO_PHONE_NUMBER;
 
+    // ALWAYS log the OTP code to backend console for developer visibility
+    console.info(
+      `\n=======================================================\n` +
+      `[SMS SERVICE - OTP NOTIFICATION]\n` +
+      `To: +${phone.replace(/^\+/, '')}\n` +
+      `OTP CODE: >>> ${code} <<<\n` +
+      `Message: "${message}"\n` +
+      `=======================================================\n`
+    );
+
     // 1. Termii SMS (Primary Nigerian Provider)
     if (termiiApiKey) {
       try {
@@ -54,7 +64,7 @@ export class SmsService {
       try {
         const auth = Buffer.from(`${twilioSid}:${twilioToken}`).toString('base64');
         const params = new URLSearchParams();
-        params.append('To', `+${phone}`);
+        params.append('To', `+${phone.replace(/^\+/, '')}`);
         params.append('From', twilioPhone);
         params.append('Body', message);
 
@@ -83,16 +93,6 @@ export class SmsService {
         console.error('[SmsService] Twilio request failed:', err.message || err);
       }
     }
-
-    // 3. Dev / Mock Fallback Mode
-    console.info(
-      `\n=======================================================\n` +
-      `[SMS Service - Dev Simulation]\n` +
-      `To: +${phone}\n` +
-      `OTP Code: [ ${code} ]\n` +
-      `Message: "${message}"\n` +
-      `=======================================================\n`
-    );
 
     return {
       success: true,

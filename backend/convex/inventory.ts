@@ -310,3 +310,124 @@ export const getDashboardMetrics = query({
     };
   },
 });
+
+export const getReceiptSettings = query({
+  args: {
+    workspaceId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("receiptSettings")
+      .withIndex("by_workspaceId", (i) => i.eq("workspaceId", args.workspaceId))
+      .first();
+
+    if (existing) {
+      return existing;
+    }
+
+    // Default template inheriting workspace/organization information
+    let ws: any = null;
+    try {
+      ws = await ctx.db.get(args.workspaceId as any);
+    } catch {
+      // in case of non-id string
+    }
+
+    return {
+      workspaceId: args.workspaceId,
+      storeName: ws?.name || "Orviohub Merchant",
+      tagline: "Quality goods & exceptional service",
+      headerText: "Welcome to our store",
+      footerText: "Thank you for your patronage! Please keep this receipt.",
+      returnPolicy: "Goods in original condition may be returned or exchanged within 7 days.",
+      tin: "",
+      vatRate: 7.5,
+      enableVat: false,
+      showCashier: true,
+      showCustomer: true,
+      showBarcode: true,
+      paperWidth: "80mm" as const,
+      phone: ws?.phone || "",
+      email: "",
+      address: [ws?.city, ws?.state, ws?.country || "Nigeria"].filter(Boolean).join(", "),
+      logoUrl: ws?.logoUrl || "",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+  },
+});
+
+export const updateReceiptSettings = mutation({
+  args: {
+    workspaceId: v.string(),
+    storeName: v.optional(v.string()),
+    tagline: v.optional(v.string()),
+    headerText: v.optional(v.string()),
+    footerText: v.optional(v.string()),
+    returnPolicy: v.optional(v.string()),
+    tin: v.optional(v.string()),
+    vatRate: v.optional(v.number()),
+    enableVat: v.optional(v.boolean()),
+    showCashier: v.optional(v.boolean()),
+    showCustomer: v.optional(v.boolean()),
+    showBarcode: v.optional(v.boolean()),
+    paperWidth: v.optional(v.union(v.literal("58mm"), v.literal("80mm"))),
+    phone: v.optional(v.string()),
+    email: v.optional(v.string()),
+    address: v.optional(v.string()),
+    logoUrl: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const existing = await ctx.db
+      .query("receiptSettings")
+      .withIndex("by_workspaceId", (i) => i.eq("workspaceId", args.workspaceId))
+      .first();
+
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        storeName: args.storeName !== undefined ? args.storeName : existing.storeName,
+        tagline: args.tagline !== undefined ? args.tagline : existing.tagline,
+        headerText: args.headerText !== undefined ? args.headerText : existing.headerText,
+        footerText: args.footerText !== undefined ? args.footerText : existing.footerText,
+        returnPolicy: args.returnPolicy !== undefined ? args.returnPolicy : existing.returnPolicy,
+        tin: args.tin !== undefined ? args.tin : existing.tin,
+        vatRate: args.vatRate !== undefined ? args.vatRate : existing.vatRate,
+        enableVat: args.enableVat !== undefined ? args.enableVat : existing.enableVat,
+        showCashier: args.showCashier !== undefined ? args.showCashier : existing.showCashier,
+        showCustomer: args.showCustomer !== undefined ? args.showCustomer : existing.showCustomer,
+        showBarcode: args.showBarcode !== undefined ? args.showBarcode : existing.showBarcode,
+        paperWidth: args.paperWidth !== undefined ? args.paperWidth : existing.paperWidth,
+        phone: args.phone !== undefined ? args.phone : existing.phone,
+        email: args.email !== undefined ? args.email : existing.email,
+        address: args.address !== undefined ? args.address : existing.address,
+        logoUrl: args.logoUrl !== undefined ? args.logoUrl : existing.logoUrl,
+        updatedAt: now,
+      });
+      return await ctx.db.get(existing._id);
+    } else {
+      const id = await ctx.db.insert("receiptSettings", {
+        workspaceId: args.workspaceId,
+        storeName: args.storeName,
+        tagline: args.tagline,
+        headerText: args.headerText,
+        footerText: args.footerText,
+        returnPolicy: args.returnPolicy,
+        tin: args.tin,
+        vatRate: args.vatRate ?? 7.5,
+        enableVat: args.enableVat ?? false,
+        showCashier: args.showCashier ?? true,
+        showCustomer: args.showCustomer ?? true,
+        showBarcode: args.showBarcode ?? true,
+        paperWidth: args.paperWidth ?? "80mm",
+        phone: args.phone,
+        email: args.email,
+        address: args.address,
+        logoUrl: args.logoUrl,
+        createdAt: now,
+        updatedAt: now,
+      });
+      return await ctx.db.get(id);
+    }
+  },
+});

@@ -2,7 +2,6 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Building2,
-  Users,
   ExternalLink,
   Ban,
   Shield,
@@ -10,6 +9,9 @@ import {
   RotateCcw,
   Loader2,
   RefreshCw,
+  Store,
+  CheckCircle,
+  Clock,
 } from "lucide-react";
 import { useAuth } from "../hooks/useAuth";
 import { adminOrganizationsApi } from "../api/adminOrganizations";
@@ -17,6 +19,8 @@ import SearchBar from "../components/SearchBar";
 import StatusBadge from "../components/StatusBadge";
 import Pagination from "../components/Pagination";
 import ConfirmDialog from "../components/ConfirmDialog";
+import SuspendModal from "../components/SuspendModal";
+import DeleteModal from "../components/DeleteModal";
 
 export const Organizations: React.FC = () => {
   const { sessionToken } = useAuth();
@@ -26,9 +30,15 @@ export const Organizations: React.FC = () => {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [typeFilter, setTypeFilter] = useState("all");
+  const [planFilter, setPlanFilter] = useState("all");
+  const [branchFilter, setBranchFilter] = useState("all");
+  const [onboardingFilter, setOnboardingFilter] = useState("all");
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
+
+  // Modals for structured suspension and deletion
+  const [suspendModalOrg, setSuspendModalOrg] = useState<any>(null);
+  const [deleteModalOrg, setDeleteModalOrg] = useState<any>(null);
 
   const [dialogConfig, setDialogConfig] = useState<{
     isOpen: boolean;
@@ -52,7 +62,9 @@ export const Organizations: React.FC = () => {
         sessionToken,
         search,
         statusFilter,
-        typeFilter,
+        planFilter,
+        branchFilter,
+        onboardingFilter,
         page,
         pageSize: 10,
       });
@@ -68,39 +80,51 @@ export const Organizations: React.FC = () => {
 
   useEffect(() => {
     loadWorkspaces();
-  }, [sessionToken, page, search, statusFilter, typeFilter]);
+  }, [sessionToken, page, search, statusFilter, planFilter, branchFilter, onboardingFilter]);
 
   const handleSuspend = (ws: any) => {
-    setDialogConfig({
-      isOpen: true,
-      title: "Suspend Organization",
-      message: `Suspend "${ws.name}"? All member access and active product sessions under this workspace will be halted.`,
-      confirmLabel: "Suspend Organization",
-      isDestructive: true,
-      action: async () => {
-        setActionLoading(true);
-        try {
-          await adminOrganizationsApi.suspendOrganization(sessionToken!, ws.id, "Admin suspension");
-          await loadWorkspaces();
-        } finally {
-          setActionLoading(false);
-          setDialogConfig((prev) => ({ ...prev, isOpen: false }));
-        }
-      },
-    });
+    setSuspendModalOrg(ws);
+  };
+
+  const handleConfirmSuspend = async (data: { reason: string; notes: string }) => {
+    if (!sessionToken || !suspendModalOrg) return;
+    setActionLoading(true);
+    try {
+      await adminOrganizationsApi.suspendOrganization(sessionToken, suspendModalOrg.id, data.reason, data.notes);
+      setSuspendModalOrg(null);
+      await loadWorkspaces();
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDelete = (ws: any) => {
+    setDeleteModalOrg(ws);
+  };
+
+  const handleConfirmDelete = async (options: any) => {
+    if (!sessionToken || !deleteModalOrg) return;
+    setActionLoading(true);
+    try {
+      await adminOrganizationsApi.deleteOrganization(sessionToken, deleteModalOrg.id, options);
+      setDeleteModalOrg(null);
+      await loadWorkspaces();
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   const handleActivate = (ws: any) => {
     setDialogConfig({
       isOpen: true,
       title: "Activate Organization",
-      message: `Activate "${ws.name}" and restore product access?`,
+      message: `Activate "${ws.name}" and restore product and membership access?`,
       confirmLabel: "Activate Organization",
       isDestructive: false,
       action: async () => {
         setActionLoading(true);
         try {
-          await adminOrganizationsApi.activateOrganization(sessionToken!, ws.id);
+          await adminOrganizationsApi.restoreOrganization(sessionToken!, ws.id);
           await loadWorkspaces();
         } finally {
           setActionLoading(false);
@@ -121,26 +145,6 @@ export const Organizations: React.FC = () => {
         setActionLoading(true);
         try {
           await adminOrganizationsApi.resetOnboarding(sessionToken!, ws.id);
-          await loadWorkspaces();
-        } finally {
-          setActionLoading(false);
-          setDialogConfig((prev) => ({ ...prev, isOpen: false }));
-        }
-      },
-    });
-  };
-
-  const handleDelete = (ws: any) => {
-    setDialogConfig({
-      isOpen: true,
-      title: "Delete Organization",
-      message: `Permanently delete "${ws.name}" and all associated products and memberships? This cannot be undone.`,
-      confirmLabel: "Delete Organization",
-      isDestructive: true,
-      action: async () => {
-        setActionLoading(true);
-        try {
-          await adminOrganizationsApi.deleteOrganization(sessionToken!, ws.id);
           await loadWorkspaces();
         } finally {
           setActionLoading(false);
@@ -201,17 +205,43 @@ export const Organizations: React.FC = () => {
           </select>
 
           <select
-            value={typeFilter}
+            value={planFilter}
             onChange={(e) => {
-              setTypeFilter(e.target.value);
+              setPlanFilter(e.target.value);
               setPage(1);
             }}
             className="px-3 py-2 rounded-xl bg-slate-950/90 border border-slate-800 text-xs text-slate-300 outline-none focus:border-brand-500"
           >
-            <option value="all">All Types</option>
-            <option value="business">Business</option>
-            <option value="store">Store</option>
-            <option value="personal">Personal</option>
+            <option value="all">All Plans</option>
+            <option value="free_trial">Free Trial</option>
+            <option value="standard">Standard</option>
+          </select>
+
+          <select
+            value={branchFilter}
+            onChange={(e) => {
+              setBranchFilter(e.target.value);
+              setPage(1);
+            }}
+            className="px-3 py-2 rounded-xl bg-slate-950/90 border border-slate-800 text-xs text-slate-300 outline-none focus:border-brand-500"
+          >
+            <option value="all">All Branches</option>
+            <option value="1">1 Branch</option>
+            <option value="2-5">2–5 Branches</option>
+            <option value="multiple">Multiple (&gt;1)</option>
+          </select>
+
+          <select
+            value={onboardingFilter}
+            onChange={(e) => {
+              setOnboardingFilter(e.target.value);
+              setPage(1);
+            }}
+            className="px-3 py-2 rounded-xl bg-slate-950/90 border border-slate-800 text-xs text-slate-300 outline-none focus:border-brand-500"
+          >
+            <option value="all">All Onboarding</option>
+            <option value="completed">Completed</option>
+            <option value="pending">Pending</option>
           </select>
         </div>
       </div>
@@ -224,9 +254,10 @@ export const Organizations: React.FC = () => {
               <tr className="border-b border-slate-800 bg-slate-950/60 text-[11px] font-bold uppercase tracking-wider text-slate-400">
                 <th className="py-3.5 px-5">Organization</th>
                 <th className="py-3.5 px-4">Owner</th>
-                <th className="py-3.5 px-4">Status</th>
-                <th className="py-3.5 px-4">Members</th>
-                <th className="py-3.5 px-4">Products</th>
+                <th className="py-3.5 px-4">Plan & Status</th>
+                <th className="py-3.5 px-4">Branches</th>
+                <th className="py-3.5 px-4">Apps</th>
+                <th className="py-3.5 px-4">Onboarding</th>
                 <th className="py-3.5 px-4">Created</th>
                 <th className="py-3.5 px-5 text-right">Actions</th>
               </tr>
@@ -234,14 +265,14 @@ export const Organizations: React.FC = () => {
             <tbody className="divide-y divide-slate-800/80 text-xs text-slate-300">
               {loading ? (
                 <tr>
-                  <td colSpan={7} className="py-16 text-center text-slate-500">
+                  <td colSpan={8} className="py-16 text-center text-slate-500">
                     <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-brand-400" />
                     Loading organizations...
                   </td>
                 </tr>
               ) : workspaces.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-16 text-center text-slate-500">
+                  <td colSpan={8} className="py-16 text-center text-slate-500">
                     No organizations found.
                   </td>
                 </tr>
@@ -274,22 +305,41 @@ export const Organizations: React.FC = () => {
                     </td>
 
                     <td className="py-4 px-4">
-                      <StatusBadge status={ws.status} size="sm" />
+                      <div className="space-y-1">
+                        <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase border ${
+                          (ws.subscription?.planKey || "").toLowerCase() === "standard"
+                            ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/20"
+                            : (ws.subscription?.planKey || "").toLowerCase() === "premium"
+                            ? "bg-purple-500/10 text-purple-300 border-purple-500/20"
+                            : "bg-indigo-500/10 text-indigo-300 border-indigo-500/20"
+                        }`}>
+                          {(() => {
+                            const key = (ws.subscription?.planKey || "free_trial").toLowerCase();
+                            if (key === "free_trial" || key === "trial") return "Free Trial";
+                            if (key === "standard") return "Standard";
+                            if (key === "premium") return "Premium";
+                            return key.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
+                          })()}
+                        </span>
+                        <div className="flex items-center gap-1 text-[10px] text-slate-400">
+                          <StatusBadge status={ws.subscription?.status || ws.status} size="sm" />
+                        </div>
+                      </div>
                     </td>
 
                     <td className="py-4 px-4">
                       <span className="inline-flex items-center gap-1.5 text-xs text-slate-300 font-semibold bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
-                        <Users className="w-3 h-3 text-brand-400" />
-                        {ws.memberCount} {ws.memberCount === 1 ? "member" : "members"}
+                        <Store className="w-3 h-3 text-brand-400" />
+                        {ws.branchCount || 0} {ws.branchCount === 1 ? "branch" : "branches"}
                       </span>
                     </td>
 
                     <td className="py-4 px-4">
                       <div className="flex flex-wrap gap-1">
-                        {ws.enabledProducts.length === 0 ? (
+                        {ws.enabledProducts?.length === 0 ? (
                           <span className="text-[11px] text-slate-500">None</span>
                         ) : (
-                          ws.enabledProducts.map((p: string) => (
+                          ws.enabledProducts?.map((p: string) => (
                             <span
                               key={p}
                               className="px-2 py-0.5 rounded bg-brand-500/10 text-brand-300 text-[10px] font-bold border border-brand-500/20"
@@ -298,6 +348,33 @@ export const Organizations: React.FC = () => {
                             </span>
                           ))
                         )}
+                      </div>
+                    </td>
+
+                    <td className="py-4 px-4">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1">
+                          {ws.onboardingFlags?.orgProfileCompleted ? (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-medium">
+                              <CheckCircle className="w-2.5 h-2.5" /> Org Profile
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800/60 text-slate-400 border border-slate-700/40 text-[10px] font-medium">
+                              <Clock className="w-2.5 h-2.5" /> Org Profile
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {ws.onboardingFlags?.inventoryOnboardingCompleted ? (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 text-[10px] font-medium">
+                              <CheckCircle className="w-2.5 h-2.5" /> Inventory App
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800/60 text-slate-400 border border-slate-700/40 text-[10px] font-medium">
+                              <Clock className="w-2.5 h-2.5" /> Inventory App
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </td>
 
@@ -357,6 +434,32 @@ export const Organizations: React.FC = () => {
           onPageChange={setPage}
         />
       </div>
+
+      {/* Structured Suspend Organization Modal */}
+      {suspendModalOrg && (
+        <SuspendModal
+          isOpen={!!suspendModalOrg}
+          targetType="organization"
+          targetName={suspendModalOrg.name}
+          targetId={suspendModalOrg.id}
+          isLoading={actionLoading}
+          onClose={() => setSuspendModalOrg(null)}
+          onConfirm={handleConfirmSuspend}
+        />
+      )}
+
+      {/* Structured Delete Organization Modal */}
+      {deleteModalOrg && (
+        <DeleteModal
+          isOpen={!!deleteModalOrg}
+          targetType="organization"
+          targetName={deleteModalOrg.name}
+          targetId={deleteModalOrg.id}
+          isLoading={actionLoading}
+          onClose={() => setDeleteModalOrg(null)}
+          onConfirm={handleConfirmDelete}
+        />
+      )}
 
       {/* Confirmation Modal */}
       <ConfirmDialog

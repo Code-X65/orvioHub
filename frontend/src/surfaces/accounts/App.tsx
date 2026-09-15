@@ -7,6 +7,8 @@ import { Signup } from "../../pages/auth/Signup";
 import { ForgotPassword } from "../../pages/auth/ForgotPassword";
 import { ResetPassword } from "../../pages/auth/ResetPassword";
 import { VerifyEmail } from "../../pages/auth/VerifyEmail";
+import { VerifyPhone } from "../../pages/auth/VerifyPhone";
+import { PaymentPage } from "../../pages/billing/PaymentPage";
 import { AcceptInvite } from "../../pages/auth/AcceptInvite";
 import { AuthCallback } from "../../pages/auth/AuthCallback";
 import { ConfirmEmailChange } from "../../pages/auth/ConfirmEmailChange";
@@ -14,6 +16,8 @@ import { ConfirmEmailChange } from "../../pages/auth/ConfirmEmailChange";
 // Profile & Account Settings Pages
 import { PersonalProfile } from "../../pages/profile/PersonalProfile";
 import { ProfileSetup } from "../../pages/onboarding/ProfileSetup";
+import { PersonalOnboarding } from "../../pages/onboarding/PersonalOnboarding";
+import { OrganizationWizard } from "../../pages/onboarding/OrganizationWizard";
 import { ContactSettings } from "../../pages/profile/ContactSettings";
 import { SecuritySettings } from "../../pages/profile/SecuritySettings";
 import { SessionsSettings } from "../../pages/profile/SessionsSettings";
@@ -73,11 +77,65 @@ export default function AccountsApp() {
       <Route path="/auth/callback" element={<AuthCallback />} />
       <Route path="/verify-email" element={<VerifyEmail />} />
       <Route path="/verify-email/:tokenParam" element={<VerifyEmail />} />
+      <Route path="/verify-phone" element={<VerifyPhone />} />
+      <Route path="/payment" element={<PaymentPage />} />
       <Route path="/confirm-email-change" element={<ConfirmEmailChange />} />
 
       {/* Invitations */}
+      <Route path="/invite" element={<AcceptInvite />} />
       <Route path="/invite/:token" element={<AcceptInvite />} />
+      <Route path="/invitations" element={<AcceptInvite />} />
       <Route path="/invitations/:token" element={<AcceptInvite />} />
+
+      {/* Direct Onboarding Routes */}
+      <Route
+        path="/onboard/personal"
+        element={
+          <AuthGuard>
+            <PersonalOnboarding />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/onboarding/personal"
+        element={
+          <AuthGuard>
+            <PersonalOnboarding />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/onboard/organization"
+        element={
+          <AuthGuard>
+            <OrganizationWizard />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/onboarding/organization"
+        element={
+          <AuthGuard>
+            <OrganizationWizard />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/onboard"
+        element={
+          <AuthGuard>
+            <Navigate to="/onboard/personal" replace />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/onboarding"
+        element={
+          <AuthGuard>
+            <Navigate to="/onboard/personal" replace />
+          </AuthGuard>
+        }
+      />
 
       {/* Dedicated Personal Profile / Account Settings */}
       <Route path="/profile" element={<Navigate to="/profile/personal" replace />} />

@@ -16,6 +16,25 @@ export const countActive = query({
   },
 });
 
+export const isActive = query({
+  args: {
+    workspaceId: v.id("workspaces"),
+    productKey: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const wp = await ctx.db
+      .query("workspaceProducts")
+      .withIndex("by_workspace_product", (q) =>
+        q.eq("workspaceId", args.workspaceId).eq("productKey", args.productKey)
+      )
+      .first();
+
+    if (!wp) return false;
+    const s = (wp.status || "").toLowerCase();
+    return s === "active" || s === "trial";
+  },
+});
+
 export const activate = mutation({
   args: {
     workspaceId: v.id("workspaces"),

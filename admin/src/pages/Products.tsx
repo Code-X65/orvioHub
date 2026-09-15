@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   Package,
+  Building2,
   Loader2,
   RefreshCw,
   Plus,
@@ -16,6 +18,7 @@ import {
   Layers,
   X,
 } from "lucide-react";
+import { InventoryIcon } from "../components/icons/InventoryIcon";
 import { useAuth } from "../hooks/useAuth";
 import { adminProductsApi, type PlatformProduct } from "../api/adminProducts";
 import ConfirmDialog from "../components/ConfirmDialog";
@@ -378,7 +381,11 @@ export const Products: React.FC = () => {
                             : "bg-slate-800/40 text-slate-400 border-slate-700/40"
                         }`}
                       >
-                        {p.name?.charAt(0) || "P"}
+                        {p.key === "inventory" || p.name?.toLowerCase().includes("inventory") ? (
+                          <InventoryIcon className="w-7 h-7" />
+                        ) : (
+                          p.name?.charAt(0) || "P"
+                        )}
                       </div>
                       <div>
                         <div className="flex items-center gap-1.5">
@@ -426,13 +433,23 @@ export const Products: React.FC = () => {
                   </div>
 
                   <div className="flex items-center justify-between pt-2 border-t border-slate-800/40">
-                    <button
-                      onClick={() => handleOpenWaitlist(p)}
-                      className="text-xs text-slate-400 hover:text-amber-300 flex items-center gap-1.5 transition"
-                    >
-                      <Bell className="w-3.5 h-3.5 text-amber-400" />
-                      <span>Waitlist</span>
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <Link
+                        to={`/applications/${p.key}`}
+                        className="text-xs text-brand-400 hover:text-brand-300 flex items-center gap-1 font-semibold transition"
+                      >
+                        <Building2 className="w-3.5 h-3.5" />
+                        <span>Tenants ({p.activationCount ?? 0})</span>
+                      </Link>
+
+                      <button
+                        onClick={() => handleOpenWaitlist(p)}
+                        className="text-xs text-slate-400 hover:text-amber-300 flex items-center gap-1 transition"
+                      >
+                        <Bell className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Waitlist</span>
+                      </button>
+                    </div>
 
                     <div className="flex items-center gap-2">
                       <button

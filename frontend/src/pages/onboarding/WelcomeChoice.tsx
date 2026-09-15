@@ -2,8 +2,6 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useOnboardingStore } from '@/stores/useOnboardingStore';
-import { useHost } from '@/host/useHost';
-import { getAccountsUrl } from '@orviohub/shared';
 import { Header } from '@/components/landing/Header';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -21,8 +19,6 @@ import {
 
 export const WelcomeChoice: React.FC = () => {
   const navigate = useNavigate();
-  const host = useHost();
-  const env = host.environment;
   const { user } = useAuthStore();
   const { skipPermanently, isLoading } = useOnboardingStore();
 
@@ -35,16 +31,11 @@ export const WelcomeChoice: React.FC = () => {
   const handleSkipPermanently = async () => {
     await skipPermanently();
     setIsConfirmSkipModalOpen(false);
-    navigate('/app');
+    navigate('/inventory/dashboard');
   };
 
   const handleGoToAccount = () => {
-    const token = localStorage.getItem('orvio_auth_token');
-    const refreshToken = localStorage.getItem('orvio_refresh_token');
-    const target = new URL(`${getAccountsUrl(env)}/profile/personal`);
-    if (token) target.searchParams.set('auth_token', token);
-    if (refreshToken) target.searchParams.set('refresh_token', refreshToken);
-    window.location.href = target.toString();
+    navigate('/profile/personal');
   };
 
   const handleAcceptInvite = (e: React.FormEvent) => {
@@ -84,7 +75,7 @@ export const WelcomeChoice: React.FC = () => {
               </div>
               <div className="space-y-1.5">
                 <div className="flex items-center gap-2">
-                  <h2 className="text-lg font-bold text-white">Create an organization</h2>
+                  <h2 className="text-lg font-bold text-white">Set up an organization</h2>
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
                     Recommended
                   </span>
@@ -100,7 +91,7 @@ export const WelcomeChoice: React.FC = () => {
                 onClick={() => navigate('/onboarding/organization')}
                 className="w-full h-11 bg-gradient-to-r from-[#714b67] to-[#8d5b80] hover:from-[#8d5b80] hover:to-[#a06892] text-white rounded-xl text-xs font-semibold shadow-lg shadow-[#714b67]/25 flex items-center justify-center gap-2 cursor-pointer"
               >
-                <span>Create Organization</span>
+                <span>Set Up Organization</span>
                 <ArrowRight className="w-4 h-4" />
               </Button>
             </div>
@@ -132,16 +123,16 @@ export const WelcomeChoice: React.FC = () => {
             </div>
           </div>
 
-          {/* Card 3: Explore Orviohub */}
+          {/* Card 3: Explore the Platform */}
           <div className="group relative rounded-2xl bg-[#0c080b] border border-white/10 hover:border-white/20 p-6 transition-all duration-200 shadow-xl flex flex-col justify-between">
             <div className="space-y-4">
               <div className="w-12 h-12 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400">
                 <Compass className="w-6 h-6" />
               </div>
               <div className="space-y-1.5">
-                <h2 className="text-lg font-bold text-white">Explore Orviohub</h2>
+                <h2 className="text-lg font-bold text-white">Explore the platform</h2>
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  Browse application catalogs, interactive demos, and read technical documentation for Nigerian businesses.
+                  Browse application catalogs, interactive demos, or test drive the flagship Inventory management suite.
                 </p>
               </div>
             </div>
@@ -152,22 +143,22 @@ export const WelcomeChoice: React.FC = () => {
                 onClick={() => navigate('/products')}
                 className="w-full h-11 bg-white/5 hover:bg-white/10 border-white/10 hover:border-white/20 text-slate-200 hover:text-white rounded-xl text-xs font-medium flex items-center justify-center gap-2 cursor-pointer"
               >
-                <span>Explore Products</span>
+                <span>Explore Products & Apps</span>
                 <ArrowRight className="w-4 h-4 text-slate-400" />
               </Button>
             </div>
           </div>
 
-          {/* Card 4: Go to My Account */}
+          {/* Card 4: Visit Personal Profile */}
           <div className="group relative rounded-2xl bg-[#0c080b] border border-white/10 hover:border-white/20 p-6 transition-all duration-200 shadow-xl flex flex-col justify-between">
             <div className="space-y-4">
               <div className="w-12 h-12 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
                 <User className="w-6 h-6" />
               </div>
               <div className="space-y-1.5">
-                <h2 className="text-lg font-bold text-white">Go to my account</h2>
+                <h2 className="text-lg font-bold text-white">Visit personal profile</h2>
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  Manage personal profile, 2FA security, active browser sessions, and regional display preferences.
+                  Manage personal profile details, contact information, 2FA security, and account preferences.
                 </p>
               </div>
             </div>
@@ -178,21 +169,21 @@ export const WelcomeChoice: React.FC = () => {
                 onClick={handleGoToAccount}
                 className="w-full h-11 bg-white/5 hover:bg-white/10 border-white/10 hover:border-white/20 text-slate-200 hover:text-white rounded-xl text-xs font-medium flex items-center justify-center gap-2 cursor-pointer"
               >
-                <span>Account Settings</span>
+                <span>Visit Profile</span>
                 <ArrowRight className="w-4 h-4 text-slate-400" />
               </Button>
             </div>
           </div>
         </div>
 
-        {/* Skip Onboarding Permanently Option */}
+        {/* Skip Onboarding Option */}
         <div className="mt-8 text-center">
           <button
             type="button"
             onClick={() => setIsConfirmSkipModalOpen(true)}
             className="text-xs text-slate-500 hover:text-slate-300 underline underline-offset-4 transition-colors cursor-pointer"
           >
-            Skip onboarding permanently and go to App Launcher
+            Skip for now and go directly to Inventory Dashboard
           </button>
         </div>
 
@@ -215,7 +206,7 @@ export const WelcomeChoice: React.FC = () => {
               </div>
               <h3 className="text-sm font-bold text-white">Skip Onboarding?</h3>
               <p className="text-xs text-slate-400 leading-relaxed">
-                You will be taken directly to the App Launcher. You can always create an organization or join a team later from your Account Settings.
+                You will be taken directly to the Inventory Dashboard. You can always create an organization or join a team later from your Account Settings.
               </p>
             </div>
             <div className="flex gap-2 pt-2">

@@ -5,13 +5,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
+import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useHost } from '@/host/useHost';
-import {
-  getAccountsUrl,
-  getLauncherUrl,
-  getApplicationUrl,
-} from '@orviohub/shared';
+
 import {
   Boxes,
   ArrowRight,
@@ -22,6 +19,7 @@ import {
   Calendar,
   X,
 } from 'lucide-react';
+import { InventoryIcon } from '@/components/icons/InventoryIcon';
 
 interface AppMeta {
   name: string;
@@ -109,12 +107,9 @@ export const AppProductLanding: React.FC = () => {
   const { appId } = useParams<{ appId: string }>();
   const navigate = useNavigate();
   const host = useHost();
-  const env = host.environment;
   const { user, isAuthenticated } = useAuthStore();
 
-  const launcherUrl = getLauncherUrl(env);
-  const accountsUrl = getAccountsUrl(env);
-  const marketingUrl = getApplicationUrl('marketing', env);
+
 
   const currentKey = (appId || (host.application === 'inventory' ? 'inventory' : host.application === 'taskmanagement' ? 'taskmanagement' : 'inventory')).toLowerCase();
   const meta: AppMeta = APP_REGISTRY[currentKey] || {
@@ -144,14 +139,27 @@ export const AppProductLanding: React.FC = () => {
   const [demoConsent, setDemoConsent] = useState(true);
   const [demoSubmitting, setDemoSubmitting] = useState(false);
 
-  const handleJoinWaitlist = (e: React.FormEvent) => {
+  const handleJoinWaitlist = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!waitlistEmail || !waitlistEmail.includes('@')) {
+    const cleanEmail = waitlistEmail.trim();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
       toast.error('Please enter a valid email address');
       return;
     }
-    setIsJoined(true);
-    toast.success(`You are on the waitlist for ${meta.name}! We'll notify you as soon as it launches.`);
+    try {
+      const res = await api.post<{ alreadySubscribed?: boolean; message?: string }>(
+        `/products/${currentKey}/notify`,
+        { email: cleanEmail }
+      );
+      setIsJoined(true);
+      if (res?.alreadySubscribed) {
+        toast.info(`You're already on the waitlist for ${meta.name}!`);
+      } else {
+        toast.success(`You are on the waitlist for ${meta.name}! We'll notify you as soon as it launches.`);
+      }
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to join waitlist.');
+    }
   };
 
   const handleSubmitDemo = (e: React.FormEvent) => {
@@ -182,7 +190,7 @@ export const AppProductLanding: React.FC = () => {
         {/* Back Link */}
         <div className="mb-8">
           <a
-            href={launcherUrl}
+            href="/inventory/dashboard"
             className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
@@ -196,9 +204,14 @@ export const AppProductLanding: React.FC = () => {
             {/* Hero Section */}
             <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-10">
               <div className="space-y-4 max-w-2xl">
-                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-xs bg-emerald-950/80 border border-emerald-500/30 text-emerald-300 text-xs font-semibold">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  <span>Production Ready • Live in Workspace</span>
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-xs bg-[#190f17] border border-white/10 flex items-center justify-center shadow-md">
+                    <InventoryIcon className="w-9 h-9" />
+                  </div>
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-xs bg-emerald-950/80 border border-emerald-500/30 text-emerald-300 text-xs font-semibold">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    <span>Production Ready • Live in Workspace</span>
+                  </div>
                 </div>
 
                 <h1 className="text-4xl sm:text-5xl md:text-6xl font-bold text-white tracking-tight font-serif">
@@ -217,9 +230,9 @@ export const AppProductLanding: React.FC = () => {
                   <Button
                     onClick={() => {
                       if (isAuthenticated && user) {
-                        navigate('/dashboard');
+                        navigate('/inventory/dashboard');
                       } else {
-                        window.location.href = `${accountsUrl}/signup?product=${currentKey}`;
+                        navigate(`/signup?product=${currentKey}`);
                       }
                     }}
                     className="bg-[#714b67] hover:bg-[#86597a] active:bg-[#603f57] text-white font-semibold text-xs px-6 py-3 rounded-xs h-12 shadow-lg shadow-[#714b67]/25 flex items-center gap-2 cursor-pointer"
@@ -245,9 +258,9 @@ export const AppProductLanding: React.FC = () => {
                   <Button
                     variant="ghost"
                     onClick={() => {
-                      window.location.href = `${marketingUrl}/pricing`;
+                      navigate('/pricing');
                     }}
-                    className="text-xs text-slate-300 hover:text-white font-medium"
+                    className="text-xs text-slate-300 hover:text-white font-medium cursor-pointer"
                   >
                     <span>View Pricing Plans</span>
                   </Button>
@@ -286,9 +299,9 @@ export const AppProductLanding: React.FC = () => {
                 <Button
                   onClick={() => {
                     if (isAuthenticated && user) {
-                      navigate('/dashboard');
+                      navigate('/inventory/dashboard');
                     } else {
-                      window.location.href = `${accountsUrl}/signup?product=inventory`;
+                      navigate('/signup?product=inventory');
                     }
                   }}
                   variant="outline"
@@ -357,18 +370,23 @@ export const AppProductLanding: React.FC = () => {
 
             {/* Cross-Promo: Try Active Inventory App */}
             <div className="w-full max-w-xl mt-12 p-6 rounded-2xl bg-gradient-to-r from-[#170e15] to-[#120a11] border border-[#2d1827] flex flex-col sm:flex-row items-center justify-between gap-4 text-left shadow-xl">
-              <div>
-                <div className="text-xs font-bold text-[#c79dbd] uppercase tracking-wider mb-1">
-                  Ready To Explore Today
+              <div className="flex items-center gap-3.5">
+                <div className="w-11 h-11 rounded-xs bg-[#0c070a] border border-white/10 flex items-center justify-center shrink-0">
+                  <InventoryIcon className="w-8 h-8" />
                 </div>
-                <h4 className="text-base font-bold text-white">Orivo Inventory & POS</h4>
-                <p className="text-xs text-slate-400">
-                  Full stock control, warehouse transfers & multi-branch management.
-                </p>
+                <div>
+                  <div className="text-xs font-bold text-[#c79dbd] uppercase tracking-wider mb-1">
+                    Ready To Explore Today
+                  </div>
+                  <h4 className="text-base font-bold text-white">Orivo Inventory & POS</h4>
+                  <p className="text-xs text-slate-400">
+                    Full stock control, warehouse transfers & multi-branch management.
+                  </p>
+                </div>
               </div>
               <Button
                 onClick={() => {
-                  window.location.href = getApplicationUrl('inventory', env);
+                  navigate('/inventory/dashboard');
                 }}
                 className="bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-semibold px-4 py-2 rounded-xs whitespace-nowrap cursor-pointer"
               >

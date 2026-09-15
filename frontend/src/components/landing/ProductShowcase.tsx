@@ -21,6 +21,7 @@ import {
   CreditCard,
   Sparkles
 } from 'lucide-react';
+import { InventoryIcon } from '@/components/icons/InventoryIcon';
 
 interface ChartPoint {
   month: string;
@@ -54,7 +55,7 @@ export const ProductShowcase: React.FC = () => {
     { name: 'Dashboard', icon: LayoutDashboard },
     { name: 'CRM', icon: Contact },
     { name: 'Sales', icon: TrendingUp },
-    { name: 'Inventory', icon: Package },
+    { name: 'Inventory', icon: InventoryIcon },
     { name: 'Accounting', icon: FileText },
     { name: 'HR', icon: Users2 },
     { name: 'Projects', icon: FolderKanban },
@@ -65,7 +66,7 @@ export const ProductShowcase: React.FC = () => {
   const quickAccessApps = [
     { name: 'CRM', icon: Contact },
     { name: 'Sales', icon: TrendingUp },
-    { name: 'Inventory', icon: Package },
+    { name: 'Inventory', icon: InventoryIcon },
     { name: 'HR', icon: Users2 },
     { name: 'Accounting', icon: FileText },
     { name: 'Projects', icon: FolderKanban },
@@ -75,7 +76,7 @@ export const ProductShowcase: React.FC = () => {
     <div id="showcase" className="relative w-full max-w-[1480px] mx-auto px-4 sm:px-6 lg:px-8 pt-4 pb-16">
       
       {/* Background Ambient Radial Glow */}
-      <div className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[900px] h-[550px] bg-gradient-to-tr from-blue-400/15 via-sky-300/10 to-indigo-400/10 blur-3xl -z-10 rounded-full pointer-events-none" />
+      <div className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[900px] h-[550px] bg-gradient-to-tr from-blue-400/15 via-sky-300/10 to-indigo-400/10 blur-3xl -z-10 rounded-sm pointer-events-none" />
 
       {/* 3D Decorative Floating Assets */}
       
@@ -102,13 +103,13 @@ export const ProductShowcase: React.FC = () => {
       </div>
 
       {/* TOP SHOWCASE CARD: "All your tools. One platform." with OrvioHub Logo & Connection Network */}
-      <div className="relative mb-6 rounded-3xl bg-gradient-to-b from-white/95 to-blue-50/40 p-6 sm:p-8 md:p-10 border border-slate-200/90 shadow-xl shadow-blue-500/5 backdrop-blur-xl overflow-hidden text-center">
+      <div className="relative mb-6 rounded-sm bg-gradient-to-b from-white/95 to-blue-50/40 p-6 sm:p-8 md:p-10 border border-slate-200/90 shadow-xl shadow-blue-500/5 backdrop-blur-xl overflow-hidden text-center">
         
         {/* Subtle decorative grid/network lines background */}
         <div className="absolute inset-0 bg-[radial-gradient(#3b82f6_1px,transparent_1px)] [background-size:24px_24px] opacity-15 pointer-events-none" />
 
         {/* Small header text */}
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-100/60 text-blue-700 text-xs font-semibold uppercase tracking-wider mb-4">
+        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-sm bg-blue-100/60 text-blue-700 text-xs font-semibold uppercase tracking-wider mb-4">
           <Sparkles className="w-3.5 h-3.5 text-blue-600" />
           <span>All your tools. One platform.</span>
         </div>
@@ -119,13 +120,13 @@ export const ProductShowcase: React.FC = () => {
           {/* Left Connection Line with glowing node */}
           <div className="hidden sm:flex flex-1 items-center justify-end pr-6">
             <div className="w-full h-[2px] bg-gradient-to-r from-transparent via-blue-300 to-blue-500 relative">
-              <span className="absolute -top-1 left-1/4 w-2 h-2 rounded-full bg-blue-500 animate-ping opacity-60" />
-              <span className="absolute -top-1 left-3/4 w-2 h-2 rounded-full bg-blue-600" />
+              <span className="absolute -top-1 left-1/4 w-2 h-2 rounded-sm bg-blue-500 animate-ping opacity-60" />
+              <span className="absolute -top-1 left-3/4 w-2 h-2 rounded-sm bg-blue-600" />
             </div>
           </div>
 
           {/* Main Logo Container */}
-          <div className="relative z-10 px-6 py-2.5 rounded-2xl bg-white/90 shadow-md shadow-blue-500/10 border border-blue-100 flex items-center justify-center">
+          <div className="relative z-10 px-6 py-2.5 rounded-sm bg-white/90 shadow-md shadow-blue-500/10 border border-blue-100 flex items-center justify-center">
             <img 
               src="/orvio-logo.png" 
               alt="OrvioHub" 
@@ -136,8 +137,8 @@ export const ProductShowcase: React.FC = () => {
           {/* Right Connection Line with glowing node */}
           <div className="hidden sm:flex flex-1 items-center justify-start pl-6">
             <div className="w-full h-[2px] bg-gradient-to-r from-blue-500 via-blue-300 to-transparent relative">
-              <span className="absolute -top-1 left-1/4 w-2 h-2 rounded-full bg-blue-600" />
-              <span className="absolute -top-1 left-3/4 w-2 h-2 rounded-full bg-blue-500 animate-ping opacity-60" />
+              <span className="absolute -top-1 left-1/4 w-2 h-2 rounded-sm bg-blue-600" />
+              <span className="absolute -top-1 left-3/4 w-2 h-2 rounded-sm bg-blue-500 animate-ping opacity-60" />
             </div>
           </div>
 
@@ -145,18 +146,18 @@ export const ProductShowcase: React.FC = () => {
       </div>
 
       {/* MAIN DASHBOARD MOCKUP CONTAINER */}
-      <div className="relative w-full rounded-3xl bg-white border border-slate-200/90 shadow-2xl shadow-slate-900/8 overflow-hidden">
+      <div className="relative w-full rounded-sm bg-white border border-slate-200/90 shadow-2xl shadow-slate-900/8 overflow-hidden">
         
         {/* Top Browser Bar Decoration */}
         <div className="h-10 bg-slate-50/90 border-b border-slate-200/70 px-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-red-400/80" />
-            <div className="w-3 h-3 rounded-full bg-amber-400/80" />
-            <div className="w-3 h-3 rounded-full bg-emerald-400/80" />
+            <div className="w-3 h-3 rounded-sm bg-red-400/80" />
+            <div className="w-3 h-3 rounded-sm bg-amber-400/80" />
+            <div className="w-3 h-3 rounded-sm bg-emerald-400/80" />
           </div>
-          <div className="text-xs font-medium text-slate-400 flex items-center gap-1.5 px-3 py-1 rounded-md bg-white border border-slate-200/60 shadow-2xs">
-            <span className="w-2 h-2 rounded-full bg-emerald-500" />
-            <span>app.orviohub.com/dashboard</span>
+          <div className="text-xs font-medium text-slate-400 flex items-center gap-1.5 px-3 py-1 rounded-sm bg-white border border-slate-200/60 shadow-2xs">
+            <span className="w-2 h-2 rounded-sm bg-emerald-500" />
+            <span>orviohub.com/inventory/dashboard</span>
           </div>
           <div className="w-12" />
         </div>
@@ -198,7 +199,7 @@ export const ProductShowcase: React.FC = () => {
                         <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-slate-500'}`} />
                         <span>{item.name}</span>
                       </div>
-                      {isActive && <div className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />}
+                      {isActive && <div className="w-1.5 h-1.5 rounded-sm bg-white animate-pulse" />}
                     </button>
                   );
                 })}
@@ -206,7 +207,7 @@ export const ProductShowcase: React.FC = () => {
             </div>
 
             {/* Bottom Support / Upgrade Card */}
-            <div className="p-3 rounded-2xl bg-blue-50/80 border border-blue-100 text-left">
+            <div className="p-3 rounded-sm bg-blue-50/80 border border-blue-100 text-left">
               <div className="flex items-center gap-2 text-blue-700 font-bold text-xs mb-1">
                 <Sparkles className="w-3.5 h-3.5 text-blue-600" />
                 <span>Connected Plan</span>
@@ -223,7 +224,7 @@ export const ProductShowcase: React.FC = () => {
               <div>
                 <h2 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight flex items-center gap-2.5">
                   <span>Overview</span>
-                  <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-medium">
+                  <span className="text-xs px-2.5 py-0.5 rounded-sm bg-emerald-50 text-emerald-700 border border-emerald-200 font-medium">
                     Live System
                   </span>
                 </h2>
@@ -245,11 +246,11 @@ export const ProductShowcase: React.FC = () => {
 
                 <button className="relative p-2 rounded-sm bg-white border border-slate-200 text-slate-600 hover:text-blue-600 hover:border-blue-300 transition-colors shadow-2xs">
                   <Bell className="w-4 h-4" />
-                  <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-blue-600" />
+                  <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-sm bg-blue-600" />
                 </button>
 
                 <div className="flex items-center gap-2 pl-2 border-l border-slate-200">
-                  <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 text-white font-semibold text-xs flex items-center justify-center shadow-xs">
+                  <div className="w-8 h-8 rounded-sm bg-gradient-to-tr from-blue-600 to-indigo-600 text-white font-semibold text-xs flex items-center justify-center shadow-xs">
                     AO
                   </div>
                   <div className="hidden md:block text-left text-xs">
@@ -264,7 +265,7 @@ export const ProductShowcase: React.FC = () => {
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 my-6">
               
               {/* Metric 1: Total Revenue */}
-              <div className="p-4 rounded-2xl bg-white border border-slate-200/80 shadow-xs hover:shadow-md hover:border-blue-200 transition-all duration-200 group">
+              <div className="p-4 rounded-sm bg-white border border-slate-200/80 shadow-xs hover:shadow-md hover:border-blue-200 transition-all duration-200 group">
                 <div className="flex items-center justify-between text-slate-500 mb-2">
                   <span className="text-xs font-semibold">Total Revenue</span>
                   <div className="w-8 h-8 rounded-sm bg-blue-50 flex items-center justify-center text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-colors">
@@ -275,7 +276,7 @@ export const ProductShowcase: React.FC = () => {
                   ₦24.6M
                 </div>
                 <div className="mt-2 flex items-center justify-between">
-                  <div className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md">
+                  <div className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-sm">
                     <ArrowUpRight className="w-3 h-3" />
                     <span>+12.5%</span>
                   </div>
@@ -284,7 +285,7 @@ export const ProductShowcase: React.FC = () => {
               </div>
 
               {/* Metric 2: New Customers */}
-              <div className="p-4 rounded-2xl bg-white border border-slate-200/80 shadow-xs hover:shadow-md hover:border-blue-200 transition-all duration-200 group">
+              <div className="p-4 rounded-sm bg-white border border-slate-200/80 shadow-xs hover:shadow-md hover:border-blue-200 transition-all duration-200 group">
                 <div className="flex items-center justify-between text-slate-500 mb-2">
                   <span className="text-xs font-semibold">New Customers</span>
                   <div className="w-8 h-8 rounded-sm bg-blue-50 flex items-center justify-center text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-colors">
@@ -295,7 +296,7 @@ export const ProductShowcase: React.FC = () => {
                   1,245
                 </div>
                 <div className="mt-2 flex items-center justify-between">
-                  <div className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md">
+                  <div className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-sm">
                     <ArrowUpRight className="w-3 h-3" />
                     <span>+8.2%</span>
                   </div>
@@ -304,7 +305,7 @@ export const ProductShowcase: React.FC = () => {
               </div>
 
               {/* Metric 3: Total Orders */}
-              <div className="p-4 rounded-2xl bg-white border border-slate-200/80 shadow-xs hover:shadow-md hover:border-blue-200 transition-all duration-200 group">
+              <div className="p-4 rounded-sm bg-white border border-slate-200/80 shadow-xs hover:shadow-md hover:border-blue-200 transition-all duration-200 group">
                 <div className="flex items-center justify-between text-slate-500 mb-2">
                   <span className="text-xs font-semibold">Total Orders</span>
                   <div className="w-8 h-8 rounded-sm bg-blue-50 flex items-center justify-center text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-colors">
@@ -315,7 +316,7 @@ export const ProductShowcase: React.FC = () => {
                   2,456
                 </div>
                 <div className="mt-2 flex items-center justify-between">
-                  <div className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md">
+                  <div className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-sm">
                     <ArrowUpRight className="w-3 h-3" />
                     <span>+15.3%</span>
                   </div>
@@ -324,7 +325,7 @@ export const ProductShowcase: React.FC = () => {
               </div>
 
               {/* Metric 4: Expenses */}
-              <div className="p-4 rounded-2xl bg-white border border-slate-200/80 shadow-xs hover:shadow-md hover:border-blue-200 transition-all duration-200 group">
+              <div className="p-4 rounded-sm bg-white border border-slate-200/80 shadow-xs hover:shadow-md hover:border-blue-200 transition-all duration-200 group">
                 <div className="flex items-center justify-between text-slate-500 mb-2">
                   <span className="text-xs font-semibold">Expenses</span>
                   <div className="w-8 h-8 rounded-sm bg-blue-50 flex items-center justify-center text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-colors">
@@ -335,7 +336,7 @@ export const ProductShowcase: React.FC = () => {
                   ₦8.95M
                 </div>
                 <div className="mt-2 flex items-center justify-between">
-                  <div className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-md">
+                  <div className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-sm">
                     <ArrowDownRight className="w-3 h-3" />
                     <span>-3.6%</span>
                   </div>
@@ -349,7 +350,7 @@ export const ProductShowcase: React.FC = () => {
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
               
               {/* REVENUE OVERVIEW CHART (lg:col-span-7) */}
-              <div className="lg:col-span-7 p-5 rounded-2xl bg-white border border-slate-200/80 shadow-xs">
+              <div className="lg:col-span-7 p-5 rounded-sm bg-white border border-slate-200/80 shadow-xs">
                 
                 {/* Chart Header */}
                 <div className="flex items-center justify-between mb-4">
@@ -362,7 +363,7 @@ export const ProductShowcase: React.FC = () => {
                   <div className="relative">
                     <button 
                       onClick={() => setTimeframe(timeframe === 'Monthly' ? 'Quarterly' : 'Monthly')}
-                      className="flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors focus:outline-none"
+                      className="flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-sm transition-colors focus:outline-none"
                     >
                       <span>Time: {timeframe}</span>
                       <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
@@ -428,7 +429,7 @@ export const ProductShowcase: React.FC = () => {
                   {/* Tooltip */}
                   {hoveredPoint && (
                     <div 
-                      className="absolute bg-slate-900 text-white text-[11px] font-semibold px-2.5 py-1 rounded-lg shadow-lg pointer-events-none -translate-x-1/2 -translate-y-full mb-2 z-30 transition-all duration-150"
+                      className="absolute bg-slate-900 text-white text-[11px] font-semibold px-2.5 py-1 rounded-sm shadow-lg pointer-events-none -translate-x-1/2 -translate-y-full mb-2 z-30 transition-all duration-150"
                       style={{
                         left: `${(hoveredPoint.x / 620) * 100}%`,
                         top: `${hoveredPoint.y}px`
@@ -452,7 +453,7 @@ export const ProductShowcase: React.FC = () => {
               </div>
 
               {/* RECENT ACTIVITIES PANEL (lg:col-span-5) */}
-              <div className="lg:col-span-5 p-5 rounded-2xl bg-white border border-slate-200/80 shadow-xs">
+              <div className="lg:col-span-5 p-5 rounded-sm bg-white border border-slate-200/80 shadow-xs">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-bold text-slate-900">Recent Activities</h3>
                   <span className="text-[11px] font-semibold text-blue-600 hover:underline cursor-pointer">
@@ -465,7 +466,7 @@ export const ProductShowcase: React.FC = () => {
                   {/* Activity 1 */}
                   <div className="flex items-center justify-between p-2.5 rounded-sm hover:bg-slate-50 transition-colors">
                     <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                      <div className="w-8 h-8 rounded-sm bg-emerald-50 text-emerald-600 flex items-center justify-center">
                         <CheckCircle2 className="w-4 h-4" />
                       </div>
                       <div>
@@ -479,7 +480,7 @@ export const ProductShowcase: React.FC = () => {
                   {/* Activity 2 */}
                   <div className="flex items-center justify-between p-2.5 rounded-sm hover:bg-slate-50 transition-colors">
                     <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center">
+                      <div className="w-8 h-8 rounded-sm bg-blue-50 text-blue-600 flex items-center justify-center">
                         <CreditCard className="w-4 h-4" />
                       </div>
                       <div>
@@ -493,7 +494,7 @@ export const ProductShowcase: React.FC = () => {
                   {/* Activity 3 */}
                   <div className="flex items-center justify-between p-2.5 rounded-sm hover:bg-slate-50 transition-colors">
                     <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                      <div className="w-8 h-8 rounded-sm bg-emerald-50 text-emerald-600 flex items-center justify-center">
                         <Boxes className="w-4 h-4" />
                       </div>
                       <div>
@@ -507,7 +508,7 @@ export const ProductShowcase: React.FC = () => {
                   {/* Activity 4 */}
                   <div className="flex items-center justify-between p-2.5 rounded-sm hover:bg-slate-50 transition-colors">
                     <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center">
+                      <div className="w-8 h-8 rounded-sm bg-blue-50 text-blue-600 flex items-center justify-center">
                         <FileText className="w-4 h-4" />
                       </div>
                       <div>
@@ -521,7 +522,7 @@ export const ProductShowcase: React.FC = () => {
                   {/* Activity 5 */}
                   <div className="flex items-center justify-between p-2.5 rounded-sm hover:bg-slate-50 transition-colors">
                     <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center">
+                      <div className="w-8 h-8 rounded-sm bg-purple-50 text-purple-600 flex items-center justify-center">
                         <UserPlus className="w-4 h-4" />
                       </div>
                       <div>
@@ -544,12 +545,12 @@ export const ProductShowcase: React.FC = () => {
       </div>
 
       {/* FLOATING QUICK ACCESS PANEL (Mobile-Style Card overlapping right side) */}
-      <div className="hidden lg:block absolute right-8 bottom-6 w-80 rounded-3xl orvio-floating-panel p-5 z-30 animate-float-slow shadow-2xl">
+      <div className="hidden lg:block absolute right-8 bottom-6 w-80 rounded-sm orvio-floating-panel p-5 z-30 animate-float-slow shadow-2xl">
         
         {/* Floating Header */}
         <div className="flex items-center justify-between pb-3.5 border-b border-slate-100">
           <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded-lg bg-blue-600 flex items-center justify-center text-white font-bold text-xs">
+            <div className="w-6 h-6 rounded-sm bg-blue-600 flex items-center justify-center text-white font-bold text-xs">
               O
             </div>
             <span className="text-xs font-bold text-slate-900">OrvioHub</span>
@@ -573,7 +574,7 @@ export const ProductShowcase: React.FC = () => {
                   key={app.name}
                   className="flex flex-col items-center justify-center p-2 rounded-sm bg-slate-50/90 hover:bg-blue-50 border border-slate-100 hover:border-blue-200 transition-all duration-150 group"
                 >
-                  <div className="w-7 h-7 rounded-lg bg-white shadow-2xs flex items-center justify-center text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                  <div className="w-7 h-7 rounded-sm bg-white shadow-2xs flex items-center justify-center text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-colors">
                     <Icon className="w-3.5 h-3.5" />
                   </div>
                   <span className="text-[10px] font-bold text-slate-700 group-hover:text-blue-600 mt-1">
@@ -589,14 +590,14 @@ export const ProductShowcase: React.FC = () => {
         <div className="mt-4 pt-3 border-t border-slate-100">
           <div className="flex items-center justify-between text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-2">
             <span>Unread Notifications</span>
-            <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[9px] flex items-center justify-center font-bold">2</span>
+            <span className="w-4 h-4 rounded-sm bg-blue-600 text-white text-[9px] flex items-center justify-center font-bold">2</span>
           </div>
 
           <div className="space-y-2">
             
             {/* Notification 1 */}
             <div className="flex items-start gap-2.5 p-2 rounded-sm bg-amber-50/60 border border-amber-200/60">
-              <span className="w-2 h-2 rounded-full bg-amber-500 mt-1 shrink-0" />
+              <span className="w-2 h-2 rounded-sm bg-amber-500 mt-1 shrink-0" />
               <div className="text-left">
                 <div className="text-[11px] font-bold text-slate-800 leading-tight">Low stock alert</div>
                 <div className="text-[9px] text-slate-500">Inventory • 1h ago</div>
@@ -605,7 +606,7 @@ export const ProductShowcase: React.FC = () => {
 
             {/* Notification 2 */}
             <div className="flex items-start gap-2.5 p-2 rounded-sm bg-blue-50/60 border border-blue-200/60">
-              <span className="w-2 h-2 rounded-full bg-blue-600 mt-1 shrink-0" />
+              <span className="w-2 h-2 rounded-sm bg-blue-600 mt-1 shrink-0" />
               <div className="text-left">
                 <div className="text-[11px] font-bold text-slate-800 leading-tight">Leave request</div>
                 <div className="text-[9px] text-slate-500">HR • 2h ago</div>

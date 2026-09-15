@@ -95,7 +95,94 @@ export const getDashboardOverview = query({
       productActivationsMap[key] = (productActivationsMap[key] || 0) + 1;
     }
 
-    // 5. Recent Admin Activities & System Audit Events
+    // 5. Free Trial & Subscription Analytics
+    const allSubscriptions = await ctx.db.query("subscriptions").collect();
+    const allBranches = await ctx.db.query("branches").collect();
+
+    const activeTrialsList: any[] = [];
+    const expiringTrialsList: any[] = [];
+    let convertedTrialsCount = 0;
+    let expiredTrialsCount = 0;
+
+    for (const sub of allSubscriptions) {
+      const planKey = (sub.planKey || "free_trial").toLowerCase();
+      const isPaid = (planKey === "standard" || planKey === "premium") && sub.status === "active";
+      if (isPaid) {
+        convertedTrialsCount++;
+        continue;
+      }
+
+      const trialEnd = sub.trialEndsAt || sub.trialEnd || sub.currentPeriodEnd || 0;
+      const isTrial = planKey === "free_trial" || planKey === "free" || sub.status === "trial" || sub.status === "trialing";
+
+      if (isTrial) {
+        if (trialEnd > now) {
+          activeTrialsList.push(sub);
+          // Expiring within next 7 days
+          if (trialEnd <= now + 7 * 24 * 60 * 60 * 1000) {
+            expiringTrialsList.push(sub);
+          }
+        } else if (trialEnd > 0) {
+          expiredTrialsCount++;
+        }
+      }
+    }
+
+    // Enrich expiring trials with org and owner info (up to top 8)
+    const enrichedExpiringTrials = [];
+    for (const sub of expiringTrialsList.slice(0, 8)) {
+      let orgName = "Unknown Org";
+      let ownerName = "Unknown Owner";
+      let ownerEmail = "unknown@example.com";
+      let orgId = sub.organizationId || sub.workspaceId;
+
+      if (sub.organizationId) {
+        const org: any = await ctx.db.get(sub.organizationId);
+        if (org) {
+          orgName = org.name;
+          if (org.ownerId) {
+            const owner: any = await ctx.db.get(org.ownerId);
+            if (owner) {
+              ownerName = owner.name || `${owner.firstName || ""} ${owner.lastName || ""}`.trim() || owner.email;
+              ownerEmail = owner.email;
+            }
+          }
+        }
+      } else if (sub.workspaceId) {
+        const ws: any = await ctx.db.get(sub.workspaceId);
+        if (ws) {
+          orgName = ws.name;
+          if (ws.ownerId) {
+            const owner: any = await ctx.db.get(ws.ownerId);
+            if (owner) {
+              ownerName = owner.name || `${owner.firstName || ""} ${owner.lastName || ""}`.trim() || owner.email;
+              ownerEmail = owner.email;
+            }
+          }
+        }
+      }
+
+      const trialEnd = sub.trialEndsAt || sub.trialEnd || sub.currentPeriodEnd || 0;
+      const daysRemaining = Math.max(0, Math.ceil((trialEnd - now) / (1000 * 60 * 60 * 24)));
+
+      enrichedExpiringTrials.push({
+        id: sub._id,
+        organizationId: orgId,
+        organizationName: orgName,
+        ownerName,
+        ownerEmail,
+        trialEndsAt: trialEnd,
+        daysRemaining,
+        createdAt: sub.createdAt || sub._creationTime,
+      });
+    }
+
+    const totalTrialsHistorical = activeTrialsList.length + convertedTrialsCount + expiredTrialsCount;
+    const conversionRate = totalTrialsHistorical > 0
+      ? Math.round((convertedTrialsCount / totalTrialsHistorical) * 100)
+      : 0;
+
+    // 6. Recent Admin Activities & System Audit Events
     const recentAuditLogs = await ctx.db
       .query("adminAuditLogs")
       .withIndex("by_created")
@@ -115,7 +202,13 @@ export const getDashboardOverview = query({
         activeOrganizations,
         incompleteOnboarding,
         organizationsCreatedToday,
+        activeTrialsCount: activeTrialsList.length,
+        expiringTrialsCount: expiringTrialsList.length,
+        convertedTrialsCount,
+        expiredTrialsCount,
+        trialConversionRate: conversionRate,
       },
+      expiringTrials: enrichedExpiringTrials,
       productActivations: productActivationsMap,
       onboardingFunnel: {
         totalSignups: totalUsers,

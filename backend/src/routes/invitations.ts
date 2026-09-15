@@ -38,6 +38,8 @@ export const invitationRoutes: FastifyPluginAsync = async (fastify) => {
               inviterName: wsInvite.inviterName,
               email: wsInvite.email,
               role: wsInvite.role,
+              organizationRole: wsInvite.organizationRole || wsInvite.role,
+              appAccess: wsInvite.appAccess || [],
               productKey: wsInvite.productKey,
               branchIds: wsInvite.branchIds,
               status: wsInvite.status,
@@ -450,4 +452,143 @@ export const invitationRoutes: FastifyPluginAsync = async (fastify) => {
       }
     }
   );
+
+  // POST /api/v1/invitations/accept-from-notification
+  fastify.post(
+    '/accept-from-notification',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Invitations'],
+        summary: 'Accept an invitation directly from in-dashboard notification',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['inviteId'],
+          properties: {
+            inviteId: { type: 'string' },
+            inviteType: { type: 'string', enum: ['organization', 'workspace'] },
+            notificationId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { inviteId, inviteType, notificationId } = (request.body as {
+        inviteId: string;
+        inviteType?: 'organization' | 'workspace';
+        notificationId?: string;
+      }) || {};
+
+      if (!inviteId) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: 'inviteId is required',
+          },
+        });
+      }
+
+      try {
+        let result: any;
+        if (inviteType === 'workspace') {
+          result = await dataService.acceptWorkspaceInviteFromNotification(
+            inviteId,
+            request.user.id,
+            notificationId
+          );
+        } else {
+          result = await dataService.acceptInviteFromNotification(
+            inviteId,
+            request.user.id,
+            notificationId
+          );
+        }
+
+        return reply.send({
+          success: true,
+          data: result,
+        });
+      } catch (err: any) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: err.code || 'INVITATION_ACCEPT_FAILED',
+            message: err.message || 'Failed to accept invitation',
+          },
+        });
+      }
+    }
+  );
+
+  // POST /api/v1/invitations/decline-from-notification
+  fastify.post(
+    '/decline-from-notification',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Invitations'],
+        summary: 'Decline an invitation directly from in-dashboard notification',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['inviteId'],
+          properties: {
+            inviteId: { type: 'string' },
+            inviteType: { type: 'string', enum: ['organization', 'workspace'] },
+            notificationId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { inviteId, inviteType, notificationId } = (request.body as {
+        inviteId: string;
+        inviteType?: 'organization' | 'workspace';
+        notificationId?: string;
+      }) || {};
+
+      if (!inviteId) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: 'inviteId is required',
+          },
+        });
+      }
+
+      try {
+        let result: any;
+        if (inviteType === 'workspace') {
+          result = await dataService.declineWorkspaceInviteFromNotification(
+            inviteId,
+            request.user.id,
+            notificationId
+          );
+        } else {
+          result = await dataService.declineInviteFromNotification(
+            inviteId,
+            request.user.id,
+            notificationId
+          );
+        }
+
+        return reply.send({
+          success: true,
+          data: result,
+        });
+      } catch (err: any) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: err.code || 'INVITATION_DECLINE_FAILED',
+            message: err.message || 'Failed to decline invitation',
+          },
+        });
+      }
+    }
+  );
 };
+

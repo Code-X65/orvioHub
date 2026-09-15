@@ -30,6 +30,28 @@ async function logAudit(ctx: any, adminId: any, action: string, resourceId?: str
   });
 }
 
+async function resolveWorkspace(ctx: any, id: any) {
+  let ws: any = null;
+  try {
+    ws = await (ctx.db as any).get(id);
+  } catch {}
+  if (!ws) {
+    try {
+      ws = await ctx.db
+        .query("workspaces")
+        .withIndex("by_organizationId", (q: any) => q.eq("organizationId", id))
+        .first();
+    } catch {}
+  } else if (ws.industry !== undefined && ws.type === undefined) {
+    const primaryWs: any = await ctx.db
+      .query("workspaces")
+      .withIndex("by_organizationId", (q: any) => q.eq("organizationId", ws._id))
+      .first();
+    if (primaryWs) return primaryWs;
+  }
+  return ws;
+}
+
 /**
  * listOrganizations
  * Paginated query for workspaces/organizations with member counts and owner details
@@ -40,6 +62,9 @@ export const listOrganizations = query({
     search: v.optional(v.string()),
     statusFilter: v.optional(v.string()),
     typeFilter: v.optional(v.string()),
+    planFilter: v.optional(v.string()), // "all" | "free_trial" | "standard"
+    branchFilter: v.optional(v.string()), // "all" | "1" | "2-5" | "multiple"
+    onboardingFilter: v.optional(v.string()), // "all" | "completed" | "pending"
     page: v.optional(v.number()),
     pageSize: v.optional(v.number()),
     sortBy: v.optional(v.string()), // "createdAt" | "name"
@@ -76,7 +101,106 @@ export const listOrganizations = query({
       );
     }
 
-    // 4. Sorting
+    // Fetch related maps for all workspaces
+    const allMemberships = await ctx.db.query("workspaceMemberships").collect();
+    const allProducts = await ctx.db.query("workspaceProducts").collect();
+    const allBranches = await ctx.db.query("branches").collect();
+    const allSubscriptions = await ctx.db.query("subscriptions").collect();
+    const allOrgProfiles = await ctx.db.query("organizationProfiles").collect();
+    const allAppOnboardings = await ctx.db.query("applicationOnboardingResponses").collect();
+
+    const memberCountMap: Record<string, number> = {};
+    for (const m of allMemberships) {
+      memberCountMap[m.workspaceId] = (memberCountMap[m.workspaceId] || 0) + 1;
+    }
+
+    const productCountMap: Record<string, string[]> = {};
+    for (const p of allProducts) {
+      if (!productCountMap[p.workspaceId]) productCountMap[p.workspaceId] = [];
+      productCountMap[p.workspaceId].push(p.productKey);
+    }
+
+    // Map unique branches by workspace & organizationId
+    const branchSetByWorkspace: Record<string, Set<string>> = {};
+    for (const b of allBranches) {
+      if (b.status === "deleted" || b.status === "archived") continue;
+      const bId = String(b._id);
+      if (b.workspaceId) {
+        if (!branchSetByWorkspace[b.workspaceId]) branchSetByWorkspace[b.workspaceId] = new Set();
+        branchSetByWorkspace[b.workspaceId].add(bId);
+      }
+      if (b.organizationId) {
+        if (!branchSetByWorkspace[b.organizationId]) branchSetByWorkspace[b.organizationId] = new Set();
+        branchSetByWorkspace[b.organizationId].add(bId);
+      }
+    }
+
+    const getBranchCount = (wsId: string, orgId?: string) => {
+      const set = new Set<string>();
+      if (wsId && branchSetByWorkspace[wsId]) {
+        for (const id of branchSetByWorkspace[wsId]) set.add(id);
+      }
+      if (orgId && branchSetByWorkspace[orgId]) {
+        for (const id of branchSetByWorkspace[orgId]) set.add(id);
+      }
+      return set.size;
+    };
+
+    // Map subscriptions
+    const subMap: Record<string, any> = {};
+    for (const s of allSubscriptions) {
+      if (s.workspaceId) subMap[s.workspaceId] = s;
+      if (s.organizationId) subMap[s.organizationId] = s;
+    }
+
+    // Map profiles
+    const profileMap: Record<string, any> = {};
+    for (const p of allOrgProfiles) {
+      profileMap[p.organizationId] = p;
+    }
+
+    // Map inventory app onboardings
+    const appOnboardingMap: Record<string, any> = {};
+    for (const a of allAppOnboardings) {
+      appOnboardingMap[a.organizationId] = a;
+    }
+
+    // 4. Plan Filter
+    if (args.planFilter && args.planFilter !== "all") {
+      const targetPlan = args.planFilter.toLowerCase();
+      workspaces = workspaces.filter((w: any) => {
+        const orgId = w.organizationId || w._id;
+        const sub = subMap[w._id] || subMap[orgId];
+        const planKey = (sub?.planKey || sub?.planId || w.planKey || w.planId || "free_trial").toLowerCase();
+        return planKey === targetPlan;
+      });
+    }
+
+    // 5. Branch Count Filter
+    if (args.branchFilter && args.branchFilter !== "all") {
+      workspaces = workspaces.filter((w: any) => {
+        const count = getBranchCount(w._id, w.organizationId);
+        if (args.branchFilter === "1") return count <= 1;
+        if (args.branchFilter === "2-5") return count >= 2 && count <= 5;
+        if (args.branchFilter === "multiple") return count > 1;
+        return true;
+      });
+    }
+
+    // 6. Onboarding Completion Filter
+    if (args.onboardingFilter && args.onboardingFilter !== "all") {
+      workspaces = workspaces.filter((w: any) => {
+        const orgId = w.organizationId || w._id;
+        const orgCompleted = !!profileMap[orgId];
+        const invCompleted = !!appOnboardingMap[orgId];
+        const allCompleted = orgCompleted && invCompleted;
+        if (args.onboardingFilter === "completed") return allCompleted;
+        if (args.onboardingFilter === "pending") return !allCompleted;
+        return true;
+      });
+    }
+
+    // 7. Sorting
     const sortBy = args.sortBy || "createdAt";
     const sortOrder = args.sortOrder || "desc";
     workspaces.sort((a: any, b: any) => {
@@ -96,22 +220,7 @@ export const listOrganizations = query({
     const offset = (page - 1) * pageSize;
     const paginated = workspaces.slice(offset, offset + pageSize);
 
-    // Fetch members and products counts
-    const allMemberships = await ctx.db.query("workspaceMemberships").collect();
-    const allProducts = await ctx.db.query("workspaceProducts").collect();
-
-    const memberCountMap: Record<string, number> = {};
-    for (const m of allMemberships) {
-      memberCountMap[m.workspaceId] = (memberCountMap[m.workspaceId] || 0) + 1;
-    }
-
-    const productCountMap: Record<string, string[]> = {};
-    for (const p of allProducts) {
-      if (!productCountMap[p.workspaceId]) productCountMap[p.workspaceId] = [];
-      productCountMap[p.workspaceId].push(p.productKey);
-    }
-
-    // Enrich with owner email
+    // Enrich items
     const items = [];
     for (const ws of paginated) {
       let ownerEmail = "Unknown";
@@ -124,8 +233,17 @@ export const listOrganizations = query({
         }
       }
 
+      const orgId = ws.organizationId || ws._id;
+      const sub = subMap[ws._id] || subMap[orgId];
+      const branchCount = getBranchCount(ws._id, orgId);
+      const orgProfile = profileMap[orgId];
+      const invOnboarding = appOnboardingMap[orgId];
+      const planKey = (sub?.planKey || sub?.planId || (ws as any).planKey || (ws as any).planId || "free_trial").toLowerCase();
+      const subStatus = sub?.status || (ws as any).subscriptionStatus || ws.status || "active";
+
       items.push({
         id: ws._id,
+        organizationId: ws.organizationId,
         name: ws.name,
         slug: ws.slug,
         type: ws.type || "business",
@@ -134,7 +252,18 @@ export const listOrganizations = query({
         ownerName,
         ownerEmail,
         memberCount: memberCountMap[ws._id] || 0,
-        enabledProducts: productCountMap[ws._id] || ws.enabledModules || [],
+        enabledProducts: productCountMap[ws._id] || ws.enabledModules || ["Inventory"],
+        branchCount,
+        subscription: {
+          planKey,
+          status: subStatus,
+          trialEndsAt: sub?.trialEndsAt,
+          currentPeriodEnd: sub?.currentPeriodEnd,
+        },
+        onboardingFlags: {
+          orgProfileCompleted: !!orgProfile,
+          inventoryOnboardingCompleted: !!invOnboarding,
+        },
         currency: ws.currency || "NGN",
         country: ws.country,
         createdAt: ws.createdAt,
@@ -165,6 +294,8 @@ export const getOrganizationDetails = query({
 
     const ws = await ctx.db.get(args.workspaceId);
     if (!ws) throw new Error("Organization not found.");
+
+    const orgId = ws.organizationId || ws._id;
 
     // 1. Owner info
     let owner = null;
@@ -200,31 +331,160 @@ export const getOrganizationDetails = query({
       });
     }
 
-    // 3. Products
+    // 3. Products & Applications
     const products = await ctx.db
       .query("workspaceProducts")
       .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
       .collect();
 
-    // 4. Branches
-    const branches = await ctx.db
+    // 4. Branches (deduplicated by ID)
+    const branchesByWs = await ctx.db
       .query("branches")
       .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
       .collect();
 
-    // 5. Onboarding flows
-    const flows = await ctx.db
-      .query("onboardingFlows")
-      .withIndex("by_workspaceId", (q) => q.eq("workspaceId", args.workspaceId))
+    let branchesByOrg: any[] = [];
+    if (ws.organizationId) {
+      branchesByOrg = await ctx.db
+        .query("branches")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", ws.organizationId!))
+        .collect();
+    }
+
+    const branchMap = new Map<string, any>();
+    for (const b of [...branchesByWs, ...branchesByOrg]) {
+      if (b.status !== "deleted" && b.status !== "archived") {
+        branchMap.set(String(b._id), b);
+      }
+    }
+    const branches = Array.from(branchMap.values());
+
+    // 5. Subscription & Payment History
+    let subscription = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
+      .first();
+
+    if (!subscription && ws.organizationId) {
+      subscription = await ctx.db
+        .query("subscriptions")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", ws.organizationId!))
+        .first();
+    }
+
+    let payments = await ctx.db
+      .query("payments")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
       .collect();
+
+    if (payments.length === 0 && ws.organizationId) {
+      payments = await ctx.db
+        .query("payments")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", ws.organizationId!))
+        .collect();
+    }
+
+    // 6. Onboarding Answers (US-5)
+    let orgProfile = null;
+    let inventoryOnboarding = null;
+
+    if (ws.organizationId) {
+      orgProfile = await ctx.db
+        .query("organizationProfiles")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", ws.organizationId!))
+        .first();
+
+      const invApp = await ctx.db
+        .query("applications")
+        .withIndex("by_key", (q: any) => q.eq("key", "inventory"))
+        .first();
+
+      if (invApp) {
+        inventoryOnboarding = await ctx.db
+          .query("applicationOnboardingResponses")
+          .withIndex("by_org_and_app", (q: any) =>
+            q.eq("organizationId", ws.organizationId!).eq("applicationId", invApp._id)
+          )
+          .first();
+      }
+    }
+
+    // 7. Owner's other organizations & trial status check
+    const ownerOtherOrgs: any[] = [];
+    let ownerHasOtherTrial = false;
+    if (ws.ownerId) {
+      const allOwnerWorkspaces = await ctx.db
+        .query("workspaces")
+        .withIndex("by_owner", (q) => q.eq("ownerId", ws.ownerId!))
+        .collect();
+
+      for (const otherWs of allOwnerWorkspaces) {
+        if (otherWs._id === ws._id) continue;
+        const otherSub = await ctx.db
+          .query("subscriptions")
+          .withIndex("by_workspace", (q) => q.eq("workspaceId", otherWs._id))
+          .first();
+
+        const otherPlan = (otherSub?.planKey || otherSub?.planId || (otherWs as any).planKey || (otherWs as any).planId || "free_trial").toLowerCase();
+        const isOtherTrial = otherPlan === "free_trial" || otherPlan === "free" || otherSub?.status === "trial" || otherSub?.status === "trialing";
+        if (isOtherTrial) {
+          ownerHasOtherTrial = true;
+        }
+
+        ownerOtherOrgs.push({
+          id: otherWs._id,
+          name: otherWs.name,
+          slug: otherWs.slug,
+          planKey: otherPlan,
+          status: otherSub?.status || (otherWs as any).subscriptionStatus || otherWs.status || "active",
+          isTrial: isOtherTrial,
+        });
+      }
+    }
+
+    const now = Date.now();
+    const rawPlanKey = (subscription?.planKey === "free" ? "free_trial" : subscription?.planKey || (ws as any).planKey || (ws as any).planId || "free_trial").toLowerCase();
+    const subStatus = (subscription?.status || (ws as any).subscriptionStatus || ws.status || "active").toLowerCase();
+    const isPaidActive = subStatus === "active" && (rawPlanKey === "standard" || rawPlanKey === "premium");
+    const isFreeTrial = !isPaidActive && (rawPlanKey === "free_trial" || rawPlanKey === "free" || subStatus === "trial" || subStatus === "trialing");
+    const planKey = isPaidActive ? rawPlanKey : isFreeTrial ? "free_trial" : rawPlanKey;
+    const trialEndsAt = isPaidActive ? undefined : (subscription?.trialEndsAt || subscription?.trialEnd || (isFreeTrial ? (subscription?.currentPeriodEnd || (ws.createdAt + 30 * 86_400_000)) : undefined));
+    const daysRemaining = trialEndsAt ? Math.max(0, Math.ceil((trialEndsAt - now) / (1000 * 60 * 60 * 24))) : null;
+
+    // Consistency Check
+    const consistencyIssues: string[] = [];
+    if (!subscription) {
+      consistencyIssues.push("missing_subscription");
+    } else {
+      if (subStatus === "active" && rawPlanKey !== "standard" && rawPlanKey !== "premium") {
+        consistencyIssues.push("active_paid_subscription_has_invalid_plan");
+      }
+      if (rawPlanKey === "standard" && subStatus === "active" && (subscription.trialEnd || subscription.trialEndsAt)) {
+        consistencyIssues.push("standard_subscription_has_trial_end");
+      }
+      const hasSuccessPayment = payments.some((p: any) => p.status === "success" || p.status === "completed");
+      if (hasSuccessPayment && subStatus !== "active") {
+        consistencyIssues.push("successful_payment_subscription_not_active");
+      }
+      if (subscription.activePlan && subscription.activePlan !== rawPlanKey && subStatus === "active") {
+        consistencyIssues.push("active_plan_mismatch");
+      }
+    }
+
+    const activeProductsCount = products.filter((p: any) => p.status === "active").length;
+    const activeBranchesCount = branches.filter((b: any) => b.status === "active").length;
 
     return {
       organization: {
         id: ws._id,
+        organizationId: ws.organizationId,
         name: ws.name,
         slug: ws.slug,
         type: ws.type || "business",
+        planId: planKey,
+        planKey,
         status: ws.status || "active",
+        subscriptionStatus: subStatus,
         country: ws.country,
         state: ws.state,
         city: ws.city,
@@ -234,6 +494,23 @@ export const getOrganizationDetails = query({
         createdAt: ws.createdAt,
       },
       owner,
+      ownerOtherOrgs,
+      ownerHasOtherTrial,
+      billingConsistency: {
+        consistent: consistencyIssues.length === 0,
+        status: consistencyIssues.length === 0 ? "consistent" : "mismatch detected",
+        issues: consistencyIssues,
+      },
+      entitlements: {
+        isFreeTrial,
+        planKey,
+        maxApplications: isFreeTrial ? 1 : 3,
+        activeApplications: activeProductsCount,
+        maxBranches: isFreeTrial ? 1 : 3,
+        activeBranches: activeBranchesCount,
+        trialEndsAt,
+        daysRemaining,
+      },
       members: memberDetails,
       products: products.map((p: any) => ({
         id: p._id,
@@ -242,51 +519,167 @@ export const getOrganizationDetails = query({
         trialEndsAt: p.trialEndsAt,
         activatedAt: p.activatedAt,
       })),
-      branches: branches.map((b: any) => ({
-        id: b._id,
-        name: b.name,
-        code: b.code,
-        status: b.status,
-        address: b.address,
+      branches: branches
+        .filter((b: any) => b.status !== "deleted")
+        .map((b: any) => ({
+          id: b._id,
+          name: b.name,
+          code: b.code || "MAIN",
+          isPrimary: b.isPrimary || false,
+          isActive: b.isActive !== false,
+          status: b.status || "active",
+          state: b.state,
+          city: b.city,
+          formattedAddress: b.formattedAddress || b.address,
+          phone: b.phone,
+          createdAt: b.createdAt,
+        })),
+      subscription: subscription
+        ? {
+            id: subscription._id,
+            planKey: planKey,
+            selectedPlan: subscription.selectedPlan || planKey,
+            activePlan: isPaidActive ? planKey : (isFreeTrial ? "free_trial" : null),
+            status: subStatus,
+            checkoutStatus: subscription.checkoutStatus || (isPaidActive ? "completed" : "pending"),
+            paymentStatus: subscription.paymentStatus || (isPaidActive ? "success" : "pending"),
+            trialEndsAt: subscription.trialEndsAt,
+            currentPeriodStart: subscription.currentPeriodStart,
+            currentPeriodEnd: subscription.currentPeriodEnd,
+            amount: subscription.amount,
+            currency: subscription.currency,
+          }
+        : {
+            id: null,
+            planKey: planKey,
+            status: subStatus,
+          },
+      payments: payments.map((pay: any) => ({
+        id: pay._id,
+        amount: pay.amount,
+        currency: pay.currency,
+        status: pay.status,
+        provider: pay.provider,
+        reference: pay.reference,
+        createdAt: pay.createdAt,
       })),
-      onboarding: flows.map((f: any) => ({
-        id: f._id,
-        productKey: f.productKey,
-        status: f.status,
-        currentStep: f.currentStep,
-        completedSteps: f.completedSteps,
-        lastUpdatedAt: f.lastUpdatedAt,
-      })),
+      onboardingAnswers: {
+        organizationProfile: orgProfile
+          ? {
+              businessType: orgProfile.businessType,
+              branchCountRange: orgProfile.branchCountRange,
+              productCountRange: orgProfile.productCountRange,
+              primaryUsers: orgProfile.primaryUsers,
+              completedAt: orgProfile.completedAt,
+            }
+          : null,
+        inventoryOnboarding: inventoryOnboarding
+          ? {
+              previousTools: inventoryOnboarding.previousTools,
+              painPoints: inventoryOnboarding.painPoints,
+              priorityFeatures: inventoryOnboarding.priorityFeatures,
+              needsMultiBranch: inventoryOnboarding.needsMultiBranch,
+              teamComfortLevel: inventoryOnboarding.teamComfortLevel,
+              completedAt: inventoryOnboarding.completedAt,
+            }
+          : null,
+      },
     };
   },
 });
 
 /**
  * suspendOrganization
- * Suspends an organization and disables active product access
+ * Suspends an organization/workspace and disables active product access
  */
 export const suspendOrganization = mutation({
   args: {
     sessionToken: v.string(),
-    workspaceId: v.id("workspaces"),
-    reason: v.optional(v.string()),
+    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
+    reason: v.optional(v.string()), // "payment_failure" | "policy_violation" | "fraud" | "other"
+    notes: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const { admin } = await verifyAdminSession(ctx, args.sessionToken);
 
-    const ws = await ctx.db.get(args.workspaceId);
+    const ws = await resolveWorkspace(ctx, args.workspaceId);
     if (!ws) throw new Error("Organization not found.");
+    const targetWorkspaceId = ws._id;
 
     const now = Date.now();
-    await ctx.db.patch(args.workspaceId, {
+    await ctx.db.patch(targetWorkspaceId, {
       status: "suspended",
+      suspendedAt: now,
+      suspendedBy: admin._id,
+      suspensionReason: args.reason || "policy_violation",
+      suspensionNotes: args.notes,
       updatedAt: now,
     });
 
-    await logAudit(ctx, admin._id, "ORGANIZATION_SUSPENDED", args.workspaceId, {
+    // Pause active subscriptions
+    const subscriptions = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", targetWorkspaceId))
+      .collect();
+
+    for (const sub of subscriptions) {
+      if (sub.status === "active" || sub.status === "trialing") {
+        await ctx.db.patch(sub._id, {
+          status: "suspended",
+          updatedAt: now,
+        });
+      }
+    }
+
+    // Notify workspace owner
+    if (ws.ownerId) {
+      const owner: any = await ctx.db.get(ws.ownerId);
+      if (owner && owner.email) {
+        await ctx.db.insert("emailOutbox", {
+          to: owner.email,
+          template: "workspaceSuspended",
+          payload: {
+            name: owner.name || owner.firstName || "there",
+            workspaceName: ws.name,
+            reason: args.reason || "Administrative policy action",
+          },
+          status: "PENDING",
+          attempts: 0,
+          nextAttemptAt: now,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    }
+
+    // Audit log event: admin.workspace_suspended (high severity)
+    await ctx.db.insert("auditLogs", {
+      actorId: admin._id,
+      actorUserId: admin._id,
+      targetWorkspaceId,
+      workspaceId: targetWorkspaceId,
+      organizationId: ws.organizationId,
+      eventType: "admin.workspace_suspended",
+      action: "admin.workspace_suspended",
+      entityType: "workspace",
+      entityId: targetWorkspaceId,
+      resource: "workspaces",
+      severity: "high",
+      metadata: {
+        workspaceName: ws.name,
+        slug: ws.slug,
+        reason: args.reason,
+        notes: args.notes,
+        adminUserId: admin._id,
+      },
+      createdAt: now,
+      timestamp: now,
+    });
+
+    await logAudit(ctx, admin._id, "ORGANIZATION_SUSPENDED", targetWorkspaceId, {
       name: ws.name,
-      slug: ws.slug,
       reason: args.reason,
+      notes: args.notes,
     });
 
     return { success: true };
@@ -295,31 +688,234 @@ export const suspendOrganization = mutation({
 
 /**
  * activateOrganization
- * Reactivates a suspended organization
+ * Reactivates a suspended organization/workspace
  */
 export const activateOrganization = mutation({
   args: {
     sessionToken: v.string(),
-    workspaceId: v.id("workspaces"),
+    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
   },
   handler: async (ctx, args) => {
     const { admin } = await verifyAdminSession(ctx, args.sessionToken);
 
-    const ws = await ctx.db.get(args.workspaceId);
+    const ws = await resolveWorkspace(ctx, args.workspaceId);
     if (!ws) throw new Error("Organization not found.");
+    const targetWorkspaceId = ws._id;
 
-    await ctx.db.patch(args.workspaceId, {
+    const now = Date.now();
+    await ctx.db.patch(targetWorkspaceId, {
       status: "active",
-      updatedAt: Date.now(),
+      suspendedAt: undefined,
+      suspendedBy: undefined,
+      suspensionReason: undefined,
+      suspensionNotes: undefined,
+      updatedAt: now,
     });
 
-    await logAudit(ctx, admin._id, "ORGANIZATION_ACTIVATED", args.workspaceId, {
+    // Reactivate suspended subscriptions
+    const subscriptions = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", targetWorkspaceId))
+      .collect();
+
+    for (const sub of subscriptions) {
+      if (sub.status === "suspended") {
+        await ctx.db.patch(sub._id, {
+          status: "active",
+          updatedAt: now,
+        });
+      }
+    }
+
+    // Audit log event: admin.workspace_restored (high severity)
+    await ctx.db.insert("auditLogs", {
+      actorId: admin._id,
+      actorUserId: admin._id,
+      targetWorkspaceId,
+      workspaceId: targetWorkspaceId,
+      organizationId: ws.organizationId,
+      eventType: "admin.workspace_restored",
+      action: "admin.workspace_restored",
+      entityType: "workspace",
+      entityId: targetWorkspaceId,
+      resource: "workspaces",
+      severity: "high",
+      metadata: {
+        workspaceName: ws.name,
+        adminUserId: admin._id,
+      },
+      createdAt: now,
+      timestamp: now,
+    });
+
+    await logAudit(ctx, admin._id, "ORGANIZATION_ACTIVATED", targetWorkspaceId, {
       name: ws.name,
     });
 
     return { success: true };
   },
 });
+
+export const restoreOrganization = activateOrganization;
+
+/**
+ * deleteOrganization / deleteWorkspace
+ * Deletes workspace with subscription checks, grace period or immediate force delete
+ */
+export const deleteOrganization = mutation({
+  args: {
+    sessionToken: v.string(),
+    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
+    reason: v.optional(v.string()),
+    notes: v.optional(v.string()),
+    cancelSubscriptions: v.optional(v.boolean()),
+    adminForceDelete: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+
+    const ws = await resolveWorkspace(ctx, args.workspaceId);
+    if (!ws) throw new Error("Organization not found.");
+    const targetWorkspaceId = ws._id;
+
+    const now = Date.now();
+
+    // 1. Check subscriptions
+    const subscriptions = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", targetWorkspaceId))
+      .collect();
+
+    const activeSubs = subscriptions.filter(
+      (s) => s.status === "active" || s.status === "trialing"
+    );
+
+    if (activeSubs.length > 0 && !args.cancelSubscriptions) {
+      throw new Error(
+        "Workspace has active subscriptions. Cancel subscriptions first or pass cancelSubscriptions: true."
+      );
+    }
+
+    if (args.cancelSubscriptions) {
+      for (const sub of activeSubs) {
+        await ctx.db.patch(sub._id, {
+          status: "canceled",
+          cancelAtPeriodEnd: false,
+          updatedAt: now,
+        });
+      }
+    }
+
+    // 2. Notify workspace owner
+    if (ws.ownerId) {
+      const owner: any = await ctx.db.get(ws.ownerId);
+      if (owner && owner.email) {
+        await ctx.db.insert("emailOutbox", {
+          to: owner.email,
+          template: "workspaceDeleted",
+          payload: {
+            name: owner.name || owner.firstName || "there",
+            workspaceName: ws.name,
+            reason: args.reason || "Administrative workspace closure",
+          },
+          status: "PENDING",
+          attempts: 0,
+          nextAttemptAt: now,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    }
+
+    if (args.adminForceDelete) {
+      // Immediate deletion (soft-deleted with business data preserved per NDPA retention policy)
+      await ctx.db.patch(targetWorkspaceId, {
+        status: "deleted",
+        deletedAt: now,
+        deletedBy: admin._id,
+        updatedAt: now,
+      });
+
+      // Audit log event: admin.workspace_deleted (critical severity)
+      await ctx.db.insert("auditLogs", {
+        actorId: admin._id,
+        actorUserId: admin._id,
+        targetWorkspaceId,
+        workspaceId: targetWorkspaceId,
+        organizationId: ws.organizationId,
+        eventType: "admin.workspace_deleted",
+        action: "admin.workspace_deleted",
+        entityType: "workspace",
+        entityId: targetWorkspaceId,
+        resource: "workspaces",
+        severity: "critical",
+        metadata: {
+          workspaceName: ws.name,
+          slug: ws.slug,
+          reason: args.reason,
+          notes: args.notes,
+          adminForceDelete: true,
+          adminUserId: admin._id,
+        },
+        createdAt: now,
+        timestamp: now,
+      });
+
+      await logAudit(ctx, admin._id, "ORGANIZATION_DELETED_FORCE", targetWorkspaceId, {
+        workspaceName: ws.name,
+        reason: args.reason,
+      });
+
+      return { success: true, immediate: true };
+    } else {
+      // 7-day grace period
+      const scheduledDeletionAt = now + 7 * 86400000;
+      await ctx.db.patch(targetWorkspaceId, {
+        status: "deleting",
+        deletionRequestedAt: now,
+        deletionScheduledAt: scheduledDeletionAt,
+        deletedBy: admin._id,
+        updatedAt: now,
+      });
+
+      // Audit log event: admin.workspace_deleted (critical severity)
+      await ctx.db.insert("auditLogs", {
+        actorId: admin._id,
+        actorUserId: admin._id,
+        targetWorkspaceId,
+        workspaceId: targetWorkspaceId,
+        organizationId: ws.organizationId,
+        eventType: "admin.workspace_deleted",
+        action: "admin.workspace_deleted",
+        entityType: "workspace",
+        entityId: targetWorkspaceId,
+        resource: "workspaces",
+        severity: "critical",
+        metadata: {
+          workspaceName: ws.name,
+          slug: ws.slug,
+          reason: args.reason,
+          notes: args.notes,
+          adminForceDelete: false,
+          scheduledDeletionAt,
+          adminUserId: admin._id,
+        },
+        createdAt: now,
+        timestamp: now,
+      });
+
+      await logAudit(ctx, admin._id, "ORGANIZATION_DELETION_SCHEDULED", targetWorkspaceId, {
+        workspaceName: ws.name,
+        reason: args.reason,
+        scheduledDeletionAt,
+      });
+
+      return { success: true, immediate: false, scheduled: true, scheduledDeletionAt };
+    }
+  },
+});
+
+export const deleteWorkspace = deleteOrganization;
 
 /**
  * transferOwnership
@@ -503,13 +1099,14 @@ export const resetOnboarding = mutation({
 });
 
 /**
- * deleteOrganization
- * Permanently deletes an organization and cleans up its memberships and products
+ * extendTrial
+ * Super Admin ability to extend Free Trial duration by N days
  */
-export const deleteOrganization = mutation({
+export const extendTrial = mutation({
   args: {
     sessionToken: v.string(),
     workspaceId: v.id("workspaces"),
+    days: v.number(),
   },
   handler: async (ctx, args) => {
     const { admin } = await verifyAdminSession(ctx, args.sessionToken);
@@ -517,33 +1114,286 @@ export const deleteOrganization = mutation({
     const ws = await ctx.db.get(args.workspaceId);
     if (!ws) throw new Error("Organization not found.");
 
-    const name = ws.name;
-
-    // 1. Delete memberships
-    const memberships = await ctx.db
-      .query("workspaceMemberships")
+    let subscription = await ctx.db
+      .query("subscriptions")
       .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
-      .collect();
-    for (const m of memberships) {
-      await ctx.db.delete(m._id);
+      .first();
+
+    if (!subscription && ws.organizationId) {
+      subscription = await ctx.db
+        .query("subscriptions")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", ws.organizationId!))
+        .first();
     }
 
-    // 2. Delete products
+    const now = Date.now();
+    const additionalMs = args.days * 24 * 60 * 60 * 1000;
+    const baseEnd = Math.max(
+      now,
+      subscription?.trialEndsAt || subscription?.currentPeriodEnd || (ws.createdAt + 30 * 86_400_000)
+    );
+    const newTrialEndsAt = baseEnd + additionalMs;
+
+    if (subscription) {
+      await ctx.db.patch(subscription._id, {
+        trialEndsAt: newTrialEndsAt,
+        trialEnd: newTrialEndsAt,
+        currentPeriodEnd: newTrialEndsAt,
+        status: "trial",
+        updatedAt: now,
+      });
+    } else {
+      await ctx.db.insert("subscriptions", {
+        organizationId: ws.organizationId || (ws._id as any),
+        workspaceId: ws._id,
+        userId: ws.ownerId,
+        planKey: "free_trial",
+        status: "trial",
+        billingInterval: "monthly",
+        currentPeriodStart: now,
+        currentPeriodEnd: newTrialEndsAt,
+        trialStart: now,
+        trialEnd: newTrialEndsAt,
+        trialEndsAt: newTrialEndsAt,
+        amount: 0,
+        currency: ws.currency || "NGN",
+        cancelAtPeriodEnd: false,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    // Also extend trial on active workspaceProducts
     const products = await ctx.db
       .query("workspaceProducts")
       .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
       .collect();
+
     for (const p of products) {
-      await ctx.db.delete(p._id);
+      await ctx.db.patch(p._id, {
+        trialEndsAt: newTrialEndsAt,
+      });
     }
 
-    // 3. Delete workspace
-    await ctx.db.delete(args.workspaceId);
+    await logAudit(ctx, admin._id, "ORGANIZATION_TRIAL_EXTENDED", args.workspaceId, {
+      workspaceName: ws.name,
+      addedDays: args.days,
+      newTrialEndsAt,
+    });
 
-    await logAudit(ctx, admin._id, "ORGANIZATION_DELETED", args.workspaceId, {
-      workspaceName: name,
+    return { success: true, newTrialEndsAt };
+  },
+});
+
+/**
+ * updateOrganizationPlan
+ * Super Admin ability to switch an organization between Free Trial and Standard
+ */
+export const updateOrganizationPlan = mutation({
+  args: {
+    sessionToken: v.string(),
+    workspaceId: v.id("workspaces"),
+    planKey: v.string(),
+    status: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+
+    const ws = await ctx.db.get(args.workspaceId);
+    if (!ws) throw new Error("Organization not found.");
+
+    let subscription = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
+      .first();
+
+    if (!subscription && ws.organizationId) {
+      subscription = await ctx.db
+        .query("subscriptions")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", ws.organizationId!))
+        .first();
+    }
+
+    const now = Date.now();
+    const isFreeTrial = args.planKey === "free_trial" || args.planKey === "free";
+    const status = args.status || (isFreeTrial ? "trial" : "active");
+    const periodEnd = isFreeTrial ? now + 30 * 86_400_000 : now + 30 * 86_400_000;
+
+    if (subscription) {
+      await ctx.db.patch(subscription._id, {
+        planKey: args.planKey,
+        status: status as any,
+        currentPeriodEnd: periodEnd,
+        trialEndsAt: isFreeTrial ? periodEnd : undefined,
+        updatedAt: now,
+      });
+    } else {
+      await ctx.db.insert("subscriptions", {
+        organizationId: ws.organizationId || (ws._id as any),
+        workspaceId: ws._id,
+        userId: ws.ownerId,
+        planKey: args.planKey,
+        status: status as any,
+        billingInterval: "monthly",
+        currentPeriodStart: now,
+        currentPeriodEnd: periodEnd,
+        trialStart: isFreeTrial ? now : undefined,
+        trialEnd: isFreeTrial ? periodEnd : undefined,
+        trialEndsAt: isFreeTrial ? periodEnd : undefined,
+        amount: isFreeTrial ? 0 : 750000,
+        currency: ws.currency || "NGN",
+        cancelAtPeriodEnd: false,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    await ctx.db.patch(args.workspaceId, {
+      planId: args.planKey,
+      updatedAt: now,
+    });
+
+    await logAudit(ctx, admin._id, "ORGANIZATION_PLAN_UPDATED", args.workspaceId, {
+      workspaceName: ws.name,
+      planKey: args.planKey,
+      status,
     });
 
     return { success: true };
   },
 });
+
+/**
+ * getAdminOrganizationFullSettings
+ * Authoritative cross-tenant inspector for Superadmin.
+ */
+export const getAdminOrganizationFullSettings = query({
+  args: {
+    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
+    sessionToken: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    await verifyAdminSession(ctx, args.sessionToken);
+
+    const ws = await resolveWorkspace(ctx, args.workspaceId);
+    if (!ws) return null;
+
+    const [settings, branding, branches, apps] = await Promise.all([
+      ctx.db
+        .query("workspaceSettings")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", ws._id))
+        .first(),
+      ctx.db
+        .query("workspaceBranding")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", ws._id))
+        .first(),
+      ctx.db
+        .query("branches")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", ws._id))
+        .collect(),
+      ctx.db
+        .query("applicationSettings")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", ws._id))
+        .collect(),
+    ]);
+
+    let owner: any = null;
+    if (ws.ownerId) {
+      owner = await ctx.db.get(ws.ownerId);
+    }
+
+    return {
+      workspace: ws,
+      owner: owner ? { id: owner._id, name: owner.name, email: owner.email } : null,
+      settings: settings || {},
+      branding: branding || {},
+      branches: branches || [],
+      applications: apps || [],
+    };
+  },
+});
+
+/**
+ * adminTransferOrganizationOwnership
+ * Break-glass tool to reassign OWNER role with justification.
+ */
+export const adminTransferOrganizationOwnership = mutation({
+  args: {
+    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
+    newOwnerUserId: v.union(v.id("users"), v.string()),
+    reason: v.string(),
+    ticketNumber: v.optional(v.string()),
+    sessionToken: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+
+    const ws = await resolveWorkspace(ctx, args.workspaceId);
+    if (!ws) throw new Error("Workspace not found");
+
+    const newOwner: any = await ctx.db.get(args.newOwnerUserId as any);
+    if (!newOwner) throw new Error("Target user does not exist");
+
+    const now = Date.now();
+    const previousOwnerId = ws.ownerId;
+
+    // Update workspace owner
+    await ctx.db.patch(ws._id, {
+      ownerId: newOwner._id,
+      updatedAt: now,
+    });
+
+    // Also update organization record if present
+    if (ws.organizationId) {
+      await ctx.db.patch(ws.organizationId, {
+        ownerId: newOwner._id,
+        updatedAt: now,
+      });
+
+      // Demote previous owner to ADMIN if membership exists
+      if (previousOwnerId) {
+        const prevMember = await ctx.db
+          .query("organizationMemberships")
+          .withIndex("by_org_and_user", (q) =>
+            q.eq("organizationId", ws.organizationId!).eq("userId", previousOwnerId)
+          )
+          .first();
+        if (prevMember) {
+          await ctx.db.patch(prevMember._id, { role: "ADMIN", updatedAt: now });
+        }
+      }
+
+      // Promote new owner membership
+      const targetMember = await ctx.db
+        .query("organizationMemberships")
+        .withIndex("by_org_and_user", (q) =>
+          q.eq("organizationId", ws.organizationId!).eq("userId", newOwner._id)
+        )
+        .first();
+
+      if (targetMember) {
+        await ctx.db.patch(targetMember._id, { role: "OWNER", updatedAt: now });
+      } else {
+        await ctx.db.insert("organizationMemberships", {
+          organizationId: ws.organizationId,
+          userId: newOwner._id,
+          role: "OWNER",
+          status: "ACTIVE",
+          joinedAt: now,
+          updatedAt: now,
+        });
+      }
+    }
+
+    await logAudit(ctx, admin._id, "ORGANIZATION_OWNERSHIP_TRANSFERRED", ws._id, {
+      previousOwnerId,
+      newOwnerUserId: newOwner._id,
+      newOwnerEmail: newOwner.email,
+      reason: args.reason,
+      ticketNumber: args.ticketNumber,
+    });
+
+    return { success: true };
+  },
+});
+

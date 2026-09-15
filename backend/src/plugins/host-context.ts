@@ -77,8 +77,8 @@ const hostContextPluginAsync: FastifyPluginAsync = async (fastify: FastifyInstan
         // Default local development fallback
         request.hostContext = {
           environment: (process.env.NODE_ENV as any) === 'production' ? 'production' : 'development',
-          application: 'accounts',
-          hostname: 'accounts.orviohub.localhost',
+          application: 'marketing',
+          hostname: 'orviohub.localhost',
         };
         return;
       }
@@ -93,13 +93,16 @@ const hostContextPluginAsync: FastifyPluginAsync = async (fastify: FastifyInstan
   });
 
   // Host context endpoint for diagnostics and health verification
-  fastify.get('/v1/host-context', async (request: FastifyRequest) => {
+  const hostContextHandler = async (request: FastifyRequest) => {
     return {
       status: 'ok',
       hostContext: request.hostContext,
       timestamp: new Date().toISOString(),
     };
-  });
+  };
+
+  fastify.get('/api/v1/host-context', hostContextHandler);
+  fastify.get('/v1/host-context', hostContextHandler);
 
   // System Readiness & Version Endpoints
   fastify.get('/ready', async () => {

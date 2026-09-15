@@ -43,6 +43,25 @@ export const getByPhone = query({
   },
 });
 
+// Query: Check if a phone number is already verified by another user
+export const isPhoneRegistered = query({
+  args: {
+    phoneNormalized: v.string(),
+    excludeUserId: v.optional(v.id("users")),
+  },
+  handler: async (ctx, args) => {
+    const records = await ctx.db
+      .query("userPhones")
+      .withIndex("by_phone", (q) => q.eq("phoneNormalized", args.phoneNormalized))
+      .collect();
+
+    // A number is "taken" if there's a verified record belonging to a different user
+    return records.some(
+      (r) => r.isVerified && (!args.excludeUserId || r.userId !== args.excludeUserId)
+    );
+  },
+});
+
 // Query: Count recent OTP requests in last X minutes (for rate limiting)
 export const countRecentOtps = query({
   args: {

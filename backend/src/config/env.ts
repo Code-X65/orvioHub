@@ -4,7 +4,7 @@ import { z } from 'zod';
 dotenv.config();
 
 const envSchema = z.object({
-  PORT: z.coerce.number().default(3000),
+  PORT: z.coerce.number().default(4000),
   HOST: z.string().default('0.0.0.0'),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   LOG_LEVEL: z.string().default('info'),
@@ -19,7 +19,12 @@ const envSchema = z.object({
   SENTRY_DSN: z.string().optional(),
   BETTERSTACK_LOGTAIL_TOKEN: z.string().optional(),
   JWT_SECRET: z.string().default('orvio-hub-super-secret-key-change-in-production-min32chars'),
-  APP_URL: z.string().default('http://accounts.orviohub.localhost:4000'),
+  APP_URL: z.string().default('http://orviohub.localhost:3000'),
+  BASE_URL_MARKETING: z.string().default('http://orviohub.localhost:3000'),
+  BASE_URL_ACCOUNT: z.string().default('http://account.orviohub.localhost:3000'),
+  BASE_URL_HOME: z.string().default('http://home.orviohub.localhost:3000'),
+  BASE_URL_INVENTORY: z.string().default('http://inventory.orviohub.localhost:3000'),
+  COOKIE_DOMAIN: z.string().default('.orviohub.localhost'),
   INVITATION_EXPIRY_DAYS: z.coerce.number().default(7),
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
@@ -28,11 +33,6 @@ const envSchema = z.object({
   FACEBOOK_APP_ID: z.string().optional(),
   FACEBOOK_APP_SECRET: z.string().optional(),
   FACEBOOK_REDIRECT_URI: z.string().optional(),
-  APPLE_CLIENT_ID: z.string().optional(),
-  APPLE_REDIRECT_URI: z.string().optional(),
-  APPLE_TEAM_ID: z.string().optional(),
-  APPLE_KEY_ID: z.string().optional(),
-  APPLE_PRIVATE_KEY: z.string().optional(),
   PAYSTACK_SECRET_KEY: z.string().optional(),
   PAYSTACK_PUBLIC_KEY: z.string().optional(),
   FLUTTERWAVE_SECRET_KEY: z.string().optional(),
@@ -47,6 +47,18 @@ if (env.NODE_ENV === 'production' && !env.CONVEX_URL) {
   throw new Error('CONVEX_URL is required in production.');
 }
 
-if (env.NODE_ENV === 'production' && (!env.BREVO_API_KEY && !env.RESEND_API_KEY)) {
+if (env.NODE_ENV === 'production' && !env.BREVO_API_KEY && !env.RESEND_API_KEY) {
   throw new Error('BREVO_API_KEY (or RESEND_API_KEY) and EMAIL_FROM are required in production.');
+}
+
+if (env.NODE_ENV === 'production') {
+  const secret = process.env.JWT_SECRET;
+  if (!secret || secret === 'orvio-hub-super-secret-key-change-in-production-min32chars') {
+    throw new Error(
+      'JWT_SECRET must be set to a secure, random string in production (cannot use default).'
+    );
+  }
+  if (secret.length < 32) {
+    throw new Error('JWT_SECRET must be at least 32 characters in production.');
+  }
 }

@@ -7,6 +7,9 @@ export const adminOrganizationsApi = {
     search?: string;
     statusFilter?: string;
     typeFilter?: string;
+    planFilter?: string;
+    branchFilter?: string;
+    onboardingFilter?: string;
     page?: number;
     pageSize?: number;
     sortBy?: string;
@@ -22,15 +25,23 @@ export const adminOrganizationsApi = {
     });
   },
 
-  async suspendOrganization(sessionToken: string, workspaceId: string, reason?: string) {
+  async suspendOrganization(sessionToken: string, workspaceId: string, reason?: string, notes?: string) {
     return await convex.mutation(anyApi.adminOrganizations.suspendOrganization, {
       sessionToken,
       workspaceId: workspaceId as any,
       reason,
+      notes,
     });
   },
 
   async activateOrganization(sessionToken: string, workspaceId: string) {
+    return await convex.mutation(anyApi.adminOrganizations.activateOrganization, {
+      sessionToken,
+      workspaceId: workspaceId as any,
+    });
+  },
+
+  async restoreOrganization(sessionToken: string, workspaceId: string) {
     return await convex.mutation(anyApi.adminOrganizations.activateOrganization, {
       sessionToken,
       workspaceId: workspaceId as any,
@@ -68,10 +79,60 @@ export const adminOrganizationsApi = {
     });
   },
 
-  async deleteOrganization(sessionToken: string, workspaceId: string) {
+  async deleteOrganization(
+    sessionToken: string,
+    workspaceId: string,
+    options?: {
+      reason?: string;
+      notes?: string;
+      cancelSubscriptions?: boolean;
+      adminForceDelete?: boolean;
+    }
+  ) {
     return await convex.mutation(anyApi.adminOrganizations.deleteOrganization, {
       sessionToken,
       workspaceId: workspaceId as any,
+      ...options,
+    });
+  },
+
+  async extendTrial(sessionToken: string, workspaceId: string, days: number = 14) {
+    return await convex.mutation(anyApi.adminOrganizations.extendTrial, {
+      sessionToken,
+      workspaceId: workspaceId as any,
+      days,
+    });
+  },
+
+  async updateOrganizationPlan(sessionToken: string, workspaceId: string, planKey: string, status?: string) {
+    return await convex.mutation(anyApi.adminOrganizations.updateOrganizationPlan, {
+      sessionToken,
+      workspaceId: workspaceId as any,
+      planKey,
+      status,
+    });
+  },
+
+  async getFullSettings(sessionToken: string | null | undefined, workspaceId: string) {
+    return await convex.query(anyApi.adminOrganizations.getAdminOrganizationFullSettings, {
+      sessionToken: sessionToken || undefined,
+      workspaceId: workspaceId as any,
+    });
+  },
+
+  async emergencyTransferOwnership(
+    sessionToken: string | null | undefined,
+    workspaceId: string,
+    newOwnerUserId: string,
+    reason: string,
+    ticketNumber?: string
+  ) {
+    return await convex.mutation(anyApi.adminOrganizations.adminTransferOrganizationOwnership, {
+      sessionToken: sessionToken || undefined,
+      workspaceId: workspaceId as any,
+      newOwnerUserId: newOwnerUserId as any,
+      reason,
+      ticketNumber,
     });
   },
 };

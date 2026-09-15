@@ -15,7 +15,7 @@ export const HeroCTA: React.FC = () => {
           {/* Primary CTA */}
           <Link
             to="/signup"
-            className="group w-full sm:w-auto inline-flex items-center justify-center gap-2.5 px-8 py-4 text-base font-bold text-white bg-[#0066FF] hover:bg-[#0052CC] active:bg-[#0047B3] rounded-2xl transition-all duration-200 shadow-lg shadow-blue-500/25 hover:shadow-xl hover:shadow-blue-500/35 hover:-translate-y-0.5"
+            className="group w-full sm:w-auto inline-flex items-center justify-center gap-2.5 px-8 py-4 text-base font-bold text-white bg-[#0066FF] hover:bg-[#0052CC] active:bg-[#0047B3] rounded-sm transition-all duration-200 shadow-lg shadow-blue-500/25 hover:shadow-xl hover:shadow-blue-500/35 hover:-translate-y-0.5"
           >
             <span>Get Started Free</span>
             <ArrowRight className="w-5 h-5 transition-transform duration-200 group-hover:translate-x-1" />
@@ -24,10 +24,10 @@ export const HeroCTA: React.FC = () => {
           {/* Secondary CTA */}
           <button
             onClick={() => setDemoModalOpen(true)}
-            className="group w-full sm:w-auto inline-flex items-center justify-center gap-2.5 px-7 py-4 text-base font-bold text-slate-800 bg-white hover:bg-slate-50 border border-slate-200/90 hover:border-blue-300 rounded-2xl transition-all duration-200 shadow-xs hover:shadow-md hover:-translate-y-0.5 focus:outline-none"
+            className="group w-full sm:w-auto inline-flex items-center justify-center gap-2.5 px-7 py-4 text-base font-bold text-slate-800 bg-white hover:bg-slate-50 border border-slate-200/90 hover:border-blue-300 rounded-sm transition-all duration-200 shadow-xs hover:shadow-md hover:-translate-y-0.5 focus:outline-none"
           >
             <span>Book a Demo</span>
-            <div className="w-6 h-6 rounded-full bg-blue-50 text-blue-600 group-hover:bg-blue-600 group-hover:text-white flex items-center justify-center transition-colors">
+            <div className="w-6 h-6 rounded-sm bg-blue-50 text-blue-600 group-hover:bg-blue-600 group-hover:text-white flex items-center justify-center transition-colors">
               <Play className="w-3 h-3 fill-current ml-0.5" />
             </div>
           </button>
@@ -59,10 +59,10 @@ export const HeroCTA: React.FC = () => {
       {/* Interactive Demo Video Modal */}
       {demoModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="relative w-full max-w-3xl rounded-3xl bg-white p-6 sm:p-8 shadow-2xl border border-slate-200">
+          <div className="relative w-full max-w-3xl rounded-sm bg-white p-6 sm:p-8 shadow-2xl border border-slate-200">
             <button
               onClick={() => setDemoModalOpen(false)}
-              className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-700 rounded-full hover:bg-slate-100 transition-colors"
+              className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-700 rounded-sm hover:bg-slate-100 transition-colors"
             >
               <X className="w-5 h-5" />
             </button>
@@ -74,7 +74,7 @@ export const HeroCTA: React.FC = () => {
             </div>
 
             {/* Interactive demo preview card */}
-            <div className="relative aspect-video w-full rounded-2xl bg-gradient-to-tr from-slate-900 to-blue-950 flex flex-col items-center justify-center text-white p-6 overflow-hidden">
+            <div className="relative aspect-video w-full rounded-sm bg-gradient-to-tr from-slate-900 to-blue-950 flex flex-col items-center justify-center text-white p-6 overflow-hidden">
               <div className="absolute inset-0 bg-[radial-gradient(#3b82f6_1px,transparent_1px)] [background-size:16px_16px] opacity-20" />
               <img src="/orvio-logo.png" alt="OrvioHub" className="h-10 w-auto mb-4 invert brightness-200 opacity-90" />
               <div className="text-lg font-bold">Interactive Guided Tour</div>

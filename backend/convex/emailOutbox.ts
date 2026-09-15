@@ -1,13 +1,7 @@
 import { mutation, query } from "./_generated/server.js";
 import { v } from "convex/values";
 
-const template = v.union(
-  v.literal("verification"),
-  v.literal("invitation"),
-  v.literal("onboardingCompleted"),
-  v.literal("passwordReset"),
-  v.literal("emailChange")
-);
+const template = v.string();
 
 export const enqueue = mutation({
   args: { to: v.string(), template, payload: v.any() },

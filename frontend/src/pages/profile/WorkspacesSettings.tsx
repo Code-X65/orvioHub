@@ -109,9 +109,26 @@ export const WorkspacesSettings: React.FC = () => {
         </div>
 
         {isLoading ? (
-          <div className="flex items-center justify-center py-16 text-slate-400">
-            <Loader2 className="w-6 h-6 animate-spin mr-2" />
-            <span>Loading organization memberships...</span>
+          <div className="space-y-4">
+            {[1, 2].map((i) => (
+              <div
+                key={i}
+                className="p-5 rounded-xs bg-white/5 border border-white/10 flex flex-col md:flex-row md:items-center justify-between gap-4 animate-pulse"
+              >
+                <div className="flex items-start gap-4">
+                  <div className="w-12 h-12 rounded-xs bg-white/10 shrink-0" />
+                  <div className="space-y-2">
+                    <div className="w-40 h-5 rounded-xs bg-white/10" />
+                    <div className="w-56 h-3.5 rounded-xs bg-white/5" />
+                    <div className="w-32 h-3 rounded-xs bg-white/5" />
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-20 h-8 rounded-xs bg-white/10" />
+                  <div className="w-16 h-8 rounded-xs bg-white/5" />
+                </div>
+              </div>
+            ))}
           </div>
         ) : (
           <div className="space-y-4">

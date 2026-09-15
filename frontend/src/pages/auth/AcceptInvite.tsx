@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
@@ -8,21 +8,30 @@ import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
 import { Building2, XCircle, Store } from 'lucide-react';
 import { toast } from 'sonner';
-import { useHost } from '@/host/useHost';
-import {
-  getAccountsUrl,
-  getLauncherUrl,
-  getLoginUrl,
-  getApplicationUrl,
-  type ApplicationKey,
-} from '@orviohub/shared';
+
+interface AppAccessItem {
+  productKey: string;
+  productName: string;
+  appRole: string;
+  branchIds: string[];
+  branches?: Array<{
+    id: string;
+    name: string;
+    code?: string;
+    city?: string;
+    state?: string;
+  }>;
+}
 
 interface InvitationDetails {
   id: string;
   type?: 'workspace' | 'organization';
   email: string;
   role: string;
+  organizationRole?: string;
+  appAccess?: AppAccessItem[];
   productKey?: string;
+  branchIds?: string[];
   workspaceId?: string;
   workspaceName?: string;
   workspaceLogoUrl?: string;
@@ -38,9 +47,10 @@ interface InvitationDetails {
 }
 
 export const AcceptInvite: React.FC = () => {
-  const { token } = useParams<{ token: string }>();
-  const host = useHost();
-  const env = host.environment;
+  const { token: pathToken } = useParams<{ token: string }>();
+  const [searchParams] = useSearchParams();
+  const token = pathToken || searchParams.get('token') || '';
+  const navigate = useNavigate();
 
   const { isAuthenticated, user, refreshSession } = useAuthStore();
   const { selectWorkspace } = useWorkspaceStore();
@@ -83,18 +93,18 @@ export const AcceptInvite: React.FC = () => {
 
       if (res.workspace?.id) {
         await selectWorkspace(res.workspace.id, res.productKey);
-        if (res.productKey && res.productKey in { inventory: 1, taskmanagement: 1 }) {
-          window.location.href = getApplicationUrl(res.productKey as ApplicationKey, env);
+        if (res.productKey === 'taskmanagement') {
+          navigate('/tasks');
         } else {
-          window.location.href = getLauncherUrl(env);
+          navigate('/inventory/dashboard');
         }
       } else {
-        window.location.href = getLauncherUrl(env);
+        navigate('/inventory/dashboard');
       }
     } catch (error: any) {
       toast.error(error.message || 'Failed to accept invitation');
       if (error.code === 'UNAUTHENTICATED') {
-        window.location.href = getLoginUrl(`/invitations/${token}`, env);
+        navigate(`/login?returnTo=${encodeURIComponent(`/invitations/${token}`)}`);
       }
     } finally {
       setIsAccepting(false);
@@ -106,7 +116,7 @@ export const AcceptInvite: React.FC = () => {
     try {
       await api.post(`/invitations/${token}/decline`);
       toast.info('Invitation declined');
-      window.location.href = getAccountsUrl(env);
+      navigate('/inventory/dashboard');
     } catch (err: any) {
       toast.error(err.message || 'Failed to decline');
     } finally {
@@ -137,7 +147,7 @@ export const AcceptInvite: React.FC = () => {
           <Button
             variant="outline"
             onClick={() => {
-              window.location.href = getLoginUrl('/', env);
+              navigate('/login');
             }}
             className="w-full"
           >
@@ -168,24 +178,70 @@ export const AcceptInvite: React.FC = () => {
           </p>
         </div>
 
-        <div className="bg-surface/50 border border-white/5 rounded-sm p-4 text-left space-y-2">
-          <div className="flex justify-between text-sm">
-            <span className="text-slate-500">Email</span>
-            <span className="text-slate-300 font-medium">{details.email}</span>
+        <div className="bg-surface/50 border border-white/5 rounded-xl p-5 text-left space-y-3.5">
+          <div className="flex justify-between items-center text-sm border-b border-white/5 pb-2.5">
+            <span className="text-slate-400">Invited Email</span>
+            <span className="text-slate-200 font-medium">{details.email}</span>
           </div>
-          <div className="flex justify-between text-sm">
-            <span className="text-slate-500">Platform Role</span>
-            <span className="text-primary font-medium uppercase font-mono text-xs">{details.role}</span>
+
+          <div className="flex justify-between items-center text-sm border-b border-white/5 pb-2.5">
+            <span className="text-slate-400">Organization Role</span>
+            <span className="text-indigo-400 font-semibold uppercase font-mono text-xs px-2.5 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/20">
+              {details.organizationRole || details.role}
+            </span>
           </div>
-          {details.productKey && (
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-500">Product Access</span>
+
+          {details.appAccess && details.appAccess.length > 0 ? (
+            <div className="space-y-2 pt-1">
+              <span className="text-xs font-semibold text-slate-400 block uppercase tracking-wider">
+                Application Access & Branches
+              </span>
+              <div className="space-y-2">
+                {details.appAccess.map((app) => (
+                  <div
+                    key={app.productKey}
+                    className="p-3 rounded-lg bg-black/40 border border-white/5 space-y-1.5"
+                  >
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-bold text-white flex items-center gap-1.5">
+                        <Store className="w-3.5 h-3.5 text-emerald-400" />
+                        {app.productName || app.productKey}
+                      </span>
+                      <span className="text-[11px] font-mono uppercase font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded">
+                        {app.appRole.replace('_', ' ')}
+                      </span>
+                    </div>
+
+                    <div className="text-[11px] text-slate-400">
+                      {app.branches && app.branches.length > 0 ? (
+                        <div className="flex flex-wrap items-center gap-1 mt-1">
+                          <span className="text-slate-500 mr-1">Branches:</span>
+                          {app.branches.map((b) => (
+                            <span
+                              key={b.id}
+                              className="px-1.5 py-0.5 rounded bg-slate-800/80 text-slate-300 text-[10px]"
+                            >
+                              {b.name} {b.city ? `(${b.city})` : ''}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-slate-400 italic">Organization-wide access</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : details.productKey ? (
+            <div className="flex justify-between items-center text-sm">
+              <span className="text-slate-400">Product Access</span>
               <span className="text-emerald-400 font-medium capitalize flex items-center gap-1">
                 <Store className="w-3.5 h-3.5" />
                 {details.productKey}
               </span>
             </div>
-          )}
+          ) : null}
         </div>
 
         {!isAuthenticated ? (
@@ -195,7 +251,7 @@ export const AcceptInvite: React.FC = () => {
             </p>
             <Button
               onClick={() => {
-                window.location.href = getLoginUrl(`/invitations/${token}`, env);
+                navigate(`/login?returnTo=${encodeURIComponent(`/invitations/${token}`)}`);
               }}
               className="w-full cursor-pointer"
             >
@@ -204,7 +260,7 @@ export const AcceptInvite: React.FC = () => {
             <Button
               variant="outline"
               onClick={() => {
-                window.location.href = `${getAccountsUrl(env)}/signup?returnTo=${encodeURIComponent(`/invitations/${token}`)}`;
+                navigate(`/signup?returnTo=${encodeURIComponent(`/invitations/${token}`)}`);
               }}
               className="w-full cursor-pointer"
             >

@@ -375,4 +375,161 @@ export const adminProductsRoutes: FastifyPluginAsync = async (fastify) => {
       }
     }
   );
+
+  // GET /api/v1/admin/applications/:appKey/workspaces - List all tenant workspaces using an app
+  fastify.get(
+    '/applications/:appKey/workspaces',
+    {
+      schema: {
+        tags: ['Admin Applications'],
+        summary: 'List all tenant workspaces activating a specific application with status and progress',
+        params: {
+          type: 'object',
+          required: ['appKey'],
+          properties: {
+            appKey: { type: 'string' },
+          },
+        },
+        querystring: {
+          type: 'object',
+          properties: {
+            status: { type: 'string' },
+            plan: { type: 'string' },
+            search: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { appKey } = request.params as { appKey: string };
+      const query = (request.query as { status?: string; plan?: string; search?: string }) || {};
+      const token =
+        (request.headers['x-admin-session'] as string) ||
+        (request.headers['x-admin-token'] as string) ||
+        request.headers['authorization']?.replace(/^Bearer\s+/i, '') ||
+        '';
+
+      try {
+        const workspaces = await dataService.listApplicationWorkspaces(token, appKey, {
+          status: query.status,
+          planKey: query.plan,
+          search: query.search,
+        });
+
+        return reply.send({
+          success: true,
+          data: { workspaces, count: workspaces.length },
+        });
+      } catch (err: any) {
+        return reply.status(500).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+            message: err.message || 'Failed to list application workspaces.',
+          },
+        });
+      }
+    }
+  );
+
+  // GET /api/v1/admin/applications/:appKey/stats - Summary metrics for an app
+  fastify.get(
+    '/applications/:appKey/stats',
+    {
+      schema: {
+        tags: ['Admin Applications'],
+        summary: 'Get aggregation metrics for a specific application',
+        params: {
+          type: 'object',
+          required: ['appKey'],
+          properties: {
+            appKey: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { appKey } = request.params as { appKey: string };
+      const token =
+        (request.headers['x-admin-session'] as string) ||
+        (request.headers['x-admin-token'] as string) ||
+        request.headers['authorization']?.replace(/^Bearer\s+/i, '') ||
+        '';
+
+      try {
+        const stats = await dataService.getApplicationStats(token, appKey);
+        return reply.send({
+          success: true,
+          data: { stats },
+        });
+      } catch (err: any) {
+        return reply.status(500).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+            message: err.message || 'Failed to fetch application stats.',
+          },
+        });
+      }
+    }
+  );
+
+  // POST /api/v1/admin/workspaces/:workspaceId/applications/:appKey/extend-trial
+  fastify.post(
+    '/workspaces/:workspaceId/applications/:appKey/extend-trial',
+    {
+      schema: {
+        tags: ['Admin Applications'],
+        summary: 'Extend trial for a workspace application',
+        params: {
+          type: 'object',
+          required: ['workspaceId', 'appKey'],
+          properties: {
+            workspaceId: { type: 'string' },
+            appKey: { type: 'string' },
+          },
+        },
+        body: {
+          type: 'object',
+          required: ['days'],
+          properties: {
+            days: { type: 'number' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId, appKey } = request.params as { workspaceId: string; appKey: string };
+      const body = request.body as { days: number };
+      const token =
+        (request.headers['x-admin-session'] as string) ||
+        (request.headers['x-admin-token'] as string) ||
+        request.headers['authorization']?.replace(/^Bearer\s+/i, '') ||
+        '';
+
+      try {
+        const result = await (dataService as any).mutate?.('adminProducts:grantExtendedTrial', {
+          sessionToken: token,
+          workspaceId: workspaceId as any,
+          productKey: appKey,
+          additionalDays: body.days || 14,
+        });
+
+        return reply.send({
+          success: true,
+          message: `Trial extended by ${body.days || 14} days successfully.`,
+          data: result,
+        });
+      } catch (err: any) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: err.message || 'Failed to extend trial.',
+          },
+        });
+      }
+    }
+  );
 };
+
