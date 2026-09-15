@@ -233,20 +233,38 @@ function renderEmail(message: { template: string; payload: Record<string, string
         }),
       };
 
-    case 'payment_success':
+    case 'invoice_generated':
+    case 'payment_success': {
+      const invoiceUrl =
+        message.payload.invoiceUrl ||
+        (message.payload.invoiceId
+          ? `${env.BASE_URL_HOME || 'http://home.orviohub.localhost:3000'}/invoices/${message.payload.invoiceId}`
+          : `${env.BASE_URL_HOME || 'http://home.orviohub.localhost:3000'}/settings/billing`);
+      const orgName = message.payload.orgName || 'your organization';
+      const formattedAmount = message.payload.amount ? Number(message.payload.amount).toLocaleString() : '7,500';
+
       return {
-        subject: 'Payment Confirmed - Orviohub Standard Activated ✅',
+        subject: `Payment received – Orviohub`,
         html: buildHtmlTemplate({
-          title: 'Payment Confirmed!',
-          preheader: 'Your Standard subscription is active.',
+          title: `Invoice for ${orgName} – Orviohub`,
+          preheader: `Payment confirmation and invoice ${message.payload.invoiceNumber || ''} for ${orgName}.`,
           contentHtml: `<p>Hello ${message.payload.firstName || message.payload.name || 'there'},</p>
-          <p>We've received your payment of <strong>₦${message.payload.amount || '7,500'}</strong> for <strong>${message.payload.orgName || 'your organization'}</strong>.</p>
-          <p>Your <strong>Standard Plan</strong> is now active. All features, apps, and higher transaction quotas have been unlocked.</p>
-          ${message.payload.nextPayment ? `<p>Next renewal date: <strong>${message.payload.nextPayment}</strong></p>` : ''}`,
-          buttonText: 'Go to Workspace Dashboard',
-          buttonUrl: message.payload.url || `${env.BASE_URL_INVENTORY || env.APP_URL}/dashboard`,
+          <p>We've received your payment of <strong>₦${formattedAmount}</strong> for <strong>${orgName}</strong>.</p>
+          <div style="margin: 20px 0; padding: 16px; background-color: #1a1118; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px;">
+            <p style="margin: 4px 0;"><strong>Invoice Number:</strong> ${message.payload.invoiceNumber || 'N/A'}</p>
+            <p style="margin: 4px 0;"><strong>Plan:</strong> ${message.payload.planName || 'Standard Plan'} (${message.payload.billingInterval || 'Monthly'})</p>
+            <p style="margin: 4px 0;"><strong>Amount Paid:</strong> ₦${formattedAmount}</p>
+            <p style="margin: 4px 0;"><strong>Date:</strong> ${message.payload.date || new Date().toLocaleDateString('en-NG', { year: 'numeric', month: 'short', day: 'numeric' })}</p>
+            <p style="margin: 4px 0;"><strong>Transaction Reference:</strong> ${message.payload.paymentReference || 'N/A'}</p>
+            <p style="margin: 4px 0;"><strong>Status:</strong> <span style="color: #4ade80; font-weight: 600;">PAID</span></p>
+          </div>
+          <p>Your subscription is active and all features have been unlocked.</p>`,
+          buttonText: 'Download / View Invoice',
+          buttonUrl: invoiceUrl,
+          footerNote: 'You can also view and download all past invoices from your Organization Billing settings.',
         }),
       };
+    }
 
     case 'payment_failed':
       return {
@@ -275,6 +293,121 @@ function renderEmail(message: { template: string; payload: Record<string, string
         }),
       };
 
+
+    case 'userDeletionRequested':
+    case 'accountDeletionRequest':
+      return {
+        subject: 'Your Orviohub account deletion request',
+        html: buildHtmlTemplate({
+          title: 'Account Deletion Request Received',
+          preheader: `Your account is scheduled for deletion on ${message.payload.scheduledDate || '7 days from now'}.`,
+          contentHtml: `<p>Hi ${message.payload.name || 'there'},</p>
+          <p>We received your request to delete your Orviohub account.</p>
+          <p>Your account is scheduled for deletion on <strong>${message.payload.scheduledDate || '7 days from now'}</strong> (7-day grace period).</p>
+          <div style="margin: 20px 0; padding: 16px; background-color: #1a1118; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px;">
+            <p style="margin-bottom: 8px; font-weight: 600; color: #f87171;">What will be deleted:</p>
+            <ul style="margin: 0; padding-left: 20px; font-size: 13px; color: #cbd5e1;">
+              <li>Your personal profile</li>
+              <li>Your login credentials & active sessions</li>
+              <li>Your notification preferences</li>
+            </ul>
+            <p style="margin-top: 12px; margin-bottom: 8px; font-weight: 600; color: #94a3b8;">What will be preserved:</p>
+            <ul style="margin: 0; padding-left: 20px; font-size: 13px; color: #cbd5e1;">
+              <li>Business records (transactions, inventory) with your personal data anonymized</li>
+              <li>Audit logs for compliance</li>
+            </ul>
+          </div>
+          <p>If you change your mind, you can cancel your deletion request anytime during the grace period:</p>`,
+          buttonText: 'Cancel Deletion Request',
+          buttonUrl: message.payload.cancellationLink || `${env.BASE_URL_ACCOUNT || env.APP_URL}/profile/delete`,
+          footerNote: 'Questions? Reply to this email or contact support@orviohub.com.',
+        }),
+      };
+
+    case 'userDeletionFinal':
+      return {
+        subject: 'Your Orviohub account has been deleted',
+        html: buildHtmlTemplate({
+          title: 'Account Permanently Deleted',
+          preheader: 'Your OrvioHub account has been deleted.',
+          contentHtml: `<p>Hi ${message.payload.name || 'there'},</p>
+          <p>Your Orviohub account and associated personal data have been permanently deleted in accordance with NDPA 2023 regulations.</p>
+          <p>All active sessions, credentials, and profile details have been erased. Historical business records made on behalf of organizations have had your personal identifiers anonymized.</p>`,
+          footerNote: 'If you have questions or believe this was done in error, please contact support at support@orviohub.com.',
+        }),
+      };
+
+    case 'accountSuspended':
+    case 'userSuspended':
+      return {
+        subject: 'Your Orviohub account has been suspended',
+        html: buildHtmlTemplate({
+          title: 'Account Suspended',
+          preheader: 'Your Orviohub account has been suspended by an administrator.',
+          contentHtml: `<p>Hi ${message.payload.name || 'there'},</p>
+          <p>Your Orviohub account has been suspended by our admin team.</p>
+          <div style="margin: 20px 0; padding: 16px; background-color: #1a1118; border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 4px;">
+            <p style="margin: 0;"><strong>Reason:</strong> ${message.payload.reason || 'Policy Violation'}</p>
+            ${message.payload.notes ? `<p style="margin-top: 8px; margin-bottom: 0; font-size: 12px; color: #94a3b8;">${message.payload.notes}</p>` : ''}
+          </div>
+          <p>You cannot sign in to any Orviohub product until this suspension is lifted.</p>
+          <p>If you believe this is a mistake or need clarification, please contact our support team:</p>`,
+          buttonText: 'Contact Support',
+          buttonUrl: 'mailto:support@orviohub.com',
+          footerNote: 'Support email: support@orviohub.com',
+        }),
+      };
+
+    case 'accountAdminDeleted':
+    case 'userAdminDeleted':
+      return {
+        subject: 'Your Orviohub account has been deleted',
+        html: buildHtmlTemplate({
+          title: 'Account Deleted by Administrator',
+          preheader: 'Your Orviohub account has been deleted.',
+          contentHtml: `<p>Hi ${message.payload.name || 'there'},</p>
+          <p>Your Orviohub account has been deleted by our admin team.</p>
+          <div style="margin: 20px 0; padding: 16px; background-color: #1a1118; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px;">
+            <p style="margin: 0;"><strong>Reason:</strong> ${message.payload.reason || 'Administrative Action'}</p>
+          </div>
+          <p>All active sessions and credentials have been permanently removed.</p>`,
+          footerNote: 'If you have questions, contact support at support@orviohub.com.',
+        }),
+      };
+
+    case 'workspaceSuspended':
+      return {
+        subject: 'Your workspace has been suspended - OrvioHub',
+        html: buildHtmlTemplate({
+          title: 'Workspace Suspended',
+          preheader: `Workspace ${message.payload.workspaceName || ''} suspended.`,
+          contentHtml: `<p>Hi ${message.payload.name || 'there'},</p>
+          <p>Your workspace <strong>${message.payload.workspaceName || 'Organization Workspace'}</strong> has been suspended by our platform admin team.</p>
+          <div style="margin: 20px 0; padding: 16px; background-color: #1a1118; border: 1px solid rgba(239,68,68,0.3); border-radius: 4px;">
+            <p style="margin: 0;"><strong>Reason:</strong> ${message.payload.reason || 'Policy Violation / Non-payment'}</p>
+          </div>
+          <p>All member access has been temporarily halted and billing paused. Business data has been safely preserved.</p>`,
+          buttonText: 'Contact Support',
+          buttonUrl: 'mailto:support@orviohub.com',
+          footerNote: 'Contact support@orviohub.com to discuss restoring your workspace.',
+        }),
+      };
+
+    case 'workspaceDeleted':
+      return {
+        subject: 'Your workspace has been deleted - OrvioHub',
+        html: buildHtmlTemplate({
+          title: 'Workspace Deleted',
+          preheader: `Workspace ${message.payload.workspaceName || ''} has been closed.`,
+          contentHtml: `<p>Hi ${message.payload.name || 'there'},</p>
+          <p>Your workspace <strong>${message.payload.workspaceName || 'Organization Workspace'}</strong> has been deleted per administrative request.</p>
+          <div style="margin: 20px 0; padding: 16px; background-color: #1a1118; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px;">
+            <p style="margin: 0;"><strong>Reason:</strong> ${message.payload.reason || 'Closure'}</p>
+          </div>
+          <p>Business records have been archived per statutory NDPA retention regulations.</p>`,
+          footerNote: 'For inquiries, reach out to support@orviohub.com.',
+        }),
+      };
 
     default:
       return {
@@ -312,16 +445,16 @@ export class EmailService {
     let token = '';
     if (template === 'verification') {
       event = 'USER_VERIFICATION_REQUESTED';
-      token = payload.url?.split('verify-email/')[1]?.split('?')[0] || payload.url?.split('token=')[1] || payload.token || '';
+      token = payload.token || payload.url?.split('token=')[1]?.split('&')[0] || payload.url?.split('verify-email/')[1]?.split('?')[0] || '';
     } else if (template === 'passwordReset') {
       event = 'PASSWORD_RESET_REQUESTED';
-      token = payload.url?.split('reset-password/')[1]?.split('?')[0] || payload.url?.split('token=')[1] || payload.token || '';
+      token = payload.token || payload.url?.split('token=')[1]?.split('&')[0] || payload.url?.split('reset-password/')[1]?.split('?')[0] || '';
     } else if (template === 'invitation') {
       event = 'ORGANIZATION_INVITATION_CREATED';
-      token = payload.url?.split('invitations/')[1]?.split('?')[0] || payload.url?.split('invite/')[1]?.split('?')[0] || payload.url?.split('token=')[1] || payload.token || '';
+      token = payload.token || payload.url?.split('token=')[1]?.split('&')[0] || payload.url?.split('invitations/')[1]?.split('?')[0] || payload.url?.split('invite/')[1]?.split('?')[0] || '';
     } else if (template === 'emailChange') {
       event = 'EMAIL_CHANGE_REQUESTED';
-      token = payload.url?.split('confirm-email/')[1]?.split('?')[0] || payload.url?.split('token=')[1] || payload.token || '';
+      token = payload.token || payload.url?.split('token=')[1]?.split('&')[0] || payload.url?.split('confirm-email/')[1]?.split('?')[0] || '';
     }
 
     this.sentEmails.push({

@@ -92,30 +92,37 @@ async function executeTokenRefresh(): Promise<string | null> {
   }
 }
 
+export interface ApiRequestOptions extends RequestInit {
+  bypassCache?: boolean;
+  cacheTtlMs?: number;
+}
+
+const inFlightGetRequests = new Map<string, Promise<any>>();
+const getResponseCache = new Map<string, { data: any; expiresAt: number }>();
+
+export function invalidateApiCache(pattern?: string | RegExp) {
+  if (!pattern) {
+    getResponseCache.clear();
+    return;
+  }
+  for (const key of getResponseCache.keys()) {
+    if (typeof pattern === 'string' && key.includes(pattern)) {
+      getResponseCache.delete(key);
+    } else if (pattern instanceof RegExp && pattern.test(key)) {
+      getResponseCache.delete(key);
+    }
+  }
+}
+
 async function fetcher<T>(
   endpoint: string,
-  options: RequestInit = {},
+  options: ApiRequestOptions = {},
   isRetry = false
 ): Promise<T> {
+  const method = (options.method || "GET").toUpperCase();
   const token = localStorage.getItem("orvio_auth_token");
-  const headers = new Headers(options.headers);
-
-  if (options.body && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-
-  if (token) {
-    headers.set("Authorization", `Bearer ${token}`);
-  }
-
   const activeWorkspaceId = localStorage.getItem("orvio_active_workspace_id");
   const activeBranchId = localStorage.getItem("orvio_active_branch_id");
-  if (activeWorkspaceId && !headers.has("x-workspace-id")) {
-    headers.set("x-workspace-id", activeWorkspaceId);
-  }
-  if (activeBranchId && !headers.has("x-branch-id")) {
-    headers.set("x-branch-id", activeBranchId);
-  }
 
   // Format endpoint
   const cleanEndpoint = endpoint.startsWith("/v1")
@@ -124,91 +131,154 @@ async function fetcher<T>(
     ? endpoint
     : `/api/v1${endpoint.startsWith("/") ? endpoint : `/${endpoint}`}`;
 
-  const fullUrl = `${API_ORIGIN}${cleanEndpoint}`;
-
-  const response = await fetch(fullUrl, {
-    ...options,
-    credentials: "include",
-    headers,
-  });
-
-  let data: any;
-  try {
-    data = await response.json();
-  } catch {
-    throw new ApiError("Failed to parse API response", "PARSE_ERROR");
+  // Invalidate cache when state-mutating requests occur
+  if (method !== "GET") {
+    invalidateApiCache();
   }
 
-  if (!response.ok || (data && typeof data.success === "boolean" && !data.success)) {
-    const isAuthProbeEndpoint =
-      endpoint.includes("/auth/login") ||
-      endpoint.includes("/auth/refresh") ||
-      endpoint.includes("/auth/logout") ||
-      endpoint.includes("/auth/me") ||
-      endpoint.includes("/auth/verify-email") ||
-      endpoint.includes("/invitations/");
+  // Deduplicate and cache GET requests
+  const isGet = method === "GET";
+  const cacheKey = `${token || "anon"}::${activeWorkspaceId || ""}::${activeBranchId || ""}::${cleanEndpoint}`;
 
-    if (response.status === 401 && !isRetry && !isAuthProbeEndpoint) {
-      if (!refreshPromise) {
-        refreshPromise = executeTokenRefresh();
-      }
+  if (isGet && !options.bypassCache) {
+    const cached = getResponseCache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.data as T;
+    }
 
-      const newToken = await refreshPromise;
-      if (newToken) {
-        return fetcher<T>(endpoint, options, true);
-      } else {
+    if (inFlightGetRequests.has(cacheKey)) {
+      return inFlightGetRequests.get(cacheKey) as Promise<T>;
+    }
+  }
+
+  const executeFetch = async (): Promise<T> => {
+    const headers = new Headers(options.headers);
+
+    if (options.body && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
+    }
+
+    if (token) {
+      headers.set("Authorization", `Bearer ${token}`);
+    }
+
+    if (activeWorkspaceId && !headers.has("x-workspace-id")) {
+      headers.set("x-workspace-id", activeWorkspaceId);
+    }
+    if (activeBranchId && !headers.has("x-branch-id")) {
+      headers.set("x-branch-id", activeBranchId);
+    }
+
+    const fullUrl = `${API_ORIGIN}${cleanEndpoint}`;
+
+    const response = await fetch(fullUrl, {
+      ...options,
+      credentials: "include",
+      headers,
+    });
+
+    let data: any;
+    try {
+      data = await response.json();
+    } catch {
+      throw new ApiError("Failed to parse API response", "PARSE_ERROR");
+    }
+
+    if (!response.ok || (data && typeof data.success === "boolean" && !data.success)) {
+      const isAuthProbeEndpoint =
+        endpoint.includes("/auth/login") ||
+        endpoint.includes("/auth/refresh") ||
+        endpoint.includes("/auth/logout") ||
+        endpoint.includes("/auth/me") ||
+        endpoint.includes("/auth/verify-email") ||
+        endpoint.includes("/invitations/");
+
+      if (response.status === 401 && !isRetry && !isAuthProbeEndpoint) {
+        if (!refreshPromise) {
+          refreshPromise = executeTokenRefresh();
+        }
+
+        const newToken = await refreshPromise;
+        if (newToken) {
+          return fetcher<T>(endpoint, options, true);
+        } else {
+          localStorage.removeItem("orvio_auth_token");
+          localStorage.removeItem("orvio_refresh_token");
+          window.dispatchEvent(new Event("auth:unauthorized"));
+        }
+      } else if (response.status === 401 && !isAuthProbeEndpoint) {
         localStorage.removeItem("orvio_auth_token");
         localStorage.removeItem("orvio_refresh_token");
         window.dispatchEvent(new Event("auth:unauthorized"));
       }
-    } else if (response.status === 401 && !isAuthProbeEndpoint) {
-      localStorage.removeItem("orvio_auth_token");
-      localStorage.removeItem("orvio_refresh_token");
-      window.dispatchEvent(new Event("auth:unauthorized"));
+
+      const errorMessage = data?.error?.message || data?.message || "An unexpected error occurred.";
+      throw new ApiError(
+        errorMessage,
+        data?.error?.code || data?.code || "UNKNOWN_ERROR",
+        data?.error?.fields || data?.fields,
+        data?.error?.details || data?.details,
+        response.status
+      );
     }
 
-    const errorMessage = data?.error?.message || data?.message || "An unexpected error occurred.";
-    throw new ApiError(
-      errorMessage,
-      data?.error?.code || data?.code || "UNKNOWN_ERROR",
-      data?.error?.fields || data?.fields,
-      data?.error?.details || data?.details,
-      response.status
-    );
+    const result = (data && "data" in data ? data.data : data) as T;
+
+    if (isGet && !options.bypassCache) {
+      const ttl = typeof options.cacheTtlMs === "number" ? options.cacheTtlMs : 5000;
+      if (ttl > 0) {
+        getResponseCache.set(cacheKey, {
+          data: result,
+          expiresAt: Date.now() + ttl,
+        });
+      }
+    }
+
+    return result;
+  };
+
+  if (isGet && !options.bypassCache) {
+    const promise = executeFetch().finally(() => {
+      inFlightGetRequests.delete(cacheKey);
+    });
+    inFlightGetRequests.set(cacheKey, promise);
+    return promise;
   }
 
-  return (data && "data" in data ? data.data : data) as T;
+  return executeFetch();
 }
 
 export const api = {
-  get: <T>(endpoint: string, options?: RequestInit) =>
+  get: <T>(endpoint: string, options?: ApiRequestOptions) =>
     fetcher<T>(endpoint, { ...options, method: "GET" }),
 
-  post: <T>(endpoint: string, body?: any, options?: RequestInit) =>
+  post: <T>(endpoint: string, body?: any, options?: ApiRequestOptions) =>
     fetcher<T>(endpoint, {
       ...options,
       method: "POST",
       body: body ? JSON.stringify(body) : undefined,
     }),
 
-  patch: <T>(endpoint: string, body?: any, options?: RequestInit) =>
+  patch: <T>(endpoint: string, body?: any, options?: ApiRequestOptions) =>
     fetcher<T>(endpoint, {
       ...options,
       method: "PATCH",
       body: body ? JSON.stringify(body) : undefined,
     }),
 
-  put: <T>(endpoint: string, body?: any, options?: RequestInit) =>
+  put: <T>(endpoint: string, body?: any, options?: ApiRequestOptions) =>
     fetcher<T>(endpoint, {
       ...options,
       method: "PUT",
       body: body ? JSON.stringify(body) : undefined,
     }),
 
-  delete: <T>(endpoint: string, body?: any, options?: RequestInit) =>
+  delete: <T>(endpoint: string, body?: any, options?: ApiRequestOptions) =>
     fetcher<T>(endpoint, {
       ...options,
       method: "DELETE",
       body: body ? JSON.stringify(body) : undefined,
     }),
+
+  invalidateCache: invalidateApiCache,
 };

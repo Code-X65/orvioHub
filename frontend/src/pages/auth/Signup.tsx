@@ -61,7 +61,7 @@ export const Signup: React.FC = () => {
   const returnTo = searchParams.get('return_to') || searchParams.get('returnTo') || '/workspaces';
 
   const [isLoading, setIsLoading] = useState(false);
-  const [socialLoading, setSocialLoading] = useState<'google' | 'facebook' | 'apple' | null>(null);
+  const [socialLoading, setSocialLoading] = useState<'google' | 'facebook' | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
@@ -88,6 +88,21 @@ export const Signup: React.FC = () => {
     setIsLoading(true);
     try {
       const name = `${data.firstName.trim()} ${data.lastName.trim()}`;
+
+      let formattedPhone: string | undefined = undefined;
+      if (data.phone?.trim()) {
+        const rawDigits = data.phone.trim().replace(/\D/g, '');
+        if (rawDigits.length > 0) {
+          if (rawDigits.startsWith('234')) {
+            formattedPhone = `+${rawDigits}`;
+          } else if (rawDigits.startsWith('0')) {
+            formattedPhone = `+234${rawDigits.slice(1)}`;
+          } else {
+            formattedPhone = `+234${rawDigits}`;
+          }
+        }
+      }
+
       await api.post('/auth/signup', {
         name,
         firstName: data.firstName.trim(),
@@ -95,7 +110,7 @@ export const Signup: React.FC = () => {
         displayName: name,
         email: data.email.trim().toLowerCase(),
         country: data.country || 'Nigeria',
-        phone: data.phone?.trim() || undefined,
+        phone: formattedPhone,
         password: data.password,
         passwordConfirmation: data.passwordConfirmation,
         acceptTerms: data.agreeTerms,
@@ -115,7 +130,7 @@ export const Signup: React.FC = () => {
     }
   };
 
-  const handleSocialAuth = (provider: 'google' | 'facebook' | 'apple') => {
+  const handleSocialAuth = (provider: 'google' | 'facebook') => {
     setSocialLoading(provider);
     const endpoint = `${API_BASE_URL}/auth/${provider}?returnTo=${encodeURIComponent(returnTo)}&product=${selectedProduct}`;
     window.location.href = endpoint;
@@ -134,15 +149,15 @@ export const Signup: React.FC = () => {
           </p>
         </div>
 
-        {/* Social Authentication: Google, Apple, Facebook */}
-        <div className="space-y-2">
+        {/* Social Authentication: Google, Facebook */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
           {/* Google */}
           <Button
             variant="outline"
             type="button"
             onClick={() => handleSocialAuth('google')}
             disabled={isLoading || !!socialLoading}
-            className="w-full h-10 bg-[#160f14] hover:bg-[#20151c] border-white/10 hover:border-white/20 text-slate-200 hover:text-white rounded-xs text-xs font-medium flex items-center justify-center gap-2.5 transition-all cursor-pointer shadow-sm"
+            className="w-full h-10 bg-[#160f14] hover:bg-[#20151c] border border-white/10 hover:border-white/20 text-slate-200 hover:text-white rounded-xs text-xs font-medium flex items-center justify-center gap-2.5 transition-all cursor-pointer shadow-sm"
           >
             {socialLoading === 'google' ? (
               <Spinner size="sm" className="text-white" />
@@ -154,45 +169,26 @@ export const Signup: React.FC = () => {
                 <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
               </svg>
             )}
-            <span>Continue with Google</span>
+            <span>Google</span>
           </Button>
 
-          {/* Apple & Facebook */}
-          <div className="grid grid-cols-2 gap-2">
-            <Button
-              variant="outline"
-              type="button"
-              onClick={() => handleSocialAuth('apple')}
-              disabled={isLoading || !!socialLoading}
-              className="w-full h-10 bg-[#160f14] hover:bg-[#20151c] border-white/10 hover:border-white/20 text-slate-200 hover:text-white rounded-xs text-xs font-medium flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm"
-            >
-              {socialLoading === 'apple' ? (
-                <Spinner size="sm" className="text-white" />
-              ) : (
-                <svg className="w-3.5 h-3.5 fill-current shrink-0" viewBox="0 0 24 24">
-                  <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.85c.66-.82 1.11-1.96.99-3.1-.96.04-2.12.64-2.8 1.44-.6.69-1.12 1.83-0.98 2.94 1.07.08 2.15-.55 2.79-1.28z" />
-                </svg>
-              )}
-              <span>Apple ID</span>
-            </Button>
-
-            <Button
-              variant="outline"
-              type="button"
-              onClick={() => handleSocialAuth('facebook')}
-              disabled={isLoading || !!socialLoading}
-              className="w-full h-10 bg-[#160f14] hover:bg-[#20151c] border-white/10 hover:border-white/20 text-slate-200 hover:text-white rounded-xs text-xs font-medium flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm"
-            >
-              {socialLoading === 'facebook' ? (
-                <Spinner size="sm" className="text-white" />
-              ) : (
-                <svg className="w-3.5 h-3.5 fill-[#1877F2] shrink-0" viewBox="0 0 24 24">
-                  <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
-                </svg>
-              )}
-              <span>Facebook</span>
-            </Button>
-          </div>
+          {/* Facebook */}
+          <Button
+            variant="outline"
+            type="button"
+            onClick={() => handleSocialAuth('facebook')}
+            disabled={isLoading || !!socialLoading}
+            className="w-full h-10 bg-[#160f14] hover:bg-[#20151c] border border-white/10 hover:border-white/20 text-slate-200 hover:text-white rounded-xs text-xs font-medium flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm"
+          >
+            {socialLoading === 'facebook' ? (
+              <Spinner size="sm" className="text-white" />
+            ) : (
+              <svg className="w-3.5 h-3.5 fill-[#1877F2] shrink-0" viewBox="0 0 24 24">
+                <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
+              </svg>
+            )}
+            <span>Facebook</span>
+          </Button>
         </div>
 
         <div className="relative my-3">
@@ -264,26 +260,21 @@ export const Signup: React.FC = () => {
           {/* Country & Phone Number */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
             <div className="space-y-1">
-              <Label htmlFor="country" className="text-xs font-medium text-slate-300">
-                Country
+              <Label htmlFor="country" className="text-xs font-medium text-slate-300 flex items-center justify-between">
+                <span>Country</span>
+                <span className="text-[10px] text-[#c79dbd] font-normal">Nigeria only</span>
               </Label>
               <div className="relative">
                 <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
                 <select
                   id="country"
-                  {...register('country')}
-                  className={`w-full pl-9 pr-3 h-10 bg-[#0e0a0d] border border-white/10 text-white rounded-xs text-xs focus:ring-1 focus:ring-[#714b67] focus:outline-none ${
-                    errors.country ? 'border-rose-500/80' : ''
-                  }`}
-                  disabled={isLoading || !!socialLoading}
+                  defaultValue="Nigeria"
+                  disabled
+                  className="w-full pl-9 pr-3 h-10 bg-[#0e0a0d]/70 border border-white/10 text-slate-200 rounded-xs text-xs cursor-not-allowed select-none appearance-none opacity-90 focus:outline-none"
                 >
-                  <option value="Nigeria">Nigeria</option>
-                  <option value="Ghana">Ghana</option>
-                  <option value="Kenya">Kenya</option>
-                  <option value="Rwanda">Rwanda</option>
-                  <option value="South Africa">South Africa</option>
-                  <option value="Other">Other</option>
+                  <option value="Nigeria">Nigeria 🇳🇬</option>
                 </select>
+                <input type="hidden" {...register('country')} value="Nigeria" />
               </div>
               {errors.country && <p className="text-[11px] text-rose-400">{errors.country.message}</p>}
             </div>
@@ -293,14 +284,21 @@ export const Signup: React.FC = () => {
                 <span>Phone number</span>
                 <span className="text-[10px] text-slate-500 font-normal">Optional</span>
               </Label>
-              <div className="relative">
-                <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
-                <Input
+              <div
+                className={`relative flex items-center h-10 bg-[#0e0a0d] border border-white/10 rounded-xs text-xs transition-all focus-within:ring-1 focus-within:ring-[#714b67] focus-within:border-[#714b67] ${
+                  errors.phone ? 'border-rose-500/80' : ''
+                }`}
+              >
+                <div className="flex items-center gap-1.5 pl-3 pr-2.5 h-full border-r border-white/10 text-slate-300 select-none shrink-0 bg-white/[0.02]">
+                  <Phone className="w-3.5 h-3.5 text-slate-500" />
+                  <span className="text-xs font-medium text-slate-200">+234</span>
+                </div>
+                <input
                   id="phone"
                   type="tel"
-                  placeholder="+234 801 234 5678"
+                  placeholder="801 234 5678"
                   {...register('phone')}
-                  className="pl-9 h-10 bg-[#0e0a0d] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs focus:ring-1 focus:ring-[#714b67]"
+                  className="w-full h-full bg-transparent px-3 text-white placeholder:text-slate-600 text-xs focus:outline-none disabled:opacity-50"
                   disabled={isLoading || !!socialLoading}
                 />
               </div>

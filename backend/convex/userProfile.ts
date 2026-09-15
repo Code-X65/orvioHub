@@ -396,8 +396,50 @@ export const requestAccountDeletion = mutation({
     const user = await resolveUser(ctx, args.userId);
     if (!user) throw new Error("USER_NOT_FOUND");
     const now = Date.now();
-    const days = args.coolingOffDays ?? 14;
+
+    // 1. Critical Check: Does user own active workspaces?
+    const ownedWorkspaces = await ctx.db
+      .query("workspaces")
+      .withIndex("by_owner", (q: any) => q.eq("ownerId", user._id))
+      .filter((q: any) => q.neq(q.field("status"), "deleted"))
+      .collect();
+
+    if (ownedWorkspaces.length > 0) {
+      const err: any = new Error(
+        "You must transfer ownership or close your workspaces before deleting your account."
+      );
+      err.code = "SOLE_OWNER_CANNOT_LEAVE_WORKSPACE";
+      err.ownedWorkspaces = ownedWorkspaces.map((w: any) => ({
+        workspaceId: w._id,
+        workspace: { name: w.name, slug: w.slug },
+      }));
+      throw err;
+    }
+
+    // 2. Critical Check: Is user the only superadmin?
+    if (user.role === "superadmin") {
+      const allUsers = await ctx.db.query("users").collect();
+      const superadmins = allUsers.filter(
+        (u: any) =>
+          u.role === "superadmin" &&
+          u.status !== "SUSPENDED" &&
+          u.status !== "suspended" &&
+          u.status !== "DELETED" &&
+          u.status !== "deleted"
+      );
+      if (superadmins.length <= 1) {
+        throw new Error("Cannot delete the only superadmin. Add another superadmin first.");
+      }
+    }
+
+    // 3. Grace period calculation (default 7 days)
+    const days = args.coolingOffDays ?? 7;
     const scheduledDeletionAt = now + days * 24 * 60 * 60 * 1000;
+
+    // 4. Generate cancellation token
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    const token = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 
     const existing = await ctx.db
       .query("accountDeletionRequests")
@@ -405,56 +447,194 @@ export const requestAccountDeletion = mutation({
       .filter((q: any) =>
         q.or(
           q.eq(q.field("status"), "PENDING"),
-          q.eq(q.field("status"), "COOLING_OFF")
+          q.eq(q.field("status"), "COOLING_OFF"),
+          q.eq(q.field("status"), "pending"),
+          q.eq(q.field("status"), "cooling_off")
         )
       )
       .first();
 
+    let deletionRequestId;
     if (existing) {
       await ctx.db.patch(existing._id, {
         reason: args.reason,
         scheduledDeletionAt,
         status: "COOLING_OFF",
+        deletionTokenHash: token,
+        requestedAt: now,
+        requestedBy: user._id,
       });
-      return await ctx.db.get(existing._id);
+      deletionRequestId = existing._id;
+    } else {
+      deletionRequestId = await ctx.db.insert("accountDeletionRequests", {
+        userId: user._id,
+        status: "COOLING_OFF",
+        reason: args.reason,
+        requestedBy: user._id,
+        requestedAt: now,
+        scheduledDeletionAt,
+        deletionTokenHash: token,
+        adminForceDelete: false,
+      });
     }
 
-    const id = await ctx.db.insert("accountDeletionRequests", {
-      userId: user._id,
-      status: "COOLING_OFF",
-      reason: args.reason,
-      requestedAt: now,
-      scheduledDeletionAt,
+    // 5. Update user deletion tracking
+    await ctx.db.patch(user._id, {
+      deletionRequestedAt: now,
+      deletionScheduledAt: scheduledDeletionAt,
+      updatedAt: now,
     });
 
-    return await ctx.db.get(id);
+    // 6. Queue confirmation email with cancellation link
+    const cancellationLink = `https://accounts.orviohub.com/profile/delete?cancelToken=${token}`;
+    await ctx.db.insert("emailOutbox", {
+      to: user.email,
+      template: "userDeletionRequested",
+      payload: {
+        name: user.name || user.firstName || "there",
+        email: user.email,
+        scheduledDate: new Date(scheduledDeletionAt).toLocaleDateString(),
+        cancellationLink,
+        gracePeriodDays: String(days),
+      },
+      status: "PENDING",
+      attempts: 0,
+      nextAttemptAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // 7. Audit log event: user.deletion_requested
+    await ctx.db.insert("auditLogs", {
+      actorId: user._id,
+      actorUserId: user._id,
+      targetUserId: user._id,
+      eventType: "user.deletion_requested",
+      action: "user.deletion_requested",
+      entityType: "user",
+      entityId: user._id,
+      resource: "users",
+      severity: "medium",
+      metadata: {
+        reason: args.reason,
+        gracePeriodDays: days,
+        scheduledDeletionAt,
+      },
+      createdAt: now,
+      timestamp: now,
+    });
+
+    return {
+      deletionRequestId,
+      scheduledDeletionAt,
+      gracePeriodDays: days,
+      token,
+      message: "Account deletion scheduled. Check email for cancellation link.",
+    };
   },
 });
 
 export const cancelAccountDeletion = mutation({
+  args: {
+    userId: v.optional(v.union(v.id("users"), v.string())),
+    token: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    let existing: any = null;
+
+    if (args.token) {
+      existing = await ctx.db
+        .query("accountDeletionRequests")
+        .withIndex("by_token_hash", (q: any) => q.eq("deletionTokenHash", args.token!))
+        .first();
+    } else if (args.userId) {
+      const user = await resolveUser(ctx, args.userId);
+      if (user) {
+        existing = await ctx.db
+          .query("accountDeletionRequests")
+          .withIndex("by_userId", (q: any) => q.eq("userId", user._id))
+          .filter((q: any) =>
+            q.or(
+              q.eq(q.field("status"), "PENDING"),
+              q.eq(q.field("status"), "COOLING_OFF"),
+              q.eq(q.field("status"), "pending"),
+              q.eq(q.field("status"), "cooling_off")
+            )
+          )
+          .first();
+      }
+    }
+
+    if (!existing) throw new Error("NO_ACTIVE_DELETION_REQUEST");
+
+    const now = Date.now();
+    await ctx.db.patch(existing._id, {
+      status: "CANCELLED",
+      cancelledAt: now,
+    });
+
+    // Clear user tracking flags
+    await ctx.db.patch(existing.userId, {
+      deletionRequestedAt: undefined,
+      deletionScheduledAt: undefined,
+      updatedAt: now,
+    });
+
+    // Audit log event: user.deletion_cancelled
+    await ctx.db.insert("auditLogs", {
+      actorId: existing.userId,
+      actorUserId: existing.userId,
+      targetUserId: existing.userId,
+      eventType: "user.deletion_cancelled",
+      action: "user.deletion_cancelled",
+      entityType: "user",
+      entityId: existing.userId,
+      resource: "users",
+      severity: "medium",
+      metadata: { cancelledBy: existing.userId },
+      createdAt: now,
+      timestamp: now,
+    });
+
+    return { success: true, message: "Account deletion has been successfully cancelled." };
+  },
+});
+
+export const getAccountDeletionStatus = query({
   args: { userId: v.union(v.id("users"), v.string()) },
   handler: async (ctx, args) => {
     const user = await resolveUser(ctx, args.userId);
-    if (!user) throw new Error("USER_NOT_FOUND");
-    const existing = await ctx.db
+    if (!user) return null;
+
+    const request = await ctx.db
       .query("accountDeletionRequests")
       .withIndex("by_userId", (q: any) => q.eq("userId", user._id))
       .filter((q: any) =>
         q.or(
           q.eq(q.field("status"), "PENDING"),
-          q.eq(q.field("status"), "COOLING_OFF")
+          q.eq(q.field("status"), "COOLING_OFF"),
+          q.eq(q.field("status"), "pending"),
+          q.eq(q.field("status"), "cooling_off")
         )
       )
       .first();
 
-    if (!existing) throw new Error("NO_ACTIVE_DELETION_REQUEST");
+    if (!request) return { hasActiveRequest: false, status: "NONE" };
+    const now = Date.now();
+    const daysRemaining = Math.max(
+      0,
+      Math.ceil((request.scheduledDeletionAt - now) / (24 * 60 * 60 * 1000))
+    );
 
-    await ctx.db.patch(existing._id, {
-      status: "CANCELLED",
-      cancelledAt: Date.now(),
-    });
-
-    return true;
+    return {
+      id: request._id,
+      hasActiveRequest: true,
+      status: request.status,
+      reason: request.reason,
+      requestedAt: request.requestedAt,
+      scheduledDeletionAt: request.scheduledDeletionAt,
+      daysRemaining,
+    };
   },
 });
 

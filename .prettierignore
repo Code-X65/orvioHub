@@ -1,0 +1,9 @@
+node_modules
+dist
+build
+coverage
+.system_generated
+.git
+.turbo
+convex/_generated
+pnpm-lock.yaml

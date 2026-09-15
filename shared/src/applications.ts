@@ -4,6 +4,9 @@ export type ApplicationKey =
   | "home"
   | "launcher"
   | "inventory"
+  | "pos"
+  | "booking"
+  | "gym"
   | "billing"
   | "taskmanagement";
 
@@ -108,6 +111,33 @@ export const applications: Record<ApplicationKey, ApplicationDefinition> = {
     productionUrl: "https://inventory.orviohub.com",
     preproductionUrl: "https://inventory.preprod.orviohub.com",
     developmentUrl: resolveDevUrl("inventory"),
+    enabled: true,
+  },
+  pos: {
+    key: "pos",
+    name: "Point of Sale",
+    subdomain: "inventory",
+    productionUrl: "https://inventory.orviohub.com/pos",
+    preproductionUrl: "https://inventory.preprod.orviohub.com/pos",
+    developmentUrl: resolveDevUrl("inventory", "/pos"),
+    enabled: true,
+  },
+  booking: {
+    key: "booking",
+    name: "Booking & Appointments",
+    subdomain: "home",
+    productionUrl: "https://home.orviohub.com/apps/booking",
+    preproductionUrl: "https://home.preprod.orviohub.com/apps/booking",
+    developmentUrl: resolveDevUrl("home", "/apps/booking"),
+    enabled: true,
+  },
+  gym: {
+    key: "gym",
+    name: "Gym Management",
+    subdomain: "home",
+    productionUrl: "https://home.orviohub.com/apps/gym",
+    preproductionUrl: "https://home.preprod.orviohub.com/apps/gym",
+    developmentUrl: resolveDevUrl("home", "/apps/gym"),
     enabled: true,
   },
   billing: {

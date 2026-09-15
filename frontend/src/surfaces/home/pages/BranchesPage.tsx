@@ -7,17 +7,22 @@ import { getCrossSubdomainUrl, type ApplicationKey } from '@/lib/domain';
 import { Header } from '@/components/landing/Header';
 import { WorkspaceSwitcher } from '@/components/workspace/WorkspaceSwitcher';
 import { Spinner } from '@/components/ui/spinner';
-import { Button } from '@/components/ui/button';
 import { BranchCreationModal } from '@/components/workspace/BranchCreationModal';
+import { BranchEditModal } from '@/components/workspace/BranchEditModal';
+import { UsageLimitBanner } from '@/components/billing/UsageLimitBanner';
+import { UpgradeModal } from '@/components/billing/UpgradeModal';
+import { useOrganizationEntitlements } from '@/hooks/useOrganizationEntitlements';
+import { api } from '@/lib/api';
+import { toast } from 'sonner';
 import {
   Warehouse,
   Plus,
-  ArrowRight,
-  MapPin,
-  Phone,
   CheckCircle2,
   ChevronDown,
   Layers,
+  Edit2,
+  Trash2,
+  Sparkles,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -38,12 +43,46 @@ export const BranchesPage: React.FC = () => {
   const appKey = (searchParams.get('app') || 'inventory').toLowerCase();
   const appDisplayName = APP_NAMES[appKey] || (appKey.charAt(0).toUpperCase() + appKey.slice(1));
 
-  const { currentWorkspace, workspaces, fetchWorkspaces, isLoading: isWsLoading } = useWorkspaceStore();
-  const { branches, activeBranch, setActiveBranch, loadBranches, isLoading: isBranchesLoading } = useBranchStore();
+  const { currentWorkspace, currentRole, workspaces, fetchWorkspaces, isLoading: isWsLoading } = useWorkspaceStore();
+  const { branches, activeBranch, branchesByOrgAndApp, setActiveBranch, loadBranches } = useBranchStore();
 
-  const [hasCheckedAutoSelect, setHasCheckedAutoSelect] = useState(false);
+  const { summary: entSummary } = useOrganizationEntitlements(currentWorkspace?.id);
+  const [userPermissions, setUserPermissions] = useState<any>(null);
+
+  const normalizedRole = (currentRole || (currentWorkspace as any)?.role || '').toLowerCase();
+  const isOwner = normalizedRole === 'owner';
+  const isOwnerOrAdmin = isOwner || normalizedRole === 'admin';
+  const canUpgrade = isOwner;
+  const canManageBranches = isOwnerOrAdmin;
+
+  // Synchronous cache derivation from useBranchStore memory cache
+  const cacheKey = currentWorkspace?.id ? `${currentWorkspace.id}::${appKey}` : '';
+  const cachedBranches = currentWorkspace?.id ? (branchesByOrgAndApp[cacheKey] || []) : [];
+
+  const [hasCheckedAutoSelect, setHasCheckedAutoSelect] = useState(
+    cachedBranches.length > 0 || branches.length > 0
+  );
+  const [isCheckingBranches, setIsCheckingBranches] = useState(
+    !cachedBranches.length && !!currentWorkspace?.id
+  );
   const [isAppDropdownOpen, setIsAppDropdownOpen] = useState(false);
   const [isCreatingBranch, setIsCreatingBranch] = useState(false);
+  const [editingBranch, setEditingBranch] = useState<Branch | null>(null);
+  const [deactivatePending, setDeactivatePending] = useState<Branch | null>(null);
+  const [isDeactivating, setIsDeactivating] = useState(false);
+  const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
+
+  // Synchronously derive initial plan from store
+  const initialPlan = (currentWorkspace?.planKey || currentWorkspace?.planId || 'free_trial').toLowerCase();
+  const [planKey, setPlanKey] = useState<string>(initialPlan);
+
+  // Keep planKey in sync if workspace changes
+  useEffect(() => {
+    if (currentWorkspace) {
+      const pk = (currentWorkspace.planKey || currentWorkspace.planId || 'free_trial').toLowerCase();
+      setPlanKey(pk);
+    }
+  }, [currentWorkspace?.id, currentWorkspace?.planKey, currentWorkspace?.planId]);
 
   useEffect(() => {
     const init = async () => {
@@ -57,25 +96,100 @@ export const BranchesPage: React.FC = () => {
   useEffect(() => {
     let isMounted = true;
     if (currentWorkspace?.id) {
+      const isCached = (branchesByOrgAndApp[`${currentWorkspace.id}::${appKey}`] || []).length > 0;
+      if (!isCached) {
+        setIsCheckingBranches(true);
+      }
+
       loadBranches(currentWorkspace.id, appKey)
         .then(() => {
-          if (isMounted) setHasCheckedAutoSelect(true);
+          if (isMounted) {
+            setHasCheckedAutoSelect(true);
+            setIsCheckingBranches(false);
+          }
         })
         .catch(() => {
-          if (isMounted) setHasCheckedAutoSelect(true);
+          if (isMounted) {
+            setHasCheckedAutoSelect(true);
+            setIsCheckingBranches(false);
+          }
         });
+
+      // Load subscription plan
+      api.get<any>(`/organizations/${currentWorkspace.id}/subscription`)
+        .then((res) => {
+          if (isMounted) {
+            const sub = res?.subscription || res?.data?.subscription || res;
+            const pk = (
+              sub?.activePlan ||
+              (sub?.status === 'active' ? (sub?.selectedPlan || sub?.planKey) : null) ||
+              sub?.planKey ||
+              res?.planKey ||
+              initialPlan
+            );
+            setPlanKey(String(pk).toLowerCase());
+          }
+        })
+        .catch(() => {});
+
+      // Load caller RBAC permissions
+      api.get<any>(`/organizations/${currentWorkspace.id}/my-permissions`)
+        .then((res) => {
+          if (isMounted && res?.data) {
+            setUserPermissions(res.data);
+          }
+        })
+        .catch(() => {});
     } else if (!isWsLoading && workspaces.length === 0) {
-      if (isMounted) setHasCheckedAutoSelect(true);
+      if (isMounted) {
+        setHasCheckedAutoSelect(true);
+        setIsCheckingBranches(false);
+      }
     }
-    return () => {
-      isMounted = false;
-    };
+    return () => { isMounted = false; };
   }, [currentWorkspace?.id, isWsLoading, workspaces.length, appKey, loadBranches]);
+
+  const isFreeTrial = planKey === 'free_trial' || planKey === 'free';
+  const effectiveBranches = cachedBranches.length > 0 ? cachedBranches : branches;
+  const atBranchLimit =
+    !isCheckingBranches &&
+    ((isFreeTrial && effectiveBranches.length >= 1) ||
+      Boolean(entSummary?.metrics?.branches?.isReached));
+
+  const isFullAdmin = isOwnerOrAdmin && (userPermissions?.isFullAdmin ?? true);
+  const visibleBranches = effectiveBranches.filter((b) => {
+    if (isFullAdmin) return true;
+    if (!userPermissions?.allowedBranches || userPermissions.allowedBranches.length === 0) return true;
+    const bId = b.id || b._id;
+    return userPermissions.allowedBranches.includes(bId);
+  });
+
+  const handleDeactivateBranch = async () => {
+    if (!deactivatePending || !currentWorkspace?.id) return;
+    const branchId = deactivatePending.id || deactivatePending._id || '';
+    setIsDeactivating(true);
+    try {
+      await api.delete(`/organizations/${currentWorkspace.id}/branches/${branchId}`);
+      toast.success(`Branch "${deactivatePending.name}" deactivated.`);
+      setDeactivatePending(null);
+      await loadBranches(currentWorkspace.id, appKey);
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to deactivate branch.');
+    } finally {
+      setIsDeactivating(false);
+    }
+  };
 
   const handleSelectBranch = (branch: Branch) => {
     setActiveBranch(branch);
     const branchId = branch.id || branch._id || '';
     const orgId = currentWorkspace?.id || '';
+
+    if (appKey === 'booking' || appKey === 'gym') {
+      toast.info(`${appDisplayName} branch operations is in private preview.`);
+      return;
+    }
+
     const targetUrl = getCrossSubdomainUrl(
       appKey as ApplicationKey,
       `/dashboard?branch=${encodeURIComponent(branchId)}${orgId ? `&org=${encodeURIComponent(orgId)}` : ''}`,
@@ -86,20 +200,8 @@ export const BranchesPage: React.FC = () => {
   };
 
   // Redirect to org picker if no workspace is currently selected
-  if (hasCheckedAutoSelect && !isWsLoading && !currentWorkspace) {
+  if (hasCheckedAutoSelect && !isWsLoading && !currentWorkspace && workspaces.length === 0) {
     return <Navigate to="/dashboard" replace />;
-  }
-
-  if (isBranchesLoading || (workspaces.length === 0 && isWsLoading) || !hasCheckedAutoSelect) {
-    return (
-      <div className="min-h-screen bg-black text-slate-100 flex flex-col">
-        <Header />
-        <div className="flex-1 flex flex-col items-center justify-center space-y-4">
-          <Spinner size="lg" className="text-[#714b67]" />
-          <p className="text-xs text-slate-400">Loading branch locations...</p>
-        </div>
-      </div>
-    );
   }
 
   const enabledApps = currentWorkspace?.enabledModules || ['inventory'];
@@ -108,9 +210,9 @@ export const BranchesPage: React.FC = () => {
     <div className="min-h-screen bg-black text-slate-100 flex flex-col selection:bg-[#714b67] selection:text-white">
       <Header />
 
-      <main className="flex-1 max-w-6xl w-full mx-auto px-6 py-10 space-y-8 animate-in fade-in duration-300">
+      <main className="flex-1 max-w-5xl w-full mx-auto px-6 py-10 space-y-6 animate-in fade-in duration-300">
         {/* Header with Breadcrumb & Dual Switchers */}
-        <div className="bg-[#120a11] border border-[#714b67]/30 rounded-2xl p-6 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-white/10">
           <div className="space-y-1">
             <div className="flex items-center gap-2 text-xs text-slate-400">
               <span
@@ -126,15 +228,12 @@ export const BranchesPage: React.FC = () => {
               >
                 {appDisplayName}
               </span>
-              <span className="text-[10px] font-bold text-slate-400 bg-white/5 px-2 py-0.5 rounded-full border border-white/10 ml-1">
-                Step 3 of 3: Branch Selection
-              </span>
             </div>
-            <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-              Select Branch Location
+            <h1 className="text-xl font-bold text-white tracking-tight">
+              Branches
             </h1>
             <p className="text-xs text-slate-400">
-              Choose the physical store, warehouse, or outlet you are operating today.
+              Select a branch location to open {appDisplayName}.
             </p>
           </div>
 
@@ -144,7 +243,7 @@ export const BranchesPage: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setIsAppDropdownOpen(!isAppDropdownOpen)}
-                className="h-8 px-3 rounded-xs bg-[#0e0a0d] hover:bg-white/5 border border-white/10 text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer transition-colors"
+                className="h-8 px-3 rounded-sm bg-transparent hover:bg-white/5 border border-white/10 text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer transition-colors"
               >
                 <Layers className="w-3.5 h-3.5 text-[#FDB02F]" />
                 <span>{appDisplayName}</span>
@@ -152,7 +251,7 @@ export const BranchesPage: React.FC = () => {
               </button>
 
               {isAppDropdownOpen && (
-                <div className="absolute right-0 top-10 w-52 bg-[#120b10] border border-white/15 rounded-xl shadow-2xl p-1 z-30 space-y-0.5">
+                <div className="absolute right-0 top-10 w-52 bg-[#120b10] border border-white/15 rounded-sm shadow-2xl p-1 z-30 space-y-0.5">
                   <div className="px-2.5 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
                     Switch Application
                   </div>
@@ -165,7 +264,7 @@ export const BranchesPage: React.FC = () => {
                         navigate(`/branches?app=${k}`);
                       }}
                       className={cn(
-                        'w-full text-left px-2.5 py-1.5 rounded-xs text-xs font-medium flex items-center justify-between cursor-pointer transition-colors',
+                        'w-full text-left px-2.5 py-1.5 rounded-sm text-xs font-medium flex items-center justify-between cursor-pointer transition-colors',
                         k.toLowerCase() === appKey
                           ? 'bg-[#714b67] text-white font-semibold'
                           : 'text-slate-300 hover:bg-white/10 hover:text-white'
@@ -181,120 +280,221 @@ export const BranchesPage: React.FC = () => {
 
             {/* Organization Switcher Dropdown */}
             <WorkspaceSwitcher />
+
+            {/* Add Branch Button if admin and under limit */}
+            {canManageBranches && !atBranchLimit && (
+              <button
+                type="button"
+                onClick={() => setIsCreatingBranch(true)}
+                className="h-8 px-3 rounded-sm bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add Branch</span>
+              </button>
+            )}
+
+            {/* Upgrade Button ONLY if store owner and at limit */}
+            {canUpgrade && atBranchLimit && (
+              <button
+                type="button"
+                onClick={() => setUpgradeModalOpen(true)}
+                className="h-8 px-3 rounded-sm bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all shadow-sm"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-amber-200" />
+                <span>Upgrade for More Branches</span>
+              </button>
+            )}
           </div>
         </div>
 
-        {/* Branches Grid */}
-        {branches.length === 0 ? (
-          <div className="p-12 text-center rounded-2xl bg-[#120b10] border border-white/10 space-y-5 max-w-lg mx-auto">
-            <div className="w-14 h-14 rounded-2xl bg-[#714b67]/20 border border-[#714b67]/40 flex items-center justify-center mx-auto text-[#FDB02F]">
-              <Warehouse className="w-7 h-7" />
+        {/* Entitlement Quota Banner - Only for store owner */}
+        {canUpgrade && entSummary?.warningMessage && (
+          <UsageLimitBanner
+            warningMessage={entSummary.warningMessage}
+            isReached={Boolean(entSummary.hasExceededLimits)}
+            onUpgradeClick={() => {
+              setUpgradeModalOpen(true);
+            }}
+            planKey={entSummary.planKey}
+          />
+        )}
+
+        {/* Branches Grid & Guarded Loading States */}
+        {isCheckingBranches && visibleBranches.length === 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {[1, 2, 3].map((idx) => (
+              <div
+                key={idx}
+                className="p-3.5 rounded-sm bg-transparent border border-white/5 flex items-center justify-between gap-3 animate-pulse"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-9 h-9 rounded-sm bg-white/5 flex-shrink-0" />
+                  <div className="space-y-1.5 min-w-0">
+                    <div className="w-24 h-3.5 rounded-xs bg-white/10" />
+                    <div className="w-32 h-2.5 rounded-xs bg-white/5" />
+                  </div>
+                </div>
+                <div className="flex items-center gap-2.5 flex-shrink-0">
+                  <div className="w-10 h-3 rounded-xs bg-white/5" />
+                  <div className="w-12 h-6 rounded-sm bg-white/10" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : visibleBranches.length === 0 ? (
+          <div className="p-8 text-center rounded-sm bg-transparent border border-dashed border-white/10 space-y-4 max-w-md mx-auto">
+            <div className="w-10 h-10 rounded-sm bg-[#714b67] text-white flex items-center justify-center mx-auto">
+              <Warehouse className="w-5 h-5" />
             </div>
-            <div className="space-y-1.5">
-              <h3 className="text-lg font-bold text-white">No Branches Configured</h3>
+            <div className="space-y-1">
+              <h3 className="text-sm font-bold text-white">
+                {branches.length > 0 ? 'No Branch Assigned' : 'No Branches Configured'}
+              </h3>
               <p className="text-xs text-slate-400 leading-relaxed">
-                <strong className="text-slate-200">{currentWorkspace?.name}</strong> does not have any physical branches registered yet. Add your main store or warehouse to begin operations.
+                {branches.length > 0
+                  ? 'You have Inventory access, but no branch has been assigned to you yet. Contact your workspace owner or Inventory manager.'
+                  : 'Add your first branch or store location to begin operations.'}
               </p>
             </div>
-            <Button
-              type="button"
-              onClick={() => setIsCreatingBranch(true)}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xs bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/25 transition-all"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Add Primary Branch</span>
-            </Button>
+            {isFullAdmin && branches.length === 0 && (
+              <button
+                type="button"
+                onClick={() => setIsCreatingBranch(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-medium transition-colors cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add Primary Branch</span>
+              </button>
+            )}
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {branches.map((branch) => {
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {visibleBranches.map((branch) => {
               const branchId = branch.id || branch._id || '';
               const isSelected = (activeBranch?.id || activeBranch?._id) === branchId;
-              const locationStr = [branch.street, branch.city, branch.state].filter(Boolean).join(', ') || branch.address;
+              const locationStr =
+                [branch.street, branch.city, branch.state].filter(Boolean).join(', ') ||
+                branch.address ||
+                '';
 
               return (
                 <div
                   key={branchId}
                   onClick={() => handleSelectBranch(branch)}
                   className={cn(
-                    'group relative p-6 rounded-2xl border transition-all duration-300 cursor-pointer flex flex-col justify-between space-y-6 overflow-hidden',
-                    isSelected
-                      ? 'bg-gradient-to-br from-[#241321] via-[#140b12] to-black border-[#714b67] shadow-xl shadow-[#714b67]/15 ring-1 ring-[#714b67]'
-                      : 'bg-[#120b10] border-white/10 hover:border-[#714b67]/60 hover:shadow-xl hover:-translate-y-1'
+                    'group p-3.5 rounded-sm bg-transparent hover:bg-white/[0.04] transition-colors cursor-pointer flex items-center justify-between gap-3',
+                    isSelected && 'bg-white/[0.05]'
                   )}
                 >
-                  <div className="space-y-4">
-                    {/* Header: Branch Icon & Badges */}
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="w-12 h-12 rounded-xl bg-[#714b67]/25 border border-[#714b67]/40 flex items-center justify-center text-[#FDB02F] font-bold text-lg shadow-md group-hover:scale-105 transition-transform">
-                        <Warehouse className="w-6 h-6" />
-                      </div>
+                  {/* i. Logo or First Alphabet & Branch Name + Location */}
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-9 h-9 rounded-sm bg-[#714b67] text-white flex items-center justify-center font-bold text-sm shrink-0">
+                      {branch.name ? branch.name.charAt(0).toUpperCase() : <Warehouse className="w-4 h-4" />}
+                    </div>
 
+                    <div className="min-w-0">
+                      {/* i. Branch Name */}
                       <div className="flex items-center gap-1.5">
+                        <h3 className="text-sm font-semibold text-white group-hover:text-[#f3e1ed] transition-colors truncate">
+                          {branch.name}
+                        </h3>
                         {branch.code && (
-                          <span className="px-2 py-0.5 rounded-xs text-[10px] font-mono font-bold bg-white/5 text-slate-300 border border-white/10">
-                            {branch.code}
-                          </span>
-                        )}
-                        {branch.isPrimary && (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
-                            Primary
+                          <span className="text-[10px] font-mono text-slate-400 shrink-0">
+                            ({branch.code})
                           </span>
                         )}
                       </div>
+                      {/* Location or Phone */}
+                      <p className="text-xs text-slate-400 mt-0.5 truncate">
+                        {locationStr || branch.phone || 'Primary Location'}
+                      </p>
                     </div>
-
-                    {/* Branch Title & Details */}
-                    <div>
-                      <h3 className="text-base font-bold text-white group-hover:text-[#f3e1ed] transition-colors">
-                        {branch.name}
-                      </h3>
-                      {locationStr && (
-                        <p className="text-xs text-slate-400 mt-1 flex items-start gap-1.5 line-clamp-2">
-                          <MapPin className="w-3.5 h-3.5 text-slate-500 shrink-0 mt-0.5" />
-                          <span>{locationStr}</span>
-                        </p>
-                      )}
-                    </div>
-
-                    {/* Contact Info */}
-                    {branch.phone && (
-                      <div className="pt-2 flex items-center gap-1.5 text-xs text-slate-400">
-                        <Phone className="w-3.5 h-3.5 text-slate-500" />
-                        <span>{branch.phone}</span>
-                      </div>
-                    )}
                   </div>
 
-                  {/* Enter Branch CTA */}
-                  <div className="pt-4 border-t border-white/5">
-                    <Button
-                      type="button"
-                      className="w-full h-10 bg-[#714b67] hover:bg-[#86597a] active:bg-[#603f57] text-white rounded-xs text-xs font-semibold shadow-lg shadow-[#714b67]/20 flex items-center justify-center gap-2 cursor-pointer transition-all"
+                  {/* iii. Branch Status, Open Button & Action Icons */}
+                  <div className="flex items-center gap-2.5 shrink-0">
+                    <span
+                      className={cn(
+                        'text-xs font-medium',
+                        branch.isPrimary ? 'text-emerald-400' : 'text-slate-400'
+                      )}
                     >
-                      <span>Enter {appDisplayName}</span>
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </Button>
+                      {branch.isPrimary ? 'Primary' : 'Active'}
+                    </span>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleSelectBranch(branch);
+                      }}
+                      className="px-3 py-1 rounded-sm bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-medium transition-colors cursor-pointer"
+                    >
+                      Enter
+                    </button>
+
+                    {canManageBranches && (
+                      <>
+                        <button
+                          type="button"
+                          title="Edit Branch"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingBranch(branch);
+                          }}
+                          className="p-1 rounded-sm text-slate-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+
+                        {!branch.isPrimary && (
+                          <button
+                            type="button"
+                            title="Deactivate Branch"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDeactivatePending(branch);
+                            }}
+                            className="p-1 rounded-sm text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </>
+                    )}
                   </div>
                 </div>
               );
             })}
 
-            {/* Add New Branch Card */}
-            <div
-              onClick={() => setIsCreatingBranch(true)}
-              className="p-6 rounded-2xl border border-dashed border-white/15 bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/30 transition-all flex flex-col items-center justify-center text-center space-y-3 min-h-[220px] group cursor-pointer"
-            >
-              <div className="w-12 h-12 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-slate-300 group-hover:scale-110 transition-transform">
-                <Plus className="w-5 h-5" />
-              </div>
-              <div className="space-y-1">
-                <h3 className="text-sm font-bold text-white">Add New Branch</h3>
-                <p className="text-xs text-slate-400">
-                  Register another physical retail store or fulfillment outlet.
-                </p>
-              </div>
-            </div>
+            {/* Add New Branch Card or Quota Indicator (Managers/Owners only) */}
+            {canManageBranches && (
+              atBranchLimit ? (
+                canUpgrade ? (
+                  <div className="p-3.5 rounded-sm bg-transparent border border-dashed border-amber-500/20 flex items-center justify-between gap-3 text-xs">
+                    <div className="flex items-center gap-2 text-amber-300">
+                      <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <span className="truncate">Limit reached (1 branch on trial)</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setUpgradeModalOpen(true)}
+                      className="px-2.5 py-1 rounded-sm bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-medium transition-colors shrink-0 cursor-pointer"
+                    >
+                      Upgrade
+                    </button>
+                  </div>
+                ) : null
+              ) : (
+                <div
+                  onClick={() => setIsCreatingBranch(true)}
+                  className="p-3.5 rounded-sm bg-transparent hover:bg-white/[0.04] border border-dashed border-white/10 flex items-center justify-center gap-2 text-xs font-medium text-slate-300 hover:text-white cursor-pointer transition-colors"
+                >
+                  <Plus className="w-3.5 h-3.5 text-[#FDB02F]" />
+                  <span>Add Branch</span>
+                </div>
+              )
+            )}
           </div>
         )}
       </main>
@@ -304,6 +504,7 @@ export const BranchesPage: React.FC = () => {
         <BranchCreationModal
           isOpen={isCreatingBranch}
           workspaceId={currentWorkspace.id}
+          applicationKey={appKey}
           onClose={() => setIsCreatingBranch(false)}
           onSuccess={() => {
             setIsCreatingBranch(false);
@@ -313,6 +514,81 @@ export const BranchesPage: React.FC = () => {
           }}
         />
       )}
+
+      {/* Branch Edit Modal */}
+      <BranchEditModal
+        isOpen={!!editingBranch}
+        branch={editingBranch}
+        onClose={() => setEditingBranch(null)}
+        onSuccess={() => {
+          setEditingBranch(null);
+          if (currentWorkspace?.id) loadBranches(currentWorkspace.id, appKey);
+        }}
+      />
+
+      {/* Deactivate Confirmation Dialog */}
+      {deactivatePending && (
+        <div
+          className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-150"
+          onClick={() => !isDeactivating && setDeactivatePending(null)}
+        >
+          <div
+            className="w-full max-w-sm bg-[#0c080b]/95 border border-white/10 rounded-2xl shadow-2xl p-6 space-y-4 backdrop-blur-2xl animate-in zoom-in-95 duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center">
+                <Trash2 className="w-4 h-4 text-rose-400" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white">Deactivate Branch</h3>
+                <p className="text-xs text-slate-400">This action cannot be easily undone.</p>
+              </div>
+            </div>
+            <p className="text-xs text-slate-300">
+              Are you sure you want to deactivate{' '}
+              <span className="font-bold text-white">{deactivatePending.name}</span>? Staff assigned to this branch will lose access.
+            </p>
+            {branches.length <= 1 && (
+              <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5">
+                Warning: This is your only branch. You must have at least one active branch.
+              </p>
+            )}
+            <div className="flex items-center gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => setDeactivatePending(null)}
+                disabled={isDeactivating}
+                className="flex-1 h-9 rounded-lg border border-white/10 text-slate-300 hover:text-white hover:bg-white/5 text-xs font-semibold transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDeactivateBranch}
+                disabled={isDeactivating || branches.length <= 1}
+                className="flex-1 h-9 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
+              >
+                {isDeactivating ? <Spinner size="sm" /> : <Trash2 className="w-3.5 h-3.5" />}
+                <span>{isDeactivating ? 'Deactivating…' : 'Deactivate'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Upgrade Modal for Branch Limit */}
+      <UpgradeModal
+        isOpen={upgradeModalOpen}
+        workspaceId={currentWorkspace?.id}
+        workspaceSlug={currentWorkspace?.slug}
+        triggerReason="branch_limit"
+        onClose={() => setUpgradeModalOpen(false)}
+        onSuccess={() => {
+          setUpgradeModalOpen(false);
+          loadBranches(currentWorkspace?.id || '', appKey);
+        }}
+      />
     </div>
   );
 };

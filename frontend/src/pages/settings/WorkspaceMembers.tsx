@@ -19,6 +19,7 @@ import {
   X,
   Store,
   ChevronLeft,
+  ChevronRight,
   Layers,
   ShieldCheck,
   Sliders,
@@ -95,24 +96,8 @@ const DEFAULT_APPS: AppAccessConfig[] = [
     productKey: 'inventory',
     name: 'Inventory Management',
     enabled: true,
-    role: 'inventory_manager',
+    role: 'sales_attendant',
     supportsBranches: true,
-    branchIds: [],
-  },
-  {
-    productKey: 'pos',
-    name: 'Point of Sale (POS)',
-    enabled: false,
-    role: 'cashier',
-    supportsBranches: true,
-    branchIds: [],
-  },
-  {
-    productKey: 'taskmanagement',
-    name: 'Task & Workflow Management',
-    enabled: false,
-    role: 'contributor',
-    supportsBranches: false,
     branchIds: [],
   },
 ];
@@ -123,16 +108,6 @@ const APP_ROLES: Record<string, Array<{ value: string; label: string }>> = {
     { value: 'stock_manager', label: 'Stock Keeper' },
     { value: 'sales_attendant', label: 'Sales Attendant' },
     { value: 'cashier', label: 'Cashier' },
-  ],
-  pos: [
-    { value: 'store_manager', label: 'Store Manager' },
-    { value: 'cashier', label: 'Cashier' },
-    { value: 'supervisor', label: 'Supervisor' },
-  ],
-  taskmanagement: [
-    { value: 'project_lead', label: 'Project Lead' },
-    { value: 'contributor', label: 'Contributor' },
-    { value: 'viewer', label: 'Viewer' },
   ],
 };
 
@@ -414,11 +389,13 @@ export const WorkspaceMembers: React.FC = () => {
             <WorkspaceSwitcher />
             {canManageMembers && (
               <Button
-                onClick={() => setIsInviteModalOpen(true)}
-                className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs rounded-lg h-9 shadow-md shadow-indigo-600/20 flex items-center gap-1.5 cursor-pointer"
+                onClick={() => {
+                  window.location.href = '/inventory/settings/team';
+                }}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs rounded-lg h-9 shadow-md shadow-emerald-600/20 flex items-center gap-1.5 cursor-pointer"
               >
-                <UserPlus className="w-3.5 h-3.5" />
-                <span>Invite Member</span>
+                <Store className="w-3.5 h-3.5" />
+                <span>Manage Inventory Team</span>
               </Button>
             )}
           </div>
@@ -427,6 +404,30 @@ export const WorkspaceMembers: React.FC = () => {
 
       {/* Main Container */}
       <main className="max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 space-y-6">
+        {/* Application Team Access Architecture Notice */}
+        <div className="p-4 rounded-xl bg-indigo-950/40 border border-indigo-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className="w-9 h-9 rounded-lg bg-indigo-500/20 text-indigo-300 flex items-center justify-center shrink-0 border border-indigo-500/30">
+              <Store className="w-4 h-4" />
+            </div>
+            <div className="space-y-0.5">
+              <h3 className="text-xs font-bold text-white">Application & Branch Team Architecture Active</h3>
+              <p className="text-[11px] text-slate-300 leading-relaxed">
+                Team invitations and access roles are now managed within each active application. To invite staff, assign branch locations, or adjust permissions, open the <strong>Inventory Team</strong> directory.
+              </p>
+            </div>
+          </div>
+          <Button
+            onClick={() => {
+              window.location.href = '/inventory/settings/team';
+            }}
+            className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs rounded-lg h-8 px-3 shrink-0 shadow-sm cursor-pointer flex items-center gap-1"
+          >
+            <span>Open Inventory Team</span>
+            <ChevronRight className="w-3 h-3" />
+          </Button>
+        </div>
+
         {/* Stat Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 flex items-center gap-4">

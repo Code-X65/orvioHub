@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
-import { useAuthStore } from '@/stores/useAuthStore';
 import { ProfileLayout } from '@/components/profile/ProfileLayout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -13,16 +12,16 @@ import {
   ShieldAlert,
   Clock,
   Loader2,
+  CheckCircle2,
 } from 'lucide-react';
 
 export const AccountDeletion: React.FC = () => {
-  const navigate = useNavigate();
-  const { logout } = useAuthStore();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [password, setPassword] = useState('');
   const [reason, setReason] = useState('');
   const [confirmationText, setConfirmationText] = useState('');
-  const [useCoolingOff, setUseCoolingOff] = useState(true);
+  const [understoodCheckbox, setUnderstoodCheckbox] = useState(false);
   const [activeDeletionRequest, setActiveDeletionRequest] = useState<any>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
@@ -38,8 +37,29 @@ export const AccountDeletion: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchProfile();
-  }, []);
+    const cancelToken = searchParams.get('cancelToken') || searchParams.get('token');
+    if (cancelToken) {
+      handleCancelWithToken(cancelToken);
+    } else {
+      fetchProfile();
+    }
+  }, [searchParams]);
+
+  const handleCancelWithToken = async (token: string) => {
+    setIsCancelling(true);
+    try {
+      await api.post('/users/deletion/cancel', { token });
+      toast.success('Account deletion request has been successfully cancelled.');
+      setActiveDeletionRequest(null);
+      // Remove query parameters
+      setSearchParams({});
+      await fetchProfile();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to cancel deletion request with token.');
+    } finally {
+      setIsCancelling(false);
+    }
+  };
 
   const handleScheduleDeletion = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -50,25 +70,24 @@ export const AccountDeletion: React.FC = () => {
       return;
     }
 
+    if (!understoodCheckbox) {
+      toast.error('Please confirm that you understand this will permanently delete your account.');
+      return;
+    }
+
     setIsSubmitting(true);
     try {
-      const res = await api.post<{ deletionRequest: any }>('/users/me/deletion-request', {
+      const res = await api.post<{ deletionRequest: any }>('/users/me/deletion/request', {
         password: password || undefined,
         reason: reason || undefined,
-        coolingOffDays: useCoolingOff ? 14 : 0,
+        coolingOffDays: 7,
       });
 
-      if (!useCoolingOff) {
-        toast.success('Your account has been permanently deleted.');
-        await logout();
-        navigate('/');
-        return;
-      }
-
-      toast.success('Account deletion scheduled with a 14-day cooling-off period.');
-      setActiveDeletionRequest(res.deletionRequest);
+      toast.success('Account deletion scheduled with a 7-day cooling-off period.');
+      setActiveDeletionRequest(res.deletionRequest || res);
       setPassword('');
       setConfirmationText('');
+      setUnderstoodCheckbox(false);
     } catch (err: any) {
       if (err.code === 'SOLE_OWNER_CANNOT_LEAVE_WORKSPACE') {
         setOwnedWorkspacesBlocker(err.ownedWorkspaces || []);
@@ -86,9 +105,10 @@ export const AccountDeletion: React.FC = () => {
   const handleCancelDeletion = async () => {
     setIsCancelling(true);
     try {
-      await api.post('/users/me/deletion-request/cancel', {});
+      await api.post('/users/me/deletion/cancel', {});
       toast.success('Account deletion request has been cancelled.');
       setActiveDeletionRequest(null);
+      await fetchProfile();
     } catch (err: any) {
       toast.error(err.message || 'Failed to cancel deletion.');
     } finally {
@@ -113,11 +133,19 @@ export const AccountDeletion: React.FC = () => {
               <div className="space-y-1">
                 <h4 className="text-sm font-bold text-white">Account Deletion Scheduled</h4>
                 <p className="text-xs text-amber-200/90 leading-relaxed">
-                  Your account is in a cooling-off period and is scheduled for permanent deletion on{' '}
+                  Your account is in an NDPA 7-day cooling-off period and is scheduled for permanent erasure on{' '}
                   <span className="font-mono font-semibold text-white">
-                    {new Date(activeDeletionRequest.scheduledDeletionAt).toLocaleDateString()}
+                    {new Date(activeDeletionRequest.scheduledDeletionAt).toLocaleDateString(undefined, {
+                      weekday: 'short',
+                      year: 'numeric',
+                      month: 'short',
+                      day: 'numeric',
+                    })}
                   </span>
                   .
+                </p>
+                <p className="text-[11px] text-amber-300/75">
+                  You received an email with a 1-click cancellation link. You can also cancel immediately below.
                 </p>
               </div>
             </div>
@@ -126,9 +154,17 @@ export const AccountDeletion: React.FC = () => {
               type="button"
               onClick={handleCancelDeletion}
               disabled={isCancelling}
-              className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-4 rounded-xs cursor-pointer"
+              className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-4 rounded-xs cursor-pointer flex items-center gap-1.5"
             >
-              {isCancelling ? 'Cancelling...' : 'Cancel Deletion Request & Keep Account'}
+              {isCancelling ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> Cancelling Deletion...
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5" /> Cancel Deletion Request & Keep Account
+                </>
+              )}
             </Button>
           </div>
         )}
@@ -145,8 +181,9 @@ export const AccountDeletion: React.FC = () => {
             </p>
             <div className="space-y-1 pt-1">
               {ownedWorkspacesBlocker.map((ws: any, idx: number) => (
-                <div key={idx} className="p-2 bg-black/40 rounded-xs border border-white/5 text-xs text-white font-medium">
-                  {ws.workspace?.name || `Workspace ID: ${ws.workspaceId}`}
+                <div key={idx} className="p-2.5 bg-black/40 rounded-xs border border-white/5 text-xs text-white font-medium flex items-center justify-between">
+                  <span>{ws.workspace?.name || `Workspace ID: ${ws.workspaceId}`}</span>
+                  <span className="text-[10px] text-amber-400 font-bold uppercase">Owner Role</span>
                 </div>
               ))}
             </div>
@@ -164,8 +201,9 @@ export const AccountDeletion: React.FC = () => {
             <li>Your personal credentials, passwords, 2FA keys, and active sessions will be permanently destroyed.</li>
             <li>You will lose access to all joined workspaces and Orvio applications.</li>
             <li>
-              <strong>For employee/worker records:</strong> Past sales, receipts, and logs made on behalf of employers will remain preserved for accounting compliance, with your personal name anonymized.
+              <strong>NDPA 2023 & Tax Compliance:</strong> Past sales, receipts, invoices, and accounting audits made on behalf of organizations will remain preserved for legal compliance with your identity anonymized.
             </li>
+            <li>A 7-day cooling-off period applies before final data erasure, during which you can cancel at any time.</li>
           </ul>
         </div>
 
@@ -210,14 +248,17 @@ export const AccountDeletion: React.FC = () => {
             <label className="flex items-start gap-2.5 pt-1 cursor-pointer">
               <input
                 type="checkbox"
-                checked={useCoolingOff}
-                onChange={(e) => setUseCoolingOff(e.target.checked)}
+                checked={understoodCheckbox}
+                onChange={(e) => setUnderstoodCheckbox(e.target.checked)}
                 className="mt-1 accent-rose-500 rounded-xs"
+                required
               />
               <div>
-                <div className="text-xs font-medium text-white">Enable 14-day cooling-off safety period (Recommended)</div>
+                <div className="text-xs font-medium text-white">
+                  I understand this will schedule permanent deletion of my account
+                </div>
                 <div className="text-[11px] text-slate-400">
-                  Gives you 14 days to cancel the deletion request in case you change your mind.
+                  A 7-day cooling-off period will begin. If not cancelled within 7 days, all personal data will be irrevocably erased.
                 </div>
               </div>
             </label>
@@ -228,6 +269,7 @@ export const AccountDeletion: React.FC = () => {
                 disabled={
                   isSubmitting ||
                   confirmationText.trim().toLowerCase() !== 'delete my account' ||
+                  !understoodCheckbox ||
                   !password
                 }
                 className="w-full bg-rose-600 hover:bg-rose-700 text-white text-xs font-medium py-2.5 rounded-xs cursor-pointer"
@@ -235,12 +277,12 @@ export const AccountDeletion: React.FC = () => {
                 {isSubmitting ? (
                   <>
                     <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />
-                    Processing Deletion Request...
+                    Scheduling Account Deletion...
                   </>
                 ) : (
                   <>
                     <Trash2 className="w-3.5 h-3.5 mr-2" />
-                    Permanently Schedule Account Deletion
+                    Schedule Account Deletion (7-Day Cooling Off)
                   </>
                 )}
               </Button>
@@ -251,3 +293,6 @@ export const AccountDeletion: React.FC = () => {
     </ProfileLayout>
   );
 };
+
+export default AccountDeletion;
+

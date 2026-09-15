@@ -780,6 +780,38 @@ export const acceptWorkspaceInvitation = mutation({
             });
           }
 
+          // Sync with branchMemberships
+          const existingBm = await ctx.db
+            .query("branchMemberships")
+            .withIndex("by_user_branch", (q) =>
+              q.eq("userId", user._id).eq("branchId", String(branchId))
+            )
+            .first();
+
+          if (existingBm) {
+            await ctx.db.patch(existingBm._id, {
+              role: app.appRole,
+              status: "active",
+              assignedByUserId: invite.invitedBy,
+              assignedAt: now,
+              updatedAt: now,
+            });
+          } else {
+            await ctx.db.insert("branchMemberships", {
+              workspaceId: String(invite.workspaceId),
+              applicationKey: app.productKey,
+              branchId: String(branchId),
+              userId: user._id,
+              role: app.appRole,
+              permissions: [],
+              status: "active",
+              assignedByUserId: invite.invitedBy,
+              assignedAt: now,
+              createdAt: now,
+              updatedAt: now,
+            });
+          }
+
           // Audit log for branch
           await ctx.db.insert("workspaceAuditLogs", {
             workspaceId: invite.workspaceId,
@@ -793,12 +825,43 @@ export const acceptWorkspaceInvitation = mutation({
           });
         }
 
+        // Upsert applicationMemberships
+        const existingAppMem = await ctx.db
+          .query("applicationMemberships")
+          .withIndex("by_workspace_application_user", (q) =>
+            q.eq("workspaceId", String(invite.workspaceId)).eq("applicationKey", app.productKey).eq("userId", user._id)
+          )
+          .first();
+
+        if (existingAppMem) {
+          await ctx.db.patch(existingAppMem._id, {
+            role: app.appRole,
+            status: "active",
+            assignedBy: invite.invitedBy,
+            assignedAt: now,
+            updatedAt: now,
+          });
+        } else {
+          await ctx.db.insert("applicationMemberships", {
+            workspaceId: String(invite.workspaceId),
+            userId: user._id,
+            applicationKey: app.productKey,
+            role: app.appRole,
+            permissions: [],
+            status: "active",
+            assignedBy: invite.invitedBy,
+            assignedAt: now,
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+
         // Audit log for app
         await ctx.db.insert("workspaceAuditLogs", {
           workspaceId: invite.workspaceId,
           actorUserId: user._id,
-          eventType: "app.access_granted",
-          entityType: "product",
+          eventType: "inventory.member_added",
+          entityType: "application",
           entityId: app.productKey,
           severity: "info",
           metadata: { productKey: app.productKey, role: app.appRole, userId: user._id },
@@ -830,6 +893,37 @@ export const acceptWorkspaceInvitation = mutation({
           permissions: [],
           branchIds: invite.branchIds,
           status: "active",
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+
+      // Upsert applicationMemberships
+      const existingAppMem = await ctx.db
+        .query("applicationMemberships")
+        .withIndex("by_workspace_application_user", (q) =>
+          q.eq("workspaceId", String(invite.workspaceId)).eq("applicationKey", invite.productKey!).eq("userId", user._id)
+        )
+        .first();
+
+      if (existingAppMem) {
+        await ctx.db.patch(existingAppMem._id, {
+          role: invite.role,
+          status: "active",
+          assignedBy: invite.invitedBy,
+          assignedAt: now,
+          updatedAt: now,
+        });
+      } else {
+        await ctx.db.insert("applicationMemberships", {
+          workspaceId: String(invite.workspaceId),
+          userId: user._id,
+          applicationKey: invite.productKey,
+          role: invite.role,
+          permissions: [],
+          status: "active",
+          assignedBy: invite.invitedBy,
+          assignedAt: now,
           createdAt: now,
           updatedAt: now,
         });

@@ -1,14 +1,5 @@
-import { useEffect } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { AuthGuard } from "../../components/auth/AuthGuard";
-import { getPostVerificationUrl } from "@/lib/domain";
-
-function RedirectToOnboard() {
-  useEffect(() => {
-    window.location.href = getPostVerificationUrl();
-  }, []);
-  return null;
-}
 
 // Auth Pages
 import { Login } from "../../pages/auth/Login";
@@ -25,6 +16,8 @@ import { ConfirmEmailChange } from "../../pages/auth/ConfirmEmailChange";
 // Profile & Account Settings Pages
 import { PersonalProfile } from "../../pages/profile/PersonalProfile";
 import { ProfileSetup } from "../../pages/onboarding/ProfileSetup";
+import { PersonalOnboarding } from "../../pages/onboarding/PersonalOnboarding";
+import { OrganizationWizard } from "../../pages/onboarding/OrganizationWizard";
 import { ContactSettings } from "../../pages/profile/ContactSettings";
 import { SecuritySettings } from "../../pages/profile/SecuritySettings";
 import { SessionsSettings } from "../../pages/profile/SessionsSettings";
@@ -94,9 +87,55 @@ export default function AccountsApp() {
       <Route path="/invitations" element={<AcceptInvite />} />
       <Route path="/invitations/:token" element={<AcceptInvite />} />
 
-      {/* Onboarding redirects to Home surface */}
-      <Route path="/onboard" element={<RedirectToOnboard />} />
-      <Route path="/onboarding" element={<RedirectToOnboard />} />
+      {/* Direct Onboarding Routes */}
+      <Route
+        path="/onboard/personal"
+        element={
+          <AuthGuard>
+            <PersonalOnboarding />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/onboarding/personal"
+        element={
+          <AuthGuard>
+            <PersonalOnboarding />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/onboard/organization"
+        element={
+          <AuthGuard>
+            <OrganizationWizard />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/onboarding/organization"
+        element={
+          <AuthGuard>
+            <OrganizationWizard />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/onboard"
+        element={
+          <AuthGuard>
+            <Navigate to="/onboard/personal" replace />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/onboarding"
+        element={
+          <AuthGuard>
+            <Navigate to="/onboard/personal" replace />
+          </AuthGuard>
+        }
+      />
 
       {/* Dedicated Personal Profile / Account Settings */}
       <Route path="/profile" element={<Navigate to="/profile/personal" replace />} />

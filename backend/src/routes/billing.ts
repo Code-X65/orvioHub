@@ -1228,6 +1228,385 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
     }
   );
 
+  // GET /billing/user-free-trial-status - Query user free trial status
+  fastify.get(
+    '/billing/user-free-trial-status',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Billing'],
+        summary: 'Check if current user has an active Free Trial organization',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      try {
+        const result = await dataService.getUserFreeTrialStatus(request.user.id);
+        return reply.send({
+          success: true,
+          data: result || { hasFreeTrial: false },
+        });
+      } catch (err: any) {
+        return reply.status(500).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+            message: err.message || 'Failed to check free trial status.',
+          },
+        });
+      }
+    }
+  );
+
+  // POST /billing/confirm-org-payment - Confirm payment and activate organization
+  fastify.post(
+    '/billing/confirm-org-payment',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Billing'],
+        summary: 'Confirm payment and activate organization Standard plan',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['organizationId', 'paymentReference'],
+          properties: {
+            organizationId: { type: 'string' },
+            paymentReference: { type: 'string' },
+            provider: { type: 'string' },
+            amount: { type: 'number' },
+            billingInterval: { type: 'string', enum: ['monthly', 'annual'] },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = request.body as {
+        organizationId: string;
+        paymentReference: string;
+        provider?: string;
+        amount?: number;
+        billingInterval?: 'monthly' | 'annual';
+      };
+
+      try {
+        const result = await dataService.confirmPaymentAndActivateOrg({
+          organizationId: body.organizationId,
+          paymentReference: body.paymentReference,
+          provider: body.provider || 'paystack',
+          amount: body.amount,
+          billingInterval: body.billingInterval,
+          userId: request.user.id,
+        });
+
+        return reply.send({
+          success: true,
+          data: result,
+        });
+      } catch (err: any) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: 'PAYMENT_ACTIVATION_FAILED',
+            message: err.message || 'Failed to confirm payment and activate organization.',
+          },
+        });
+      }
+    }
+  );
+
+  // POST /billing/switch-org-plan - Switch pending/onboarding organization plan
+  fastify.post(
+    '/billing/switch-org-plan',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Billing'],
+        summary: 'Switch organization plan during onboarding or checkout',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['organizationId', 'newPlanKey'],
+          properties: {
+            organizationId: { type: 'string' },
+            newPlanKey: { type: 'string' },
+            billingInterval: { type: 'string', enum: ['monthly', 'annual'] },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = request.body as {
+        organizationId: string;
+        newPlanKey: 'free_trial' | 'standard';
+        billingInterval?: 'monthly' | 'annual';
+      };
+
+      try {
+        const result = await dataService.switchOrgPlan({
+          organizationId: body.organizationId,
+          newPlanKey: body.newPlanKey,
+          billingInterval: body.billingInterval,
+          userId: request.user.id,
+        });
+
+        return reply.send({
+          success: true,
+          data: result,
+        });
+      } catch (err: any) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: 'PLAN_SWITCH_FAILED',
+            message: err.message || 'Failed to switch organization plan.',
+          },
+        });
+      }
+    }
+  );
+
+  // GET /api/v1/organizations/:organizationId/billing/context - Authoritative Organization Billing Context
+  fastify.get(
+    '/organizations/:organizationId/billing/context',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Billing'],
+        summary: 'Get single authoritative organization subscription and entitlement context',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['organizationId'],
+          properties: {
+            organizationId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as { organizationId: string };
+      try {
+        const context = await dataService.getOrganizationBillingContext(organizationId);
+        return reply.send({
+          success: true,
+          data: context,
+        });
+      } catch (err: any) {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.NOT_FOUND,
+            message: err.message || 'Organization billing context not found.',
+          },
+        });
+      }
+    }
+  );
+
+  // POST /api/v1/organizations/:organizationId/billing/checkout - Initialize Paystack Checkout for Organization
+  fastify.post(
+    '/organizations/:organizationId/billing/checkout',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Billing'],
+        summary: 'Initialize Paystack payment checkout for Standard organization plan',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['organizationId'],
+          properties: {
+            organizationId: { type: 'string' },
+          },
+        },
+        body: {
+          type: 'object',
+          properties: {
+            planKey: { type: 'string' },
+            billingInterval: { type: 'string', enum: ['monthly', 'annual'] },
+            callbackUrl: { type: 'string' },
+          },
+          additionalProperties: true,
+        },
+      },
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as { organizationId: string };
+      const body = (request.body || {}) as {
+        planKey?: string;
+        billingInterval?: 'monthly' | 'annual';
+        callbackUrl?: string;
+      };
+      const userId = request.user?.id || (request.user as any)?._id || 'unknown_user';
+      const userEmail = request.user?.email || 'customer@orviohub.com';
+      const billingInterval = body.billingInterval || 'monthly';
+      const expectedAmount = billingInterval === 'annual' ? 75000 : 7500;
+
+      try {
+        const initCheckout = await dataService.initializeBillingCheckout({
+          organizationId,
+          userId,
+          billingInterval,
+          amount: expectedAmount,
+        });
+
+        const paystackRes = await paystackService.initializePayment({
+          email: userEmail,
+          amountInKobo: expectedAmount * 100,
+          reference: initCheckout.reference,
+          callbackUrl: body.callbackUrl,
+          metadata: {
+            organizationId,
+            billingInterval,
+            userId,
+          },
+        });
+
+        return reply.send({
+          success: true,
+          data: {
+            reference: initCheckout.reference,
+            authorizationUrl: paystackRes.authorizationUrl,
+            accessCode: paystackRes.accessCode,
+            amount: expectedAmount,
+            currency: 'NGN',
+            billingInterval,
+            planKey: 'standard',
+          },
+        });
+      } catch (err: any) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: 'CHECKOUT_INITIALIZATION_FAILED',
+            message: err.message || 'Failed to initialize organization checkout.',
+          },
+        });
+      }
+    }
+  );
+
+  // POST /api/v1/organizations/:organizationId/billing/verify - Server-side Paystack Verification
+  fastify.post(
+    '/organizations/:organizationId/billing/verify',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Billing'],
+        summary: 'Verify Paystack transaction server-side and activate Standard organization',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['organizationId'],
+          properties: {
+            organizationId: { type: 'string' },
+          },
+        },
+        body: {
+          type: 'object',
+          required: ['reference'],
+          properties: {
+            reference: { type: 'string' },
+            billingInterval: { type: 'string', enum: ['monthly', 'annual'] },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as { organizationId: string };
+      const body = request.body as {
+        reference: string;
+        billingInterval?: 'monthly' | 'annual';
+      };
+
+      try {
+        // 1. Server-side Paystack verification
+        const verifyRes = await paystackService.verifyPayment(body.reference);
+        if (verifyRes.status !== 'success') {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: 'PAYMENT_VERIFICATION_FAILED',
+              message: `Payment verification failed with status: ${verifyRes.status}`,
+            },
+          });
+        }
+
+        const paidAmountNaira = (verifyRes.amountInKobo || 750000) / 100;
+        const billingInterval = body.billingInterval || (paidAmountNaira >= 50000 ? 'annual' : 'monthly');
+
+        // 2. Activate organization subscription
+        const activation = await dataService.confirmPaymentAndActivateOrg({
+          organizationId,
+          paymentReference: body.reference,
+          provider: 'paystack',
+          amount: paidAmountNaira,
+          billingInterval,
+          userId: request.user.id,
+        });
+
+        return reply.send({
+          success: true,
+          data: {
+            status: 'active',
+            planKey: 'standard',
+            organizationId,
+            reference: body.reference,
+            amount: paidAmountNaira,
+            billingInterval,
+          },
+        });
+      } catch (err: any) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: 'PAYMENT_VERIFICATION_FAILED',
+            message: err.message || 'Payment verification failed.',
+          },
+        });
+      }
+    }
+  );
+
+  // GET /api/v1/organizations/:organizationId/billing/consistency - Consistency Checker
+  fastify.get(
+    '/organizations/:organizationId/billing/consistency',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Billing'],
+        summary: 'Check organization billing and entitlement consistency',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['organizationId'],
+          properties: {
+            organizationId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as { organizationId: string };
+      try {
+        const consistency = await dataService.checkOrganizationBillingConsistency(organizationId);
+        return reply.send({
+          success: true,
+          data: consistency,
+        });
+      } catch (err: any) {
+        return reply.status(500).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+            message: err.message || 'Failed to check billing consistency.',
+          },
+        });
+      }
+    }
+  );
+
   // POST /billing/upgrade
   fastify.post(
     '/billing/upgrade',
@@ -1710,4 +2089,57 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
       }
     }
   );
+
+  const orgInvoicesHandler = async (request: any, reply: any) => {
+    const { organizationId } = request.params as { organizationId: string };
+    try {
+      const invoices = await dataService.getInvoicesByOrganization(organizationId);
+      return reply.send({
+        success: true,
+        data: invoices,
+      });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+          message: err.message || 'Failed to fetch invoices.',
+        },
+      });
+    }
+  };
+
+  fastify.get('/organizations/:organizationId/invoices', { preHandler: [fastify.authenticate] }, orgInvoicesHandler);
+  fastify.get('/billing/organizations/:organizationId/invoices', { preHandler: [fastify.authenticate] }, orgInvoicesHandler);
+
+  const invoiceDetailHandler = async (request: any, reply: any) => {
+    const { invoiceId } = request.params as { invoiceId: string };
+    try {
+      const invoice = await dataService.getInvoiceById(invoiceId);
+      if (!invoice) {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.NOT_FOUND,
+            message: 'Invoice not found.',
+          },
+        });
+      }
+      return reply.send({
+        success: true,
+        data: invoice,
+      });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+          message: err.message || 'Failed to fetch invoice.',
+        },
+      });
+    }
+  };
+
+  fastify.get('/invoices/:invoiceId', { preHandler: [fastify.authenticate] }, invoiceDetailHandler);
+  fastify.get('/billing/invoices/:invoiceId', { preHandler: [fastify.authenticate] }, invoiceDetailHandler);
 };

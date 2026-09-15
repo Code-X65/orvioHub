@@ -342,6 +342,9 @@ export const acceptInvitation = mutation({
       await ctx.db.patch(existingMembership._id, {
         role: invite.role,
         status: "ACTIVE",
+        allowedApplications: invite.allowedApplications,
+        allowedBranches: invite.allowedBranches,
+        primaryBranchId: invite.primaryBranchId,
         updatedAt: now,
       });
     } else {
@@ -350,9 +353,115 @@ export const acceptInvitation = mutation({
         userId: user._id,
         role: invite.role,
         status: "ACTIVE",
+        allowedApplications: invite.allowedApplications,
+        allowedBranches: invite.allowedBranches,
+        primaryBranchId: invite.primaryBranchId,
         joinedAt: now,
         updatedAt: now,
       });
+    }
+
+    // Also sync workspaceMemberships if a workspace is attached/resolved
+    let targetWorkspaceId = invite.workspaceId;
+    if (!targetWorkspaceId) {
+      const ws = await ctx.db
+        .query("workspaces")
+        .withIndex("by_organizationId", (q: any) => q.eq("organizationId", invite.organizationId))
+        .first();
+      if (ws) targetWorkspaceId = ws._id;
+    }
+
+    if (targetWorkspaceId) {
+      const existingWsMem = await ctx.db
+        .query("workspaceMemberships")
+        .withIndex("by_workspace_user", (q: any) =>
+          q.eq("workspaceId", targetWorkspaceId).eq("userId", user._id)
+        )
+        .first();
+      if (existingWsMem) {
+        await ctx.db.patch(existingWsMem._id, {
+          role: invite.role,
+          status: "active",
+          acceptedAt: now,
+          updatedAt: now,
+        });
+      } else {
+        await ctx.db.insert("workspaceMemberships", {
+          workspaceId: targetWorkspaceId,
+          userId: user._id,
+          role: invite.role,
+          status: "active",
+          invitedBy: invite.invitedBy,
+          invitedAt: invite.createdAt,
+          acceptedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    }
+
+    // Sync with branchMemberships
+    let branchesToAssign = invite.allowedBranches || (invite.primaryBranchId ? [invite.primaryBranchId] : []);
+    if (branchesToAssign.length === 0) {
+      const orgBranches = await ctx.db
+        .query("branches")
+        .withIndex("by_organizationId", (q: any) => q.eq("organizationId", invite.organizationId))
+        .collect();
+      if (orgBranches.length > 0) {
+        const primaryB = orgBranches.find((b: any) => b.isPrimary) || orgBranches[0];
+        branchesToAssign = [primaryB._id];
+      } else if (targetWorkspaceId) {
+        const wsBranches = await ctx.db
+          .query("branches")
+          .withIndex("by_workspace", (q: any) => q.eq("workspaceId", targetWorkspaceId))
+          .collect();
+        if (wsBranches.length > 0) {
+          const primaryB = wsBranches.find((b: any) => b.isPrimary) || wsBranches[0];
+          branchesToAssign = [primaryB._id];
+        }
+      }
+    }
+
+    const roleUpper = (invite.role || "").toUpperCase();
+    let mappedRole = "inventory_viewer";
+    if (roleUpper === "OWNER") mappedRole = "inventory_owner";
+    else if (roleUpper === "ADMIN" || roleUpper === "MANAGER") mappedRole = "inventory_manager";
+    else if (roleUpper === "CASHIER" || roleUpper === "SALES_ATTENDANT") mappedRole = "cashier";
+    else if (roleUpper === "STOCK_MANAGER") mappedRole = "stock_manager";
+    else if (roleUpper === "ACCOUNTANT") mappedRole = "accountant";
+
+    for (const bId of branchesToAssign) {
+      const existingBm = await ctx.db
+        .query("branchMemberships")
+        .withIndex("by_user_branch", (q: any) =>
+          q.eq("userId", user._id).eq("branchId", String(bId))
+        )
+        .first();
+
+      if (existingBm) {
+        await ctx.db.patch(existingBm._id, {
+          role: mappedRole,
+          status: "active",
+          assignedByUserId: invite.invitedBy,
+          assignedAt: now,
+          updatedAt: now,
+        });
+      } else {
+        await ctx.db.insert("branchMemberships", {
+          workspaceId: String(targetWorkspaceId || invite.organizationId),
+          organizationId: invite.organizationId,
+          applicationKey: "inventory",
+          branchId: String(bId),
+          userId: user._id,
+          role: mappedRole,
+          permissions: [],
+          status: "active",
+          assignedByUserId: invite.invitedBy,
+          assignedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
     }
 
     // 4. Mark invitation accepted
@@ -370,6 +479,33 @@ export const acceptInvitation = mutation({
       metadata: { role: invite.role },
       timestamp: now,
     });
+
+    // 6. Mark any related notifications for this invite as READ and resolved
+    const relatedNotifs = await ctx.db
+      .query("notifications")
+      .withIndex("by_userId", (q) => q.eq("userId", user._id))
+      .collect();
+
+    for (const n of relatedNotifs) {
+      if (
+        (n.data?.inviteId === invite._id ||
+          n.data?.organizationId === invite.organizationId ||
+          n.data?.workspaceId === invite.organizationId) &&
+        (n.type === "org_invite" || n.type === "workspace_invite")
+      ) {
+        await ctx.db.patch(n._id, {
+          status: "READ",
+          readAt: now,
+          data: {
+            ...n.data,
+            isResolved: true,
+            inviteStatus: "ACCEPTED",
+            isAlreadyMember: true,
+            acceptedAt: now,
+          },
+        });
+      }
+    }
 
     const org = await ctx.db.get(invite.organizationId);
 

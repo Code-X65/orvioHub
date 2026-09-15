@@ -18,7 +18,6 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/useAuthStore';
-import { UserPlanBadge } from './UserPlanBadge';
 
 export type ActiveProfileSection =
   | 'personal'
@@ -205,10 +204,7 @@ export const ProfileLayout: React.FC<ProfileLayoutProps> = ({
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="text-xs font-bold text-white truncate">{user.name}</p>
-                    <div className="flex items-center justify-between gap-1 mt-1">
-                      <p className="text-[10px] text-slate-400 truncate max-w-[90px]">{user.email}</p>
-                      <UserPlanBadge planKey={user.planKey} size="xs" />
-                    </div>
+                    <p className="text-[10px] text-slate-400 truncate mt-0.5">{user.email}</p>
                   </div>
                 </div>
               )}

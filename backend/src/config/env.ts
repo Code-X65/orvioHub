@@ -33,11 +33,6 @@ const envSchema = z.object({
   FACEBOOK_APP_ID: z.string().optional(),
   FACEBOOK_APP_SECRET: z.string().optional(),
   FACEBOOK_REDIRECT_URI: z.string().optional(),
-  APPLE_CLIENT_ID: z.string().optional(),
-  APPLE_REDIRECT_URI: z.string().optional(),
-  APPLE_TEAM_ID: z.string().optional(),
-  APPLE_KEY_ID: z.string().optional(),
-  APPLE_PRIVATE_KEY: z.string().optional(),
   PAYSTACK_SECRET_KEY: z.string().optional(),
   PAYSTACK_PUBLIC_KEY: z.string().optional(),
   FLUTTERWAVE_SECRET_KEY: z.string().optional(),
@@ -46,13 +41,24 @@ const envSchema = z.object({
   FLUTTERWAVE_WEBHOOK_SECRET_HASH: z.string().optional(),
 });
 
-
 export const env = envSchema.parse(process.env);
 
 if (env.NODE_ENV === 'production' && !env.CONVEX_URL) {
   throw new Error('CONVEX_URL is required in production.');
 }
 
-if (env.NODE_ENV === 'production' && (!env.BREVO_API_KEY && !env.RESEND_API_KEY)) {
+if (env.NODE_ENV === 'production' && !env.BREVO_API_KEY && !env.RESEND_API_KEY) {
   throw new Error('BREVO_API_KEY (or RESEND_API_KEY) and EMAIL_FROM are required in production.');
+}
+
+if (env.NODE_ENV === 'production') {
+  const secret = process.env.JWT_SECRET;
+  if (!secret || secret === 'orvio-hub-super-secret-key-change-in-production-min32chars') {
+    throw new Error(
+      'JWT_SECRET must be set to a secure, random string in production (cannot use default).'
+    );
+  }
+  if (secret.length < 32) {
+    throw new Error('JWT_SECRET must be at least 32 characters in production.');
+  }
 }

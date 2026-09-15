@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 import { ActiveSessions } from '@/components/settings/ActiveSessions';
 import { LinkedIdentities } from '@/components/settings/LinkedIdentities';
-import { UserPlanBadge } from '@/components/profile/UserPlanBadge';
+import { PhoneVerificationCard } from '@/components/settings/PhoneVerificationCard';
 
 const TIMEZONES = [
   { value: 'UTC', label: 'UTC (Coordinated Universal Time)' },
@@ -364,7 +364,6 @@ export const ProfileSettings: React.FC = () => {
         <div className="mb-8">
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-2xl font-bold text-slate-100 tracking-tight">Account & Security Settings</h1>
-            <UserPlanBadge planKey={user?.planKey} size="xs" />
           </div>
           <p className="text-sm text-slate-400 mt-1">
             Manage your personal profile, email preferences, password security, two-factor authentication, and GDPR privacy options.
@@ -412,9 +411,8 @@ export const ProfileSettings: React.FC = () => {
         {activeTab === 'profile' && (
           <div className="space-y-6 max-w-2xl">
             <div className="bg-slate-900 border border-slate-800 rounded-sm p-6 shadow-sm">
-              <div className="flex items-center justify-between mb-1">
+              <div className="mb-1">
                 <h2 className="text-lg font-semibold text-slate-100">Personal Details</h2>
-                <UserPlanBadge planKey={user?.planKey} size="xs" />
               </div>
               <p className="text-xs text-slate-400 mb-6">Update your name and regional preferences.</p>
 
@@ -505,6 +503,9 @@ export const ProfileSettings: React.FC = () => {
                 </Button>
               </div>
             </div>
+
+            {/* Phone & SMS Security */}
+            <PhoneVerificationCard />
           </div>
         )}
 

@@ -193,6 +193,24 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
 
       const effectiveIndustry = parsed.data.industry || parsed.data.category || 'General Business';
       const effectivePhone = parsed.data.businessPhone || parsed.data.phone;
+
+      try {
+        await entitlementService.requireCanCreateOrganization(request.user.id);
+      } catch (limitErr: any) {
+        if (limitErr.code === 'ORGANIZATION_LIMIT_REACHED' || limitErr.statusCode === 409) {
+          return reply.status(409).send({
+            success: false,
+            error: {
+              code: 'ORGANIZATION_LIMIT_REACHED',
+              message: limitErr.message || 'You already own 3 organizations. You can still join other organizations by invitation.',
+              currentOwnedOrganizations: limitErr.currentOwnedOrganizations || 3,
+              maximumOwnedOrganizations: limitErr.maximumOwnedOrganizations || 3,
+            },
+          });
+        }
+        throw limitErr;
+      }
+
       let result;
       try {
         result = await dataService.createOrganization({
@@ -215,6 +233,17 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
           invitations: parsed.data.invitations,
         });
       } catch (err: any) {
+        if (err.message?.includes('ORGANIZATION_LIMIT_REACHED') || err.code === 'ORGANIZATION_LIMIT_REACHED') {
+          return reply.status(409).send({
+            success: false,
+            error: {
+              code: 'ORGANIZATION_LIMIT_REACHED',
+              message: 'You already own 3 organizations. You can still join other organizations by invitation.',
+              currentOwnedOrganizations: 3,
+              maximumOwnedOrganizations: 3,
+            },
+          });
+        }
         if (err.message?.includes('already have an organization on Free Trial')) {
           return reply.status(403).send({
             success: false,
@@ -294,6 +323,23 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       try {
+        await entitlementService.requireCanCreateOrganization(request.user.id);
+      } catch (limitErr: any) {
+        if (limitErr.code === 'ORGANIZATION_LIMIT_REACHED' || limitErr.statusCode === 409) {
+          return reply.status(409).send({
+            success: false,
+            error: {
+              code: 'ORGANIZATION_LIMIT_REACHED',
+              message: limitErr.message || 'You already own 3 organizations. You can still join other organizations by invitation.',
+              currentOwnedOrganizations: limitErr.currentOwnedOrganizations || 3,
+              maximumOwnedOrganizations: limitErr.maximumOwnedOrganizations || 3,
+            },
+          });
+        }
+        throw limitErr;
+      }
+
+      try {
         const result = await dataService.createOrganizationWithOnboarding({
           userId: request.user.id,
           name: body.name,
@@ -323,6 +369,17 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
           data: result,
         });
       } catch (err: any) {
+        if (err.message?.includes('ORGANIZATION_LIMIT_REACHED') || err.code === 'ORGANIZATION_LIMIT_REACHED') {
+          return reply.status(409).send({
+            success: false,
+            error: {
+              code: 'ORGANIZATION_LIMIT_REACHED',
+              message: 'You already own 3 organizations. You can still join other organizations by invitation.',
+              currentOwnedOrganizations: 3,
+              maximumOwnedOrganizations: 3,
+            },
+          });
+        }
         if (err.message?.includes('already have an organization on Free Trial')) {
           return reply.status(403).send({
             success: false,
@@ -334,6 +391,107 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
         }
         throw err;
       }
+    }
+  );
+
+  // POST /api/v1/organizations/with-plan - Create organization with plan selection (Free Trial / Standard)
+  fastify.post(
+    '/with-plan',
+    {
+      schema: {
+        tags: ['Organizations'],
+        summary: 'Create organization with plan selection (Free Trial / Standard)',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const body = request.body as any;
+      if (!body.name || !body.phone || !body.category) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: 'Business name, phone number, and category are required.',
+          },
+        });
+      }
+
+      try {
+        await entitlementService.requireCanCreateOrganization(request.user.id);
+      } catch (limitErr: any) {
+        if (limitErr.code === 'ORGANIZATION_LIMIT_REACHED' || limitErr.statusCode === 409) {
+          return reply.status(409).send({
+            success: false,
+            error: {
+              code: 'ORGANIZATION_LIMIT_REACHED',
+              message: limitErr.message || 'You already own 3 organizations. You can still join other organizations by invitation.',
+              currentOwnedOrganizations: limitErr.currentOwnedOrganizations || 3,
+              maximumOwnedOrganizations: limitErr.maximumOwnedOrganizations || 3,
+            },
+          });
+        }
+        throw limitErr;
+      }
+
+      const planKey = body.planKey === 'standard' ? 'standard' : 'free_trial';
+
+      try {
+        const result = await dataService.createOrganizationWithPlan({
+          userId: request.user.id,
+          name: body.name,
+          phone: body.phone,
+          category: body.category,
+          currency: body.currency || 'NGN',
+          street: body.street,
+          city: body.city,
+          state: body.state,
+          country: body.country || 'Nigeria',
+          address: body.address,
+          industry: body.industry,
+          timezone: body.timezone || 'Africa/Lagos',
+          website: body.website,
+          businessType: body.businessType,
+          branchCountRange: body.branchCountRange,
+          productCountRange: body.productCountRange,
+          primaryUsers: body.primaryUsers,
+          planKey,
+          billingInterval: body.billingInterval,
+          paymentGateway: body.paymentGateway,
+          paymentReference: body.paymentReference,
+        });
+
+        try {
+          await dataService.updateProfile(request.user.id, { personalOnboardingCompleted: true } as any);
+        } catch {}
+
+        return reply.status(201).send({
+          success: true,
+          data: result,
+        });
+      } catch (err: any) {
+        if (err.message?.includes('ORGANIZATION_LIMIT_REACHED') || err.code === 'ORGANIZATION_LIMIT_REACHED') {
+          return reply.status(409).send({
+            success: false,
+            error: {
+              code: 'ORGANIZATION_LIMIT_REACHED',
+              message: 'You already own 3 organizations. You can still join other organizations by invitation.',
+              currentOwnedOrganizations: 3,
+              maximumOwnedOrganizations: 3,
+            },
+          });
+        }
+        if (err.message?.includes('already have an organization on Free Trial')) {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: 'FREE_TRIAL_LIMIT_EXCEEDED',
+              message: err.message,
+            },
+          });
+        }
+        throw err;
+      }
+
     }
   );
 
@@ -530,6 +688,16 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
         paymentGateway?: string;
       };
 
+      if (applicationKey.toLowerCase() !== 'inventory') {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: 'APPLICATION_NOT_AVAILABLE',
+            message: 'This application is not available yet.',
+          },
+        });
+      }
+
       try {
         const result = await dataService.activateApplication({
           organizationId,
@@ -546,11 +714,38 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
           data: result,
         });
       } catch (err: any) {
+        if (err.message === 'APPLICATION_NOT_AVAILABLE') {
+          return reply.status(404).send({
+            success: false,
+            error: {
+              code: 'APPLICATION_NOT_AVAILABLE',
+              message: 'This application is not available yet.',
+            },
+          });
+        }
         if (err.message?.includes('Free Trial organizations can only activate 1 application')) {
           return reply.status(403).send({
             success: false,
             error: {
               code: 'APP_LIMIT_REACHED',
+              message: err.message,
+            },
+          });
+        }
+        if (err.message?.includes('This application is not available on Free Trial')) {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: 'APP_NOT_ALLOWED_ON_PLAN',
+              message: err.message,
+            },
+          });
+        }
+        if (err.message?.includes('subscription is required') || err.message?.includes('subscription is not active')) {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: 'SUBSCRIPTION_REQUIRED',
               message: err.message,
             },
           });
@@ -570,6 +765,144 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
             error: {
               code: ERROR_CODES.ORGANIZATION_NOT_FOUND,
               message: 'Organization not found.',
+            },
+          });
+        }
+        throw err;
+      }
+    }
+  );
+
+  // POST /api/v1/organizations/:organizationId/applications/:applicationKey/deactivate
+  fastify.post(
+    '/:organizationId/applications/:applicationKey/deactivate',
+    {
+      schema: {
+        tags: ['Organizations'],
+        summary: 'Deactivate an application for an organization',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const { organizationId, applicationKey } = request.params as {
+        organizationId: string;
+        applicationKey: string;
+      };
+
+      try {
+        const result = await dataService.deactivateApplication({
+          organizationId,
+          applicationKey,
+          userId: request.user?.id,
+        });
+
+        return reply.status(200).send({
+          success: true,
+          data: result,
+        });
+      } catch (err: any) {
+        if (err.message === 'ORGANIZATION_ACCESS_DENIED' || err.message === 'INSUFFICIENT_PERMISSIONS') {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.ORGANIZATION_ACCESS_DENIED,
+              message: 'Only Organization Owners, Admins, or Managers can deactivate applications.',
+            },
+          });
+        }
+        if (err.message === 'ORGANIZATION_NOT_FOUND') {
+          return reply.status(404).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.ORGANIZATION_NOT_FOUND,
+              message: 'Organization not found.',
+            },
+          });
+        }
+        if (err.message === 'APPLICATION_NOT_FOUND') {
+          return reply.status(404).send({
+            success: false,
+            error: {
+              code: 'APPLICATION_NOT_FOUND',
+              message: `Application "${applicationKey}" was not found.`,
+            },
+          });
+        }
+        if (err.message === 'APPLICATION_NOT_ACTIVATED') {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: 'APPLICATION_NOT_ACTIVATED',
+              message: `Application "${applicationKey}" is not currently activated for this organization.`,
+            },
+          });
+        }
+        throw err;
+      }
+    }
+  );
+
+  // DELETE /api/v1/organizations/:organizationId/applications/:applicationKey (Alias for deactivation)
+  fastify.delete(
+    '/:organizationId/applications/:applicationKey',
+    {
+      schema: {
+        tags: ['Organizations'],
+        summary: 'Deactivate / uninstall an application for an organization',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const { organizationId, applicationKey } = request.params as {
+        organizationId: string;
+        applicationKey: string;
+      };
+
+      try {
+        const result = await dataService.deactivateApplication({
+          organizationId,
+          applicationKey,
+          userId: request.user?.id,
+        });
+
+        return reply.status(200).send({
+          success: true,
+          data: result,
+        });
+      } catch (err: any) {
+        if (err.message === 'ORGANIZATION_ACCESS_DENIED' || err.message === 'INSUFFICIENT_PERMISSIONS') {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.ORGANIZATION_ACCESS_DENIED,
+              message: 'Only Organization Owners, Admins, or Managers can deactivate applications.',
+            },
+          });
+        }
+        if (err.message === 'ORGANIZATION_NOT_FOUND') {
+          return reply.status(404).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.ORGANIZATION_NOT_FOUND,
+              message: 'Organization not found.',
+            },
+          });
+        }
+        if (err.message === 'APPLICATION_NOT_FOUND') {
+          return reply.status(404).send({
+            success: false,
+            error: {
+              code: 'APPLICATION_NOT_FOUND',
+              message: `Application "${applicationKey}" was not found.`,
+            },
+          });
+        }
+        if (err.message === 'APPLICATION_NOT_ACTIVATED') {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: 'APPLICATION_NOT_ACTIVATED',
+              message: `Application "${applicationKey}" is not currently activated for this organization.`,
             },
           });
         }
@@ -621,6 +954,142 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
         success: true,
         data: status,
       });
+    }
+  );
+
+  // GET /api/v1/organizations/:organizationId/my-permissions (P3: Granular RBAC)
+  fastify.get(
+    '/:organizationId/my-permissions',
+    {
+      schema: {
+        tags: ['Organizations', 'RBAC'],
+        summary: 'Get caller permissions across applications and branches for this organization',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as { organizationId: string };
+      const permissions = await dataService.getUserAppPermissions(
+        organizationId,
+        request.user.id
+      );
+
+      return reply.send({
+        success: true,
+        data: permissions,
+      });
+    }
+  );
+
+  // GET /api/v1/organizations/:organizationId/applications/:applicationKey/access (P3: Granular RBAC)
+  fastify.get(
+    '/:organizationId/applications/:applicationKey/access',
+    {
+      schema: {
+        tags: ['Organizations', 'RBAC'],
+        summary: 'Check if user has access to a specific application in this organization',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const { organizationId, applicationKey } = request.params as {
+        organizationId: string;
+        applicationKey: string;
+      };
+
+      const access = await dataService.checkUserAppAccess(
+        organizationId,
+        request.user.id,
+        applicationKey
+      );
+
+      return reply.send({
+        success: true,
+        data: access,
+      });
+    }
+  );
+
+  // GET /api/v1/organizations/:organizationId/usage/summary (P4: Organization Entitlements)
+  fastify.get(
+    '/:organizationId/usage/summary',
+    {
+      schema: {
+        tags: ['Organizations', 'Billing'],
+        summary: 'Get organization usage summary against plan quotas',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as { organizationId: string };
+      const summary = await entitlementService.getOrganizationUsageSummary(
+        organizationId,
+        request.user?.id
+      );
+
+      return reply.send({
+        success: true,
+        data: summary,
+      });
+    }
+  );
+
+  // PATCH /api/v1/organizations/:organizationId/members/:memberId/permissions (P3: Granular RBAC)
+  fastify.patch(
+    '/:organizationId/members/:memberId/permissions',
+    {
+      schema: {
+        tags: ['Organizations', 'RBAC'],
+        summary: 'Update member allowed applications and branches',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const { organizationId, memberId } = request.params as {
+        organizationId: string;
+        memberId: string;
+      };
+      const body = (request.body || {}) as {
+        allowedApplications?: string[];
+        allowedBranches?: string[];
+        primaryBranchId?: string;
+      };
+
+      try {
+        await dataService.updateMemberAppPermissions({
+          organizationId,
+          callerUserId: request.user.id,
+          targetUserId: memberId,
+          allowedApplications: body.allowedApplications,
+          allowedBranches: body.allowedBranches,
+          primaryBranchId: body.primaryBranchId,
+        });
+
+        return reply.send({
+          success: true,
+          message: 'Member permissions updated successfully.',
+        });
+      } catch (err: any) {
+        if (err.message === 'INSUFFICIENT_PERMISSIONS') {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.ORGANIZATION_ACCESS_DENIED,
+              message: 'Only organization owners or administrators can update member permissions.',
+            },
+          });
+        }
+        if (err.message === 'MEMBER_NOT_FOUND') {
+          return reply.status(404).send({
+            success: false,
+            error: {
+              code: 'MEMBER_NOT_FOUND',
+              message: 'Target organization member was not found.',
+            },
+          });
+        }
+        throw err;
+      }
     }
   );
 
@@ -1200,8 +1669,29 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
+      const query = (request.query || {}) as { app?: string; applicationId?: string };
+
+      // If app or applicationId specified, fetch branches scoped to (organization, application)
+      if (query.app || query.applicationId) {
+        const branches = await dataService.getBranchesForApplication(id, query.applicationId, query.app);
+        return reply.send({
+          success: true,
+          branches: branches || [],
+          data: {
+            organizationId: id,
+            applicationId: query.applicationId,
+            applicationKey: query.app,
+            branches: branches || [],
+          },
+        });
+      }
+
       // Try listing direct organization branches first
-      let branches = await dataService.listBranches({ organizationId: id });
+      let rawBranches = await dataService.listBranches({ organizationId: id });
+      let branches = (rawBranches || []).map((b: any) => ({
+        id: b._id || b.id,
+        ...b,
+      }));
       let wsId: string | undefined = undefined;
 
       if (!branches || branches.length === 0) {
@@ -1210,8 +1700,8 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
           const primaryWs = workspaces[0];
           const resolvedWsId: string = primaryWs._id || primaryWs.id;
           wsId = resolvedWsId;
-          const rawBranches = (await dataService.getBranches(resolvedWsId, request.user.id)) || [];
-          branches = rawBranches.map((b: any) => ({
+          const fallbackBranches = (await dataService.getBranches(resolvedWsId, request.user.id)) || [];
+          branches = fallbackBranches.map((b: any) => ({
             id: b._id || b.id,
             ...b,
           }));
@@ -1226,6 +1716,34 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
           workspaceId: wsId,
           branches: branches || [],
         },
+      });
+    }
+  );
+
+  // GET /api/v1/organizations/:organizationId/applications/:applicationId/branches (US-BR2)
+  fastify.get(
+    '/:organizationId/applications/:applicationId/branches',
+    {
+      schema: {
+        tags: ['Organizations', 'Branches'],
+        summary: 'Get branches for an organization application (US-BR2)',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const { organizationId, applicationId } = request.params as {
+        organizationId: string;
+        applicationId: string;
+      };
+      const branches = await dataService.getBranchesForApplication(organizationId, applicationId);
+      return reply.send({
+        success: true,
+        data: {
+          organizationId,
+          applicationId,
+          branches: branches || [],
+        },
+        branches: branches || [],
       });
     }
   );
@@ -1264,6 +1782,8 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
             phone: { type: 'string' },
             email: { type: 'string' },
             isPrimary: { type: 'boolean' },
+            applicationId: { type: 'string' },
+            applicationKey: { type: 'string' },
           },
         },
       },
@@ -1309,20 +1829,40 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       try {
-        const branchId = await dataService.createBranch({
-          organizationId: id,
-          workspaceId: wsId,
-          callerUserId: request.user.id,
-          name: body.name,
-          code: body.code,
-          isPrimary: body.isPrimary,
-          isActive: body.isActive !== undefined ? body.isActive : true,
-          address: body.address,
-          phone: body.phone,
-          ...body,
-        });
+        let branchResult: any;
+        if (body.applicationId || body.applicationKey) {
+          branchResult = await dataService.createBranchForApplication({
+            organizationId: id,
+            applicationId: body.applicationId,
+            applicationKey: body.applicationKey,
+            name: body.name,
+            code: body.code,
+            address: body.address || body.formattedAddress,
+            phone: body.phone,
+            isPrimary: body.isPrimary,
+            callerUserId: request.user.id,
+            userId: request.user.id,
+          });
+        } else {
+          branchResult = await dataService.createBranch({
+            organizationId: id,
+            workspaceId: wsId,
+            callerUserId: request.user.id,
+            name: body.name,
+            code: body.code,
+            isPrimary: body.isPrimary,
+            isActive: body.isActive !== undefined ? body.isActive : true,
+            address: body.address,
+            phone: body.phone,
+            ...body,
+          });
+        }
 
-        const bId = typeof branchId === 'string' ? branchId : (branchId as any)?._id || (branchId as any)?.id;
+        const bId =
+          typeof branchResult === 'string'
+            ? branchResult
+            : branchResult?.branchId || branchResult?._id || branchResult?.id;
+
         return reply.status(201).send({
           success: true,
           message: 'Branch created successfully.',
@@ -1353,6 +1893,97 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
             error: {
               code: 'APPLICATION_NOT_ACTIVATED',
               message: 'Application is not activated for this organization. Please activate the application first.',
+            },
+          });
+        }
+        if (err.message?.includes('subscription')) {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: 'SUBSCRIPTION_REQUIRED',
+              message: err.message,
+            },
+          });
+        }
+        throw err;
+      }
+    }
+  );
+
+  // POST /api/v1/organizations/:organizationId/applications/:applicationId/branches (US-BR1)
+  fastify.post(
+    '/:organizationId/applications/:applicationId/branches',
+    {
+      schema: {
+        tags: ['Organizations', 'Branches'],
+        summary: 'Create a branch for an organization application (US-BR1)',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const { organizationId, applicationId } = request.params as {
+        organizationId: string;
+        applicationId: string;
+      };
+      const body = (request.body || {}) as any;
+
+      if (!body.name) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: 'Branch name is required.',
+          },
+        });
+      }
+
+      try {
+        const result = await dataService.createBranchForApplication({
+          organizationId,
+          applicationId,
+          name: body.name,
+          code: body.code,
+          address: body.address || body.formattedAddress,
+          phone: body.phone,
+          isPrimary: body.isPrimary,
+          userId: request.user?.id,
+          callerUserId: request.user?.id,
+        });
+
+        const bId = (result as any)?.branchId || (result as any)?._id || (result as any)?.id;
+        return reply.status(201).send({
+          success: true,
+          message: 'Branch created successfully.',
+          data: {
+            branchId: bId,
+            branch: (result as any)?.branch || { id: bId, ...body },
+          },
+        });
+      } catch (err: any) {
+        if (err.message?.includes('Free Trial organizations can only have 1 branch per application')) {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: 'BRANCH_LIMIT_REACHED',
+              message: err.message,
+            },
+          });
+        }
+        if (err.message === 'APPLICATION_NOT_ACTIVATED') {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: 'APPLICATION_NOT_ACTIVATED',
+              message: 'Application is not activated for this organization. Please activate the application first.',
+            },
+          });
+        }
+        if (err.message?.includes('subscription')) {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: 'SUBSCRIPTION_REQUIRED',
+              message: err.message,
             },
           });
         }
@@ -1398,6 +2029,44 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
           },
         },
       });
+    }
+  );
+
+  // DELETE /api/v1/organizations/:id/branches/:branchId (US-BR2)
+  fastify.delete(
+    '/:id/branches/:branchId',
+    {
+      schema: {
+        tags: ['Organizations', 'Branches'],
+        summary: 'Deactivate / soft-delete an organization branch (US-BR2)',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['id', 'branchId'],
+          properties: {
+            id: { type: 'string' },
+            branchId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { branchId } = request.params as { id: string; branchId: string };
+      try {
+        await dataService.deactivateBranch(branchId, request.user.id);
+        return reply.send({
+          success: true,
+          message: 'Branch deactivated successfully.',
+        });
+      } catch (err: any) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: 'BRANCH_DEACTIVATE_FAILED',
+            message: err.message || 'Failed to deactivate branch.',
+          },
+        });
+      }
     }
   );
 
@@ -1970,6 +2639,147 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
             error: {
               code: ERROR_CODES.INVITATION_NOT_FOUND,
               message: 'Invitation not found.',
+            },
+          });
+        }
+        throw err;
+      }
+    }
+  );
+
+  // POST /api/v1/organizations/:organizationId/archive
+  fastify.post(
+    '/:organizationId/archive',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Organizations'],
+        summary: 'Archive an organization',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['organizationId'],
+          properties: {
+            organizationId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as { organizationId: string };
+      try {
+        await dataService.archiveOrganization(organizationId, request.user.id);
+        return reply.send({
+          success: true,
+          message: 'Organization archived successfully.',
+        });
+      } catch (err: any) {
+        if (err.message === 'ORGANIZATION_ACCESS_DENIED') {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.ORGANIZATION_ACCESS_DENIED,
+              message: 'Only the Organization Owner can archive this organization.',
+            },
+          });
+        }
+        throw err;
+      }
+    }
+  );
+
+  // POST /api/v1/organizations/:organizationId/restore
+  fastify.post(
+    '/:organizationId/restore',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Organizations'],
+        summary: 'Restore an archived organization',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['organizationId'],
+          properties: {
+            organizationId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as { organizationId: string };
+      try {
+        await dataService.restoreOrganization(organizationId, request.user.id);
+        return reply.send({
+          success: true,
+          message: 'Organization restored successfully.',
+        });
+      } catch (err: any) {
+        if (err.message === 'ORGANIZATION_ACCESS_DENIED') {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.ORGANIZATION_ACCESS_DENIED,
+              message: 'Only the Organization Owner can restore this organization.',
+            },
+          });
+        }
+        throw err;
+      }
+    }
+  );
+
+  // POST /api/v1/organizations/:organizationId/transfer-ownership
+  fastify.post(
+    '/:organizationId/transfer-ownership',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Organizations'],
+        summary: 'Transfer organization ownership to another user',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['organizationId'],
+          properties: {
+            organizationId: { type: 'string' },
+          },
+        },
+        body: {
+          type: 'object',
+          required: ['newOwnerId'],
+          properties: {
+            newOwnerId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as { organizationId: string };
+      const { newOwnerId } = request.body as { newOwnerId: string };
+
+      try {
+        await dataService.transferOrganizationOwnership(organizationId, request.user.id, newOwnerId);
+        return reply.send({
+          success: true,
+          message: 'Organization ownership transferred successfully.',
+        });
+      } catch (err: any) {
+        if (err.message === 'TARGET_USER_ORGANIZATION_LIMIT_REACHED') {
+          return reply.status(409).send({
+            success: false,
+            error: {
+              code: 'TARGET_USER_ORGANIZATION_LIMIT_REACHED',
+              message: 'Target user already owns the maximum allowed number of organizations.',
+            },
+          });
+        }
+        if (err.message === 'ORGANIZATION_ACCESS_DENIED') {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.ORGANIZATION_ACCESS_DENIED,
+              message: 'Only the current Organization Owner can transfer ownership.',
             },
           });
         }

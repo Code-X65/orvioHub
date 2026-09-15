@@ -336,3 +336,258 @@ export const seedDefaultPlans = mutation({
     return { createdCount: created.length };
   },
 });
+
+export const adminListPlans = query({
+  args: {},
+  handler: async (ctx) => {
+    const plans = await ctx.db.query("plans").collect();
+    if (plans.length === 0) {
+      return DEFAULT_PLANS.filter((p) => p.key !== "free_trial");
+    }
+    return plans.sort((a, b) => {
+      const pA = a.priceAmount ?? a.price?.monthly ?? a.monthlyPrice ?? 0;
+      const pB = b.priceAmount ?? b.price?.monthly ?? b.monthlyPrice ?? 0;
+      return pA - pB;
+    });
+  },
+});
+
+export const adminGetPlan = query({
+  args: {
+    planId: v.optional(v.union(v.id("plans"), v.string())),
+    planKey: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    let plan = null;
+    if (args.planId) {
+      const normId = ctx.db.normalizeId("plans", args.planId);
+      if (normId) {
+        plan = await ctx.db.get(normId);
+      }
+    }
+    if (!plan && (args.planKey || args.planId)) {
+      const key = args.planKey || (args.planId as string);
+      plan = await ctx.db
+        .query("plans")
+        .withIndex("by_key", (q) => q.eq("key", key))
+        .first();
+    }
+    if (!plan && args.planKey) {
+      const altKey = args.planKey === "free" ? "free_trial" : args.planKey === "free_trial" ? "free" : null;
+      if (altKey) {
+        plan = await ctx.db
+          .query("plans")
+          .withIndex("by_key", (q) => q.eq("key", altKey))
+          .first();
+      }
+    }
+    if (!plan) {
+      const fallback = DEFAULT_PLANS.find((p) => p.key === args.planKey || p.key === args.planId);
+      if (fallback) return fallback;
+      throw new Error(`Plan not found`);
+    }
+    return plan;
+  },
+});
+
+export const adminCreatePlan = mutation({
+  args: {
+    key: v.string(),
+    name: v.string(),
+    type: v.string(), // "free" | "paid"
+    priceAmount: v.number(),
+    currency: v.optional(v.string()),
+    interval: v.optional(v.string()), // "month" | "year"
+    trialDurationDays: v.optional(v.number()),
+    features: v.optional(v.any()),
+    limits: v.optional(v.any()),
+    allowedApps: v.optional(v.array(v.string())),
+    active: v.optional(v.boolean()),
+    isActive: v.optional(v.boolean()),
+    adminSessionToken: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const key = args.key.trim().toLowerCase().replace(/\s+/g, "_");
+    const existing = await ctx.db
+      .query("plans")
+      .withIndex("by_key", (q) => q.eq("key", key))
+      .first();
+
+    if (existing) {
+      throw new Error(`A plan with key '${key}' already exists.`);
+    }
+
+    const now = Date.now();
+    const isActive = args.isActive ?? args.active ?? true;
+    const monthlyPrice = args.interval === "year" ? Math.round(args.priceAmount / 12) : args.priceAmount;
+    const annualPrice = args.interval === "year" ? args.priceAmount : args.priceAmount * 10;
+
+    const newPlanId = await ctx.db.insert("plans", {
+      key,
+      name: args.name.trim(),
+      type: args.type,
+      priceAmount: args.priceAmount,
+      currency: args.currency || "NGN",
+      trialDurationDays: args.trialDurationDays ?? (args.type === "free" ? 30 : undefined),
+      trialDays: args.trialDurationDays ?? (args.type === "free" ? 30 : undefined),
+      price: {
+        monthly: monthlyPrice,
+        annual: annualPrice,
+      },
+      monthlyPrice,
+      annualPrice,
+      features: args.features || {
+        maxApplications: args.limits?.maxAppsPerOrganization ?? (args.type === "free" ? 1 : 3),
+        maxBranchesPerApplication: args.limits?.maxBranchesPerApp ?? (args.type === "free" ? 1 : 3),
+        appsIncluded: args.allowedApps || (args.type === "free" ? ["inventory"] : ["inventory", "tasks"]),
+        advancedReports: args.type !== "free",
+      },
+      limits: args.limits || {
+        maxOrganizations: args.type === "free" ? 1 : 3,
+        maxAppsPerOrganization: args.type === "free" ? 1 : 3,
+        maxBranchesPerApp: args.type === "free" ? 1 : 3,
+        maxMembersPerOrganization: args.type === "free" ? 2 : 10,
+        maxProductsPerWorkspace: args.type === "free" ? 500 : 5000,
+        maxTransactionsPerMonth: args.type === "free" ? 500 : 5000,
+      },
+      allowedApps: args.allowedApps || (args.type === "free" ? ["inventory"] : ["inventory", "tasks"]),
+      allowedAppKeys: args.allowedApps || (args.type === "free" ? ["inventory"] : ["inventory", "tasks"]),
+      isActive,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await ctx.db.insert("adminAuditLogs", {
+      action: "admin.plan_created",
+      resourceType: "plans",
+      resourceId: newPlanId,
+      details: {
+        key,
+        name: args.name,
+        priceAmount: args.priceAmount,
+        type: args.type,
+      },
+      createdAt: now,
+    });
+
+    return await ctx.db.get(newPlanId);
+  },
+});
+
+export const adminUpdatePlan = mutation({
+  args: {
+    planId: v.optional(v.union(v.id("plans"), v.string())),
+    planKey: v.optional(v.string()),
+    updates: v.object({
+      name: v.optional(v.string()),
+      type: v.optional(v.string()),
+      priceAmount: v.optional(v.number()),
+      currency: v.optional(v.string()),
+      interval: v.optional(v.string()),
+      trialDurationDays: v.optional(v.number()),
+      features: v.optional(v.any()),
+      limits: v.optional(v.any()),
+      price: v.optional(
+        v.object({
+          monthly: v.number(),
+          annual: v.number(),
+        })
+      ),
+      monthlyPrice: v.optional(v.number()),
+      annualPrice: v.optional(v.number()),
+      allowedApps: v.optional(v.array(v.string())),
+      allowedAppKeys: v.optional(v.array(v.string())),
+      isActive: v.optional(v.boolean()),
+      active: v.optional(v.boolean()),
+    }),
+    adminSessionToken: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    let plan: any = null;
+    if (args.planId) {
+      const normId = ctx.db.normalizeId("plans", args.planId);
+      if (normId) {
+        plan = await ctx.db.get(normId);
+      }
+    }
+    if (!plan && (args.planKey || args.planId)) {
+      const key = args.planKey || (args.planId as string);
+      plan = await ctx.db
+        .query("plans")
+        .withIndex("by_key", (q) => q.eq("key", key))
+        .first();
+    }
+
+    const now = Date.now();
+    const isActive = args.updates.isActive ?? args.updates.active;
+
+    if (!plan) {
+      // Create if it doesn't exist
+      const key = (args.planKey || (args.planId as string) || "standard").toLowerCase();
+      const newId = await ctx.db.insert("plans", {
+        key,
+        name: args.updates.name || key,
+        type: args.updates.type || "paid",
+        priceAmount: args.updates.priceAmount ?? args.updates.price?.monthly ?? 7500,
+        currency: args.updates.currency || "NGN",
+        trialDurationDays: args.updates.trialDurationDays,
+        trialDays: args.updates.trialDurationDays,
+        price: args.updates.price || {
+          monthly: args.updates.monthlyPrice ?? 7500,
+          annual: args.updates.annualPrice ?? 75000,
+        },
+        monthlyPrice: args.updates.monthlyPrice ?? 7500,
+        annualPrice: args.updates.annualPrice ?? 75000,
+        features: args.updates.features,
+        limits: args.updates.limits,
+        allowedApps: args.updates.allowedApps,
+        allowedAppKeys: args.updates.allowedAppKeys || args.updates.allowedApps,
+        isActive: isActive !== false,
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      await ctx.db.insert("adminAuditLogs", {
+        action: "admin.plan_created",
+        resourceType: "plans",
+        resourceId: newId,
+        details: { key, updates: args.updates },
+        createdAt: now,
+      });
+
+      return await ctx.db.get(newId);
+    }
+
+    const patchPayload: any = {
+      updatedAt: now,
+    };
+    if (args.updates.name !== undefined) patchPayload.name = args.updates.name;
+    if (args.updates.type !== undefined) patchPayload.type = args.updates.type;
+    if (args.updates.priceAmount !== undefined) patchPayload.priceAmount = args.updates.priceAmount;
+    if (args.updates.currency !== undefined) patchPayload.currency = args.updates.currency;
+    if (args.updates.trialDurationDays !== undefined) {
+      patchPayload.trialDurationDays = args.updates.trialDurationDays;
+      patchPayload.trialDays = args.updates.trialDurationDays;
+    }
+    if (args.updates.features !== undefined) patchPayload.features = args.updates.features;
+    if (args.updates.limits !== undefined) patchPayload.limits = args.updates.limits;
+    if (args.updates.price !== undefined) patchPayload.price = args.updates.price;
+    if (args.updates.monthlyPrice !== undefined) patchPayload.monthlyPrice = args.updates.monthlyPrice;
+    if (args.updates.annualPrice !== undefined) patchPayload.annualPrice = args.updates.annualPrice;
+    if (args.updates.allowedApps !== undefined) patchPayload.allowedApps = args.updates.allowedApps;
+    if (args.updates.allowedAppKeys !== undefined) patchPayload.allowedAppKeys = args.updates.allowedAppKeys;
+    if (isActive !== undefined) patchPayload.isActive = isActive;
+
+    await ctx.db.patch(plan._id, patchPayload);
+
+    await ctx.db.insert("adminAuditLogs", {
+      action: "admin.plan_updated",
+      resourceType: "plans",
+      resourceId: plan._id,
+      details: { key: plan.key, updates: args.updates },
+      createdAt: now,
+    });
+
+    return await ctx.db.get(plan._id);
+  },
+});

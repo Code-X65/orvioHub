@@ -3,7 +3,6 @@ import { ChevronDown, Menu, X, ArrowRight, User, LogOut, Globe, Plus } from 'luc
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { OrivioLogo } from '../brand/OrivioLogo';
-import { UserPlanBadge } from '../profile/UserPlanBadge';
 import { NotificationBell } from '../notifications/NotificationBell';
 import {
   getMarketingUrl,
@@ -177,56 +176,81 @@ export const Header: React.FC = () => {
               <NotificationBell />
               <div className="relative" ref={profileMenuRef}>
                 <button
-                type="button"
-                onClick={() => setProfileDropdownOpen((prev) => !prev)}
-                className="flex items-center gap-2.5 pl-2 pr-3 py-1.5 rounded-sm bg-white/5 border border-white/10 hover:border-white/20 transition-all text-xs text-white"
-              >
-                <div className="w-7 h-7 rounded-sm bg-gradient-to-tr from-[#714B67] to-[#FDB02F] flex items-center justify-center font-bold text-white text-[11px] shadow-sm">
-                  {user.name?.charAt(0).toUpperCase() || 'U'}
-                </div>
-                <span className="font-semibold max-w-[120px] truncate">{user.name?.split(' ')[0] || 'Account'}</span>
-                <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${profileDropdownOpen ? 'rotate-180' : ''}`} />
-              </button>
-
-              {profileDropdownOpen && (
-                <div className="absolute right-0 mt-2 w-56 rounded-sm bg-[#0e0e11] border border-white/10 shadow-2xl p-2 z-50 animate-in fade-in slide-in-from-top-2">
-                  <div className="px-3 py-2 border-b border-white/10">
-                    <div className="flex items-center justify-between gap-1.5 mb-1">
-                      <p className="font-bold text-white text-xs truncate">{user.name}</p>
-                      <UserPlanBadge planKey={user.planKey} size="xs" />
-                    </div>
-                    <p className="text-[10px] text-slate-400 truncate">{user.email}</p>
-                  </div>
-                  <div className="py-1">
-                    <a href={launcherUrl} className="flex items-center gap-2 px-3 py-2 text-xs text-slate-300 hover:text-white hover:bg-white/5 rounded-sm transition">
-                      Workspaces
-                    </a>
-                    {hasOrganization ? (
-                      <a href={inventoryUrl} className="flex items-center gap-2 px-3 py-2 text-xs text-slate-300 hover:text-white hover:bg-white/5 rounded-sm transition">
-                        Inventory App
-                      </a>
+                  type="button"
+                  onClick={() => setProfileDropdownOpen((prev) => !prev)}
+                  className="flex items-center gap-2.5 pl-2 pr-3 py-1.5 rounded-sm bg-white/5 border border-white/10 hover:border-white/20 transition-all text-xs text-white cursor-pointer"
+                >
+                  <div className="w-7 h-7 rounded-sm bg-gradient-to-tr from-[#714B67] to-[#FDB02F] flex items-center justify-center font-bold text-white text-[11px] shadow-sm overflow-hidden shrink-0">
+                    {user.avatarUrl || user.avatar ? (
+                      <img
+                        src={user.avatarUrl || user.avatar}
+                        alt={user.name || 'User avatar'}
+                        className="w-full h-full object-cover"
+                        onError={(e) => {
+                          // Hide image on broken URL so fallback initial displays
+                          (e.target as HTMLElement).style.display = 'none';
+                        }}
+                      />
                     ) : (
-                      <a href={`${launcherUrl}/onboard`} className="flex items-center gap-2 px-3 py-2 text-xs text-[#c79dbd] hover:text-white hover:bg-[#714b67]/20 rounded-sm transition font-medium">
-                        <Plus className="w-3.5 h-3.5 text-[#c79dbd]" /> Set up Organization
-                      </a>
+                      user.name?.charAt(0).toUpperCase() || 'U'
                     )}
-                    <a href={myAccountUrl} className="flex items-center gap-2 px-3 py-2 text-xs text-slate-300 hover:text-white hover:bg-white/5 rounded-sm transition">
-                      <User className="w-3.5 h-3.5" /> Account Settings
-                    </a>
                   </div>
-                  <div className="pt-1 border-t border-white/10">
-                    <button
-                      type="button"
-                      onClick={handleSignOut}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-xs text-rose-400 hover:bg-rose-500/10 rounded-sm transition font-semibold"
-                    >
-                      <LogOut className="w-3.5 h-3.5" /> Sign Out
-                    </button>
+                  <span className="font-semibold max-w-[120px] truncate">{user.name?.split(' ')[0] || 'Account'}</span>
+                  <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-200 ${profileDropdownOpen ? 'rotate-180 text-white' : ''}`} />
+                </button>
+
+                {profileDropdownOpen && (
+                  <div className="absolute right-0 mt-2 w-60 rounded-sm bg-[#0e0e11] border border-white/10 shadow-2xl p-2 z-50 animate-in fade-in slide-in-from-top-2 duration-150">
+                    <div className="px-3 py-2.5 border-b border-white/10 flex items-center gap-2.5">
+                      <div className="w-9 h-9 rounded-sm bg-gradient-to-tr from-[#714B67] to-[#FDB02F] flex items-center justify-center font-bold text-white text-xs overflow-hidden shrink-0 shadow-sm">
+                        {user.avatarUrl || user.avatar ? (
+                          <img
+                            src={user.avatarUrl || user.avatar}
+                            alt={user.name || 'User'}
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              (e.target as HTMLElement).style.display = 'none';
+                            }}
+                          />
+                        ) : (
+                          user.name?.charAt(0).toUpperCase() || 'U'
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-bold text-white text-xs truncate">{user.name || 'User'}</p>
+                        <p className="text-[10px] text-slate-400 truncate">{user.email}</p>
+                      </div>
+                    </div>
+                    <div className="py-1">
+                      <a href={launcherUrl} className="flex items-center gap-2 px-3 py-2 text-xs text-slate-300 hover:text-white hover:bg-white/5 rounded-sm transition">
+                        Workspaces
+                      </a>
+                      {hasOrganization ? (
+                        <a href={inventoryUrl} className="flex items-center gap-2 px-3 py-2 text-xs text-slate-300 hover:text-white hover:bg-white/5 rounded-sm transition">
+                          Inventory App
+                        </a>
+                      ) : (
+                        <a href={`${launcherUrl}/onboard/organization`} className="flex items-center gap-2 px-3 py-2 text-xs text-[#c79dbd] hover:text-white hover:bg-[#714b67]/20 rounded-sm transition font-medium">
+                          <Plus className="w-3.5 h-3.5 text-[#c79dbd]" /> Set up Organization
+                        </a>
+                      )}
+                      <a href={myAccountUrl} className="flex items-center gap-2 px-3 py-2 text-xs text-slate-300 hover:text-white hover:bg-white/5 rounded-sm transition">
+                        <User className="w-3.5 h-3.5" /> Account Settings
+                      </a>
+                    </div>
+                    <div className="pt-1 border-t border-white/10">
+                      <button
+                        type="button"
+                        onClick={handleSignOut}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-rose-400 hover:bg-rose-500/10 rounded-sm transition font-semibold cursor-pointer"
+                      >
+                        <LogOut className="w-3.5 h-3.5" /> Sign Out
+                      </button>
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
-          </div>
           ) : (
             <>
               <a
@@ -253,7 +277,7 @@ export const Header: React.FC = () => {
           <button
             type="button"
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            className="p-2 text-slate-400 hover:text-white rounded-sm hover:bg-white/5"
+            className="p-2 text-slate-400 hover:text-white rounded-sm hover:bg-white/5 cursor-pointer"
             aria-label="Toggle menu"
           >
             {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
@@ -264,15 +288,56 @@ export const Header: React.FC = () => {
       {/* Mobile Menu Dropdown */}
       {mobileMenuOpen && (
         <div className="lg:hidden bg-black/95 border-b border-white/10 px-6 py-6 space-y-4">
+          {isAuthenticated && user ? (
+            <div className="p-3 rounded-sm bg-white/5 border border-white/10 flex items-center gap-3 mb-2">
+              <div className="w-9 h-9 rounded-sm bg-gradient-to-tr from-[#714B67] to-[#FDB02F] flex items-center justify-center font-bold text-white text-xs overflow-hidden shrink-0 shadow-sm">
+                {user.avatarUrl || user.avatar ? (
+                  <img
+                    src={user.avatarUrl || user.avatar}
+                    alt={user.name || 'User'}
+                    className="w-full h-full object-cover"
+                    onError={(e) => {
+                      (e.target as HTMLElement).style.display = 'none';
+                    }}
+                  />
+                ) : (
+                  user.name?.charAt(0).toUpperCase() || 'U'
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="font-bold text-white text-xs truncate">{user.name || 'User'}</p>
+                <p className="text-[10px] text-slate-400 truncate">{user.email}</p>
+              </div>
+            </div>
+          ) : null}
+
           <a href={launcherUrl} className="block py-2 text-sm text-slate-300 hover:text-white">Solutions</a>
           <a href="#industries" className="block py-2 text-sm text-slate-300 hover:text-white">Industries</a>
           <a href="#resources" className="block py-2 text-sm text-slate-300 hover:text-white">Resources</a>
           <a href={pricingUrl} className="block py-2 text-sm text-slate-300 hover:text-white">Pricing</a>
           <a href="#about" className="block py-2 text-sm text-slate-300 hover:text-white">About</a>
-          <div className="pt-4 border-t border-white/10 flex flex-col gap-3">
-            <a href={loginUrl} className="w-full text-center py-2.5 text-xs font-semibold text-slate-300 border border-white/10 rounded-sm">Sign in</a>
-            <a href={signupUrl} className="w-full text-center py-2.5 text-xs font-semibold text-white bg-[#714B67] rounded-sm">Get started free</a>
-          </div>
+
+          {isAuthenticated && user ? (
+            <div className="pt-4 border-t border-white/10 space-y-2">
+              <a href={launcherUrl} className="block py-2 text-xs text-slate-300 hover:text-white">Workspaces</a>
+              {hasOrganization && (
+                <a href={inventoryUrl} className="block py-2 text-xs text-slate-300 hover:text-white">Inventory App</a>
+              )}
+              <a href={myAccountUrl} className="block py-2 text-xs text-slate-300 hover:text-white">Account Settings</a>
+              <button
+                type="button"
+                onClick={handleSignOut}
+                className="w-full text-left py-2 text-xs text-rose-400 hover:text-rose-300 font-semibold cursor-pointer"
+              >
+                Sign Out
+              </button>
+            </div>
+          ) : (
+            <div className="pt-4 border-t border-white/10 flex flex-col gap-3">
+              <a href={loginUrl} className="w-full text-center py-2.5 text-xs font-semibold text-slate-300 border border-white/10 rounded-sm">Sign in</a>
+              <a href={signupUrl} className="w-full text-center py-2.5 text-xs font-semibold text-white bg-[#714B67] rounded-sm">Get started free</a>
+            </div>
+          )}
         </div>
       )}
     </header>

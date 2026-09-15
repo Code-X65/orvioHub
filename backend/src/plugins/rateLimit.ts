@@ -6,8 +6,21 @@ import { ERROR_CODES } from '../config/constants.js';
 
 const plugin: FastifyPluginAsync = async (fastify) => {
   await fastify.register(rateLimit, {
-    max: 100,
+    max: 300,
     timeWindow: '1 minute',
+    keyGenerator: (req) => {
+      // 1. Authenticated user ID if present
+      if ((req as any).user?.id) {
+        return `user:${(req as any).user.id}`;
+      }
+      // 2. Authorization header token slice if present
+      const auth = req.headers.authorization;
+      if (auth && typeof auth === 'string' && auth.startsWith('Bearer ')) {
+        return `token:${auth.slice(-32)}`;
+      }
+      // 3. Fallback to client IP / forwarded IP
+      return `ip:${req.ip}`;
+    },
     allowList: (req) => {
       if (env.NODE_ENV === 'test' && (req.ip === '127.0.0.1' || req.ip === 'localhost')) {
         return true;

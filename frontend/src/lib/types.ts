@@ -178,9 +178,10 @@ export interface DeviceSession {
 
 export interface LinkedIdentityItem {
   id: string;
-  provider: 'password' | 'google' | 'facebook' | 'apple' | 'phone';
+  provider: 'password' | 'google' | 'facebook' | 'phone';
   providerEmail?: string;
   providerSubject?: string;
   createdAt: number;
   isPrimary?: boolean;
 }
+

@@ -93,13 +93,16 @@ const hostContextPluginAsync: FastifyPluginAsync = async (fastify: FastifyInstan
   });
 
   // Host context endpoint for diagnostics and health verification
-  fastify.get('/v1/host-context', async (request: FastifyRequest) => {
+  const hostContextHandler = async (request: FastifyRequest) => {
     return {
       status: 'ok',
       hostContext: request.hostContext,
       timestamp: new Date().toISOString(),
     };
-  });
+  };
+
+  fastify.get('/api/v1/host-context', hostContextHandler);
+  fastify.get('/v1/host-context', hostContextHandler);
 
   // System Readiness & Version Endpoints
   fastify.get('/ready', async () => {

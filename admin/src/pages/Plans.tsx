@@ -16,6 +16,7 @@ import {
   Layers,
   GitBranch,
   Users as UsersIcon,
+  PlusCircle,
 } from "lucide-react";
 import { adminBillingApi, type PlanRecord, type PlanLimits } from "../api/adminBilling";
 
@@ -26,8 +27,14 @@ export const Plans: React.FC = () => {
 
   // Edit Modal State
   const [editingPlan, setEditingPlan] = useState<PlanRecord | null>(null);
+  const [isCreatingPlan, setIsCreatingPlan] = useState(false);
   const [formData, setFormData] = useState({
+    key: "",
     name: "",
+    type: "paid" as "free" | "paid",
+    currency: "NGN",
+    interval: "month" as "month" | "year",
+    trialDurationDays: 30,
     monthlyPriceNaira: 0,
     annualPriceNaira: 0,
     isActive: true,
@@ -37,6 +44,8 @@ export const Plans: React.FC = () => {
     maxMembersPerOrganization: 2,
     maxProductsPerWorkspace: 500,
     maxTransactionsPerMonth: 500,
+    appsIncluded: ["inventory", "tasks"],
+    advancedReports: true,
   });
 
   const loadPlans = async () => {
@@ -55,14 +64,46 @@ export const Plans: React.FC = () => {
     loadPlans();
   }, []);
 
+  const handleOpenCreate = () => {
+    setIsCreatingPlan(true);
+    setEditingPlan(null);
+    setFormData({
+      key: "",
+      name: "",
+      type: "paid",
+      currency: "NGN",
+      interval: "month",
+      trialDurationDays: 30,
+      monthlyPriceNaira: 7500,
+      annualPriceNaira: 75000,
+      isActive: true,
+      maxOrganizations: 3,
+      maxAppsPerOrganization: 3,
+      maxBranchesPerApp: 3,
+      maxMembersPerOrganization: 10,
+      maxProductsPerWorkspace: 5000,
+      maxTransactionsPerMonth: 5000,
+      appsIncluded: ["inventory", "tasks"],
+      advancedReports: true,
+    });
+  };
+
   const handleOpenEdit = (plan: PlanRecord) => {
+    setIsCreatingPlan(false);
     setEditingPlan(plan);
     const limits = plan.limits || {};
-    const monthlyVal = plan.price?.monthly ?? (plan.monthlyPrice ? plan.monthlyPrice / 100 : 0);
-    const annualVal = plan.price?.annual ?? (plan.annualPrice ? plan.annualPrice / 100 : 0);
+    const monthlyVal = plan.price?.monthly ?? (plan.monthlyPrice ? plan.monthlyPrice / 100 : plan.priceAmount ?? 0);
+    const annualVal = plan.price?.annual ?? (plan.annualPrice ? plan.annualPrice / 100 : monthlyVal * 10);
+
+    const apps = plan.features?.appsIncluded || plan.allowedApps || ["inventory"];
 
     setFormData({
+      key: plan.key,
       name: plan.name,
+      type: (plan as any).type || (monthlyVal === 0 ? "free" : "paid"),
+      currency: plan.currency || "NGN",
+      interval: "month",
+      trialDurationDays: (plan as any).trialDurationDays || plan.trialDays || 30,
       monthlyPriceNaira: monthlyVal,
       annualPriceNaira: annualVal,
       isActive: plan.isActive !== false,
@@ -72,7 +113,67 @@ export const Plans: React.FC = () => {
       maxMembersPerOrganization: limits.maxMembersPerOrganization ?? limits.maxMembersPerWorkspace ?? 2,
       maxProductsPerWorkspace: limits.maxProductsPerWorkspace ?? 500,
       maxTransactionsPerMonth: limits.maxTransactionsPerMonth ?? 500,
+      appsIncluded: apps,
+      advancedReports: Boolean(plan.features?.advancedReports ?? true),
     });
+  };
+
+  const handleCreatePlan = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formData.key.trim() || !formData.name.trim()) {
+      alert("Please enter a plan key and display name.");
+      return;
+    }
+
+    setActionLoading(true);
+    try {
+      const parsedApps =
+        formData.maxAppsPerOrganization === "unlimited"
+          ? ("unlimited" as const)
+          : Math.max(1, Number(formData.maxAppsPerOrganization) || 1);
+
+      const parsedBranches =
+        formData.maxBranchesPerApp === "unlimited"
+          ? ("unlimited" as const)
+          : Math.max(1, Number(formData.maxBranchesPerApp) || 1);
+
+      const limitsPayload: PlanLimits = {
+        maxOrganizations: Number(formData.maxOrganizations) || 1,
+        maxAppsPerOrganization: parsedApps,
+        maxBranchesPerApp: parsedBranches,
+        maxMembersPerOrganization: Number(formData.maxMembersPerOrganization) || 2,
+        maxProductsPerWorkspace: Number(formData.maxProductsPerWorkspace) || 500,
+        maxTransactionsPerMonth: Number(formData.maxTransactionsPerMonth) || 500,
+      };
+
+      const priceAmount = formData.type === "free" ? 0 : Number(formData.monthlyPriceNaira);
+
+      await adminBillingApi.createPlan({
+        key: formData.key.trim().toLowerCase().replace(/\s+/g, "_"),
+        name: formData.name.trim(),
+        type: formData.type,
+        priceAmount,
+        currency: formData.currency,
+        interval: formData.interval,
+        trialDurationDays: formData.type === "free" ? Number(formData.trialDurationDays) || 30 : undefined,
+        limits: limitsPayload,
+        features: {
+          maxApplications: parsedApps === "unlimited" ? 999999 : Number(parsedApps),
+          maxBranchesPerApplication: parsedBranches === "unlimited" ? 999999 : Number(parsedBranches),
+          appsIncluded: formData.appsIncluded,
+          advancedReports: formData.advancedReports,
+        },
+        allowedApps: formData.appsIncluded,
+        isActive: formData.isActive,
+      });
+
+      setIsCreatingPlan(false);
+      await loadPlans();
+    } catch (err: any) {
+      alert(err.message || "Failed to create plan.");
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   const handleSavePlan = async (e: React.FormEvent) => {
@@ -103,17 +204,27 @@ export const Plans: React.FC = () => {
         maxMembersPerWorkspace: Number(formData.maxMembersPerOrganization) || 2,
       };
 
+      const monthlyPrice = Math.round(Number(formData.monthlyPriceNaira));
+      const annualPrice = Math.round(Number(formData.annualPriceNaira));
+
       await adminBillingApi.updatePlan(editingPlan.key, {
         name: formData.name,
         price: {
-          monthly: Math.round(Number(formData.monthlyPriceNaira)),
-          annual: Math.round(Number(formData.annualPriceNaira)),
+          monthly: monthlyPrice,
+          annual: annualPrice,
         },
-        monthlyPrice: Math.round(Number(formData.monthlyPriceNaira) * 100), // convert to kobo
-        annualPrice: Math.round(Number(formData.annualPriceNaira) * 100),
+        monthlyPrice: monthlyPrice * 100, // convert to kobo
+        annualPrice: annualPrice * 100,
         limits: limitsPayload,
+        features: {
+          maxApplications: parsedApps === "unlimited" ? 999999 : Number(parsedApps),
+          maxBranchesPerApplication: parsedBranches === "unlimited" ? 999999 : Number(parsedBranches),
+          appsIncluded: formData.appsIncluded,
+          advancedReports: formData.advancedReports,
+        },
+        allowedApps: formData.appsIncluded,
         isActive: formData.isActive,
-      });
+      } as any);
 
       setEditingPlan(null);
       await loadPlans();
@@ -150,6 +261,32 @@ export const Plans: React.FC = () => {
     }
   };
 
+  const AVAILABLE_APPS = [
+    { key: "inventory", name: "Inventory & Stock" },
+    { key: "tasks", name: "Task Management" },
+    { key: "pos", name: "Point of Sale (POS)" },
+    { key: "booking", name: "Appointments & Booking" },
+    { key: "gym", name: "Gym & Fitness" },
+    { key: "crm", name: "CRM & Customers" },
+    { key: "analytics", name: "Advanced Analytics" },
+    { key: "invoicing", name: "Invoicing & Billing" },
+    { key: "hr", name: "Human Resources" },
+  ];
+
+  const handleToggleApp = (appKey: string) => {
+    if (formData.appsIncluded.includes(appKey)) {
+      setFormData({
+        ...formData,
+        appsIncluded: formData.appsIncluded.filter((k) => k !== appKey),
+      });
+    } else {
+      setFormData({
+        ...formData,
+        appsIncluded: [...formData.appsIncluded, appKey],
+      });
+    }
+  };
+
   const getPlanIcon = (key: string) => {
     switch (key.toLowerCase()) {
       case "free":
@@ -180,6 +317,13 @@ export const Plans: React.FC = () => {
 
         <div className="flex items-center gap-3">
           <button
+            onClick={handleOpenCreate}
+            className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-lg shadow-emerald-600/20 transition flex items-center gap-2 cursor-pointer"
+          >
+            <PlusCircle className="w-4 h-4" />
+            <span>Create New Plan</span>
+          </button>
+          <button
             onClick={loadPlans}
             className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-semibold border border-slate-800 transition flex items-center gap-2 cursor-pointer"
           >
@@ -188,6 +332,7 @@ export const Plans: React.FC = () => {
           </button>
         </div>
       </div>
+
 
       {/* Plans Content */}
       {loading ? (
@@ -427,64 +572,176 @@ export const Plans: React.FC = () => {
         </div>
       )}
 
-      {/* Edit Plan & Limits Modal */}
-      {editingPlan && (
+      {/* Create / Edit Plan & Limits Modal */}
+      {(isCreatingPlan || editingPlan) && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in overflow-y-auto">
-          <div className="max-w-lg w-full rounded-2xl bg-slate-900 border border-slate-800 p-6 space-y-5 shadow-2xl my-8">
+          <div className="max-w-2xl w-full rounded-2xl bg-slate-900 border border-slate-800 p-6 space-y-5 shadow-2xl my-8">
             <div className="flex items-center justify-between border-b border-slate-800 pb-4">
               <div className="flex items-center gap-2">
-                <Sliders className="w-5 h-5 text-brand-400" />
-                <h3 className="font-bold text-base text-white">Edit {editingPlan.name} Plan & Batch Limits</h3>
+                <Sliders className="w-5 h-5 text-emerald-400" />
+                <h3 className="font-bold text-base text-white">
+                  {isCreatingPlan ? "Create New Subscription Plan" : `Edit ${editingPlan?.name} Plan & Batch Limits`}
+                </h3>
               </div>
               <button
-                onClick={() => setEditingPlan(null)}
+                onClick={() => {
+                  setEditingPlan(null);
+                  setIsCreatingPlan(false);
+                }}
                 className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleSavePlan} className="space-y-4 text-xs">
-              <div className="space-y-1.5">
-                <label className="text-slate-300 font-semibold">Plan Display Name</label>
-                <input
-                  type="text"
-                  required
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs focus:ring-1 focus:ring-brand-500"
-                />
+            <form onSubmit={isCreatingPlan ? handleCreatePlan : handleSavePlan} className="space-y-4 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Plan Key */}
+                <div className="space-y-1.5">
+                  <label className="text-slate-300 font-semibold">Plan Unique Key</label>
+                  <input
+                    type="text"
+                    required
+                    disabled={!isCreatingPlan}
+                    placeholder="e.g. enterprise, standard_annual"
+                    value={formData.key}
+                    onChange={(e) => setFormData({ ...formData, key: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs focus:ring-1 focus:ring-emerald-500 disabled:opacity-60 font-mono"
+                  />
+                </div>
+
+                {/* Plan Display Name */}
+                <div className="space-y-1.5">
+                  <label className="text-slate-300 font-semibold">Display Name</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Enterprise Tier"
+                    value={formData.name}
+                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs focus:ring-1 focus:ring-emerald-500"
+                  />
+                </div>
+              </div>
+
+              {/* Type, Currency & Interval */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="space-y-1.5">
+                  <label className="text-slate-300 font-semibold">Plan Type</label>
+                  <select
+                    value={formData.type}
+                    onChange={(e) => setFormData({ ...formData, type: e.target.value as any })}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs focus:ring-1 focus:ring-emerald-500 outline-none"
+                  >
+                    <option value="free">Free / Evaluation</option>
+                    <option value="paid">Paid Subscription</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-slate-300 font-semibold">Currency</label>
+                  <select
+                    value={formData.currency}
+                    onChange={(e) => setFormData({ ...formData, currency: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs focus:ring-1 focus:ring-emerald-500 outline-none"
+                  >
+                    <option value="NGN">NGN (₦)</option>
+                    <option value="USD">USD ($)</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-slate-300 font-semibold">Default Interval</label>
+                  <select
+                    value={formData.interval}
+                    onChange={(e) => setFormData({ ...formData, interval: e.target.value as any })}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs focus:ring-1 focus:ring-emerald-500 outline-none"
+                  >
+                    <option value="month">Monthly</option>
+                    <option value="year">Annual</option>
+                  </select>
+                </div>
               </div>
 
               {/* Pricing Section */}
-              <div className="grid grid-cols-2 gap-3">
+              {formData.type === "paid" ? (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <label className="text-slate-300 font-semibold">Monthly Price (₦)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      required
+                      value={formData.monthlyPriceNaira}
+                      onChange={(e) => setFormData({ ...formData, monthlyPriceNaira: parseFloat(e.target.value) || 0 })}
+                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs focus:ring-1 focus:ring-emerald-500"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-slate-300 font-semibold">Annual Price (₦)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={formData.annualPriceNaira}
+                      onChange={(e) => setFormData({ ...formData, annualPriceNaira: parseFloat(e.target.value) || 0 })}
+                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs focus:ring-1 focus:ring-emerald-500"
+                    />
+                  </div>
+                </div>
+              ) : (
                 <div className="space-y-1.5">
-                  <label className="text-slate-300 font-semibold">Monthly Price (₦)</label>
+                  <label className="text-slate-300 font-semibold">Trial Duration (Days)</label>
                   <input
                     type="number"
-                    min={0}
+                    min={1}
                     required
-                    value={formData.monthlyPriceNaira}
-                    onChange={(e) => setFormData({ ...formData, monthlyPriceNaira: parseFloat(e.target.value) || 0 })}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs focus:ring-1 focus:ring-brand-500"
+                    value={formData.trialDurationDays}
+                    onChange={(e) => setFormData({ ...formData, trialDurationDays: parseInt(e.target.value, 10) || 30 })}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs focus:ring-1 focus:ring-emerald-500"
                   />
                 </div>
+              )}
 
-                <div className="space-y-1.5">
-                  <label className="text-slate-300 font-semibold">Annual Price (₦)</label>
-                  <input
-                    type="number"
-                    min={0}
-                    value={formData.annualPriceNaira}
-                    onChange={(e) => setFormData({ ...formData, annualPriceNaira: parseFloat(e.target.value) || 0 })}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs focus:ring-1 focus:ring-brand-500"
-                  />
+              {/* Apps Included Feature Flags */}
+              <div className="pt-2 border-t border-slate-800 space-y-2">
+                <label className="text-slate-300 font-semibold block">Included Applications</label>
+                <div className="flex flex-wrap gap-2">
+                  {AVAILABLE_APPS.map((app) => {
+                    const isSelected = formData.appsIncluded.includes(app.key);
+                    return (
+                      <button
+                        type="button"
+                        key={app.key}
+                        onClick={() => handleToggleApp(app.key)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition cursor-pointer flex items-center gap-1.5 ${
+                          isSelected
+                            ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                            : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200"
+                        }`}
+                      >
+                        <span>{app.name}</span>
+                        {isSelected && <span className="text-[10px]">✓</span>}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
+              {/* Advanced Reports Checkbox */}
+              <label className="flex items-center gap-2 cursor-pointer text-slate-300 pt-1">
+                <input
+                  type="checkbox"
+                  checked={formData.advancedReports}
+                  onChange={(e) => setFormData({ ...formData, advancedReports: e.target.checked })}
+                  className="rounded border-slate-700 accent-emerald-500 w-4 h-4 cursor-pointer"
+                />
+                <span>Enable Advanced Reports & Analytics Feature</span>
+              </label>
+
               {/* Tier Batch Limits Section */}
               <div className="pt-3 border-t border-slate-800 space-y-3">
-                <h4 className="text-[11px] font-bold uppercase tracking-wider text-brand-400 flex items-center gap-1.5">
+                <h4 className="text-[11px] font-bold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
                   <Sliders className="w-3.5 h-3.5" />
                   <span>Tier Batch Rules & Entitlement Limits</span>
                 </h4>
@@ -527,7 +784,7 @@ export const Plans: React.FC = () => {
                         }
                         className={`px-2 py-2 rounded-xl text-[10px] font-bold border transition cursor-pointer whitespace-nowrap ${
                           formData.maxAppsPerOrganization === "unlimited"
-                            ? "bg-brand-500/20 text-brand-300 border-brand-500/40"
+                            ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
                             : "bg-slate-800 text-slate-400 border-slate-700"
                         }`}
                       >
@@ -597,15 +854,18 @@ export const Plans: React.FC = () => {
                   type="checkbox"
                   checked={formData.isActive}
                   onChange={(e) => setFormData({ ...formData, isActive: e.target.checked })}
-                  className="rounded border-slate-700 accent-brand-500 w-4 h-4 cursor-pointer"
+                  className="rounded border-slate-700 accent-emerald-500 w-4 h-4 cursor-pointer"
                 />
-                <span>Active (available for new workspace subscriptions)</span>
+                <span>Active (available for organization subscriptions)</span>
               </label>
 
               <div className="flex items-center justify-end gap-2.5 pt-4 border-t border-slate-800">
                 <button
                   type="button"
-                  onClick={() => setEditingPlan(null)}
+                  onClick={() => {
+                    setEditingPlan(null);
+                    setIsCreatingPlan(false);
+                  }}
                   className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 hover:bg-slate-700 transition cursor-pointer"
                 >
                   Cancel
@@ -614,10 +874,10 @@ export const Plans: React.FC = () => {
                 <button
                   type="submit"
                   disabled={actionLoading}
-                  className="px-5 py-2 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-bold transition flex items-center gap-2 shadow-lg shadow-brand-600/30 cursor-pointer"
+                  className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold transition flex items-center gap-2 shadow-lg shadow-emerald-600/30 cursor-pointer disabled:opacity-50"
                 >
                   {actionLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                  <span>Save Plan Limits & Pricing</span>
+                  <span>{isCreatingPlan ? "Create Billing Plan" : "Save Plan Limits & Pricing"}</span>
                 </button>
               </div>
             </form>
@@ -629,3 +889,4 @@ export const Plans: React.FC = () => {
 };
 
 export default Plans;
+

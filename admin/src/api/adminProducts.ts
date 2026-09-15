@@ -129,4 +129,51 @@ export const adminProductsApi = {
       additionalDays,
     });
   },
+
+  async listApplicationWorkspaces(
+    sessionToken: string,
+    appKey: string,
+    filters?: { status?: string; planKey?: string; search?: string }
+  ) {
+    return await convex.query(anyApi.adminProducts.listApplicationWorkspaces, {
+      sessionToken,
+      appKey,
+      status: filters?.status,
+      planKey: filters?.planKey,
+      search: filters?.search,
+    });
+  },
+
+  async getApplicationStats(sessionToken: string, appKey: string) {
+    return await convex.query(anyApi.adminProducts.getApplicationStats, {
+      sessionToken,
+      appKey,
+    });
+  },
+
+  async listAllBranchMembers(
+    sessionToken: string,
+    filters?: { workspaceId?: string; role?: string; status?: string; search?: string }
+  ) {
+    return await convex.query(anyApi.adminProducts.listAllBranchMembers, {
+      sessionToken,
+      workspaceId: filters?.workspaceId,
+      role: filters?.role,
+      status: filters?.status,
+      search: filters?.search,
+    });
+  },
+
+  async listAllBranchTransfers(
+    sessionToken: string,
+    filters?: { workspaceId?: string; search?: string }
+  ) {
+    return await convex.query(anyApi.adminProducts.listAllBranchTransfers, {
+      sessionToken,
+      workspaceId: filters?.workspaceId,
+      search: filters?.search,
+    });
+  },
 };
+
+

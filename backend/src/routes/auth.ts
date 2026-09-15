@@ -102,7 +102,7 @@ const changePasswordSchema = z.object({
 });
 
 export const updateProfileSchema = z.object({
-  name: z.string().min(1).optional(),
+  name: z.string().min(2, 'Name must be at least 2 characters').optional(),
   firstName: z.string().min(1, 'First name is required').optional(),
   lastName: z.string().min(1, 'Last name is required').optional(),
   displayName: z.string().optional(),
@@ -235,6 +235,15 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           },
         });
       } catch (err: any) {
+        if (err.message === 'USER_SUSPENDED' || err.code === 'USER_SUSPENDED') {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: 'ACCOUNT_SUSPENDED',
+              message: 'Your account has been suspended. Please contact support.',
+            },
+          });
+        }
         if (err.code === 'INVALID_TOKEN' || err.code === 'SESSION_INVALIDATED' || err.code === 'USER_NOT_ACTIVE') {
           return reply.status(401).send({
             success: false,
@@ -414,6 +423,40 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           userAgent: request.headers['user-agent'],
           metadata: { email: parsed.data.email },
         });
+        return reply.status(401).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.UNAUTHENTICATED,
+            message: 'Invalid email or password.',
+          },
+        });
+      }
+
+      // Check if account is suspended
+      if ((user.status as any) === 'SUSPENDED' || (user.status as any) === 'suspended') {
+        await dataService.logAuthEvent({
+          eventType: 'login_failed',
+          userId: user.id,
+          ipAddress: request.ip,
+          userAgent: request.headers['user-agent'],
+          metadata: {
+            email: parsed.data.email,
+            reason: 'ACCOUNT_SUSPENDED',
+            suspensionReason: (user as any).suspensionReason,
+          },
+        });
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: 'ACCOUNT_SUSPENDED',
+            message: 'Your account has been suspended by our administration team. Please contact support.',
+            reason: (user as any).suspensionReason || 'Policy violation',
+          },
+        });
+      }
+
+      // Check if account is deleted
+      if ((user.status as any) === 'DELETED' || (user.status as any) === 'deleted' || (user as any).deletedAt) {
         return reply.status(401).send({
           success: false,
           error: {
@@ -1919,119 +1962,6 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.redirect(`${accountsBaseUrl()}/auth/callback?token=${jwtToken}&refreshToken=${session.refreshToken}`);
       } catch (err: any) {
         console.error('[Facebook OAuth Error]:', err?.message || err, err?.stack);
-        const errorCode = err.code || (err.message?.includes('OAUTH_') ? err.message : ERROR_CODES.OAUTH_PROVIDER_ERROR);
-        return reply.redirect(`${accountsBaseUrl()}/auth/callback?error=${errorCode}`);
-      }
-    }
-  );
-
-  // --- Apple OAuth ---
-
-  // GET /api/v1/auth/apple
-  fastify.get(
-    '/apple',
-    {
-      schema: {
-        tags: ['Auth'],
-        summary: 'Initiate Apple OAuth authorization',
-        querystring: {
-          type: 'object',
-          properties: {
-            returnTo: { type: 'string' },
-            product: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { returnTo, product } = request.query as { returnTo?: string; product?: string };
-
-      if (env.NODE_ENV === 'production' && !env.APPLE_CLIENT_ID) {
-        if (request.headers.accept?.includes('application/json')) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: ERROR_CODES.OAUTH_NOT_CONFIGURED,
-              message: 'Apple OAuth credentials are not configured on the server.',
-            },
-          });
-        }
-        return reply.redirect(`${accountsBaseUrl()}/auth/callback?error=${ERROR_CODES.OAUTH_NOT_CONFIGURED}`);
-      }
-
-      const safeReturnTo = returnTo && returnTo.startsWith('/') && !returnTo.startsWith('//') ? returnTo : undefined;
-      const state = oauthService.generateState('apple', safeReturnTo, product);
-      const authUrl = oauthService.getAppleAuthUrl(state);
-
-      if (request.headers.accept?.includes('application/json')) {
-        return reply.send({ success: true, data: { url: authUrl, state } });
-      }
-
-      return reply.redirect(authUrl);
-    }
-  );
-
-  // GET /api/v1/auth/apple/callback
-  fastify.get(
-    '/apple/callback',
-    {
-      schema: {
-        tags: ['Auth'],
-        summary: 'Apple OAuth callback',
-        querystring: {
-          type: 'object',
-          properties: {
-            code: { type: 'string' },
-            state: { type: 'string' },
-            error: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { code, state, error } = request.query as {
-        code?: string;
-        state?: string;
-        error?: string;
-      };
-
-      if (error) {
-        return reply.redirect(`${accountsBaseUrl()}/auth/callback?error=${ERROR_CODES.OAUTH_ACCESS_DENIED}`);
-      }
-
-      if (!state) {
-        return reply.redirect(`${accountsBaseUrl()}/auth/callback?error=${ERROR_CODES.OAUTH_STATE_INVALID}`);
-      }
-
-      try {
-        oauthService.validateAndConsumeState(state, 'apple');
-
-        if (!code) {
-          return reply.redirect(`${accountsBaseUrl()}/auth/callback?error=${ERROR_CODES.OAUTH_CODE_INVALID}`);
-        }
-
-        const profile = await oauthService.exchangeAppleCode(code);
-        const { user } = await dataService.handleSocialAuth(profile);
-        const session = await dataService.createSession(user.id, {
-          userAgent: request.headers['user-agent'],
-          ipAddress: request.ip,
-          authenticationMethod: 'oauth',
-          tokenVersion: user.tokenVersion ?? 1,
-        });
-        const jwtToken = fastify.jwt.sign(
-          {
-            userId: user.id,
-            email: user.email,
-            sessionId: session.sessionId,
-            tokenVersion: user.tokenVersion ?? 1,
-          },
-          { expiresIn: '15m' }
-        );
-
-        setAuthCookies(reply, { token: jwtToken, refreshToken: session.refreshToken });
-        return reply.redirect(`${accountsBaseUrl()}/auth/callback?token=${jwtToken}&refreshToken=${session.refreshToken}`);
-      } catch (err: any) {
-        console.error('[Apple OAuth Error]:', err?.message || err, err?.stack);
         const errorCode = err.code || (err.message?.includes('OAUTH_') ? err.message : ERROR_CODES.OAUTH_PROVIDER_ERROR);
         return reply.redirect(`${accountsBaseUrl()}/auth/callback?error=${errorCode}`);
       }

@@ -3,6 +3,8 @@ export interface PlatformAdmin {
   email: string;
   name: string;
   role: string;
+  avatar?: string;
+  avatarUrl?: string;
   isActive?: boolean;
   lastLoginAt?: number;
   lastLoginIp?: string;

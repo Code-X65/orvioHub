@@ -3,4 +3,6 @@ export interface AdminUser {
   email: string;
   name: string;
   role: string;
+  avatar?: string;
+  avatarUrl?: string;
 }

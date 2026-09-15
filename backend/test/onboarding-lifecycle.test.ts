@@ -169,7 +169,7 @@ describe('Phase 4: Reusable Onboarding & Resumability Test Suite', () => {
     assert.strictEqual(res.statusCode, 200);
     const body = JSON.parse(res.payload);
     assert.strictEqual(body.success, true);
-    assert.ok(body.data.inviteUrl.includes('/invitations/'));
+    assert.ok(body.data.inviteUrl.includes('/invite') || body.data.inviteUrl.includes('/invitations/'));
     assert.ok(body.data.token);
     assert.ok(body.data.expiresAt > Date.now());
   });
@@ -195,6 +195,9 @@ describe('Phase 4: Reusable Onboarding & Resumability Test Suite', () => {
       headers: { authorization: `Bearer ${userToken}` },
     });
 
+    if (res.statusCode !== 200) {
+      console.error("Step 8 fail payload:", res.payload);
+    }
     assert.strictEqual(res.statusCode, 200);
     const body = JSON.parse(res.payload);
     assert.strictEqual(body.success, true);

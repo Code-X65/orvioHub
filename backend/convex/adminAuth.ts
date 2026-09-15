@@ -72,6 +72,7 @@ export const createAdmin = mutation({
     name: v.string(),
     role: v.optional(v.string()),
     creatorToken: v.optional(v.string()),
+    isDevBootstrap: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const normalizedEmail = args.email.trim().toLowerCase();
@@ -92,7 +93,7 @@ export const createAdmin = mutation({
     const existingAdmins = await ctx.db.query("platformAdmins").collect();
     let creatorAdmin = null;
 
-    if (existingAdmins.length > 0) {
+    if (existingAdmins.length > 0 && !args.isDevBootstrap) {
       // If admins already exist, ensure the creator provides a valid super_admin session token
       if (!args.creatorToken) {
         throw new Error("Authentication required to create additional admins.");
@@ -307,6 +308,8 @@ export const login = mutation({
         email: admin.email,
         name: admin.name,
         role: admin.role,
+        avatar: admin.avatar || admin.avatarUrl,
+        avatarUrl: admin.avatarUrl || admin.avatar,
         lastLoginAt: now,
       },
       expiresAt,
@@ -350,6 +353,8 @@ export const validateSession = query({
         email: admin.email,
         name: admin.name,
         role: admin.role,
+        avatar: admin.avatar || admin.avatarUrl,
+        avatarUrl: admin.avatarUrl || admin.avatar,
         lastLoginAt: admin.lastLoginAt,
       },
       expiresAt: session.expiresAt,

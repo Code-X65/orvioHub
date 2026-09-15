@@ -15,6 +15,24 @@ import {
 import type { VerifiedSocialProfile } from './oauth.js';
 import { totpService } from './totp.js';
 import { emailService } from './email.js';
+import { ApplicationRepository } from '../repositories/applicationRepository.js';
+import { AuditNotificationRepository } from '../repositories/auditNotificationRepository.js';
+import { BillingRepository } from '../repositories/billingRepository.js';
+import { OrganizationRepository } from '../repositories/organizationRepository.js';
+import { WorkspaceBranchRepository } from '../repositories/workspaceBranchRepository.js';
+import { WorkspaceLifecycleService } from './domain/workspaceLifecycleService.js';
+import { MembershipService } from './domain/membershipService.js';
+import { BillingOrchestrator } from './domain/billingOrchestrator.js';
+import { InventoryDomainService } from './domain/inventoryDomainService.js';
+import { invalidateAuthUserCache } from '../plugins/auth.js';
+import {
+  normalizePhoneNumber,
+  isValidPhoneNumber,
+  maskPhoneNumber,
+  generateOtpCode,
+  hashOtpCode,
+} from '../utils/phoneUtils.js';
+import { SmsService } from './smsService.js';
 
 function getAppEnv(): Environment {
   return env.NODE_ENV === 'production' ? 'production' : 'development';
@@ -75,10 +93,16 @@ export interface UserRecord {
   avatar?: string;
   avatarUrl?: string;
   phone?: string;
+  phoneNormalized?: string;
   phoneVerifiedAt?: number;
+  phoneStatus?: 'unverified' | 'pending' | 'verified' | 'disabled' | 'not_set';
+  phoneUsedForRecovery?: boolean;
+  phoneUsedForMfa?: boolean;
   phoneVisibility?: 'private' | 'workspace';
   country?: string;
   state?: string;
+  stateCode?: string;
+  lga?: string;
   city?: string;
   timezone?: string;
   language?: string;
@@ -154,26 +178,47 @@ function normalizeWorkspaceType(type?: string): 'RETAIL' | 'SERVICES' | 'CORPORA
 
 export class DataService {
   private readonly client: ConvexHttpClient;
+  public readonly apps: ApplicationRepository;
+  public readonly audit: AuditNotificationRepository;
+  public readonly billing: BillingRepository;
+  public readonly orgs: OrganizationRepository;
+  public readonly branches: WorkspaceBranchRepository;
+  public readonly workspaceLifecycle: WorkspaceLifecycleService;
+  public readonly membership: MembershipService;
+  public readonly billingOrchestrator: BillingOrchestrator;
+  public readonly inventoryDomain: InventoryDomainService;
 
   constructor() {
     const url = env.CONVEX_URL || (env.NODE_ENV === 'test' ? 'https://ceaseless-bloodhound-791.convex.cloud' : '');
     if (!url) throw new Error('CONVEX_URL is required to initialize the data service.');
     this.client = new ConvexHttpClient(url);
+
+    this.apps = new ApplicationRepository(this.client);
+    this.audit = new AuditNotificationRepository(this.client);
+    this.billing = new BillingRepository(this.client);
+    this.orgs = new OrganizationRepository(this.client);
+    this.orgs.setAuditRepo(this.audit);
+    this.branches = new WorkspaceBranchRepository(this.client);
+
+    this.workspaceLifecycle = new WorkspaceLifecycleService(this.client, this.audit);
+    this.membership = new MembershipService(this.client, this.orgs, this.audit);
+    this.billingOrchestrator = new BillingOrchestrator(this.client, this.billing, this.audit);
+    this.inventoryDomain = new InventoryDomainService(this.client, this.audit);
   }
 
   public clearAll() {
     emailService.clearSentEmails();
   }
 
-  private async query(path: string, args: Record<string, unknown>) {
+  public async query(path: string, args: Record<string, unknown>) {
     try { return await this.client.query((anyApi as any)[path.split(':')[0]][path.split(':')[1]], args); } catch (error) { serviceError(error); }
   }
 
-  private async mutate(path: string, args: Record<string, unknown>) {
+  public async mutate(path: string, args: Record<string, unknown>) {
     try { return await this.client.mutation((anyApi as any)[path.split(':')[0]][path.split(':')[1]], args); } catch (error) { serviceError(error); }
   }
 
-  private async enqueue(to: string, template: 'verification' | 'invitation' | 'onboardingCompleted' | 'passwordReset' | 'emailChange', payload: Record<string, string>) {
+  private async enqueue(to: string, template: 'verification' | 'invitation' | 'onboardingCompleted' | 'passwordReset' | 'emailChange' | 'securityAlert', payload: Record<string, any>) {
     // Dispatch directly once via configured provider (Brevo / Resend)
     const directResult = await emailService.sendDirect(to, template, payload);
 
@@ -392,7 +437,7 @@ export class DataService {
     return { user };
   }
 
-  public async changePassword(userId: string, currentPassword: string, newPassword: string) {
+  public async changePassword(userId: string, currentPassword: string, newPassword: string, keepSessionId?: string) {
     const user = await this.getUserById(userId);
     if (!user) {
       const error: Error & { code?: string } = new Error('User not found.');
@@ -408,8 +453,8 @@ export class DataService {
     }
 
     const passwordHash = await bcrypt.hash(newPassword, 12);
-    await this.mutate('users:updatePassword', { userId: user.id, passwordHash });
-    await this.mutate('sessions:revokeAllUserSessions', { userId: user.id });
+    await this.mutate('users:updatePassword', { userId: user.id as any, passwordHash, keepSessionId });
+    invalidateAuthUserCache(user.id);
     return { success: true };
   }
 
@@ -742,16 +787,46 @@ export class DataService {
     }
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = Date.now() + 86_400_000; // 24 hours
-    await this.mutate('users:requestEmailChange', { userId, newEmail: email, token, expiresAt });
+    await this.mutate('users:requestEmailChange', { userId: userId as any, newEmail: email, token, expiresAt });
     const user = await this.getUserById(userId);
+    // Send verification link to new email
     await this.enqueue(email, 'emailChange', { name: user?.name || '', url: buildConfirmEmailChangeUrl(token) });
+    // Send security alert notice to old email
+    if (user?.email && user.email.toLowerCase() !== email) {
+      await this.enqueue(user.email, 'securityAlert', {
+        name: user.name || '',
+        alertType: 'email_change_requested',
+        newEmail: email,
+        timestamp: Date.now(),
+      });
+    }
     return { success: true };
   }
 
   public async confirmEmailChange(token: string) {
-    const result = await this.mutate('users:confirmEmailChange', { token }) as { userId: string; email: string };
+    const result = (await this.mutate('users:confirmEmailChange', { token })) as {
+      userId: string;
+      email: string;
+      oldEmail?: string;
+    };
     const user = await this.getUserById(result.userId);
     if (!user) throw new Error('User could not be found.');
+    // Revoke all other sessions for security
+    await this.logoutAllSessions(result.userId);
+    // Send security confirmation to old and new emails
+    if (result.oldEmail) {
+      await this.enqueue(result.oldEmail, 'securityAlert', {
+        name: user.name || '',
+        alertType: 'email_changed',
+        newEmail: result.email,
+        timestamp: Date.now(),
+      });
+    }
+    await this.enqueue(result.email, 'securityAlert', {
+      name: user.name || '',
+      alertType: 'email_changed',
+      timestamp: Date.now(),
+    });
     return { user };
   }
 
@@ -823,6 +898,158 @@ export class DataService {
     return this.mutate('onboarding:createOrganizationWithOnboarding', data as any);
   }
 
+  public async createOrganizationWithPlan(data: {
+    userId: string;
+    name: string;
+    phone: string;
+    category: string;
+    currency?: string;
+    street?: string;
+    city?: string;
+    state?: string;
+    country?: string;
+    address?: string;
+    industry?: string;
+    timezone?: string;
+    website?: string;
+    businessType?: string;
+    branchCountRange?: string;
+    productCountRange?: string;
+    primaryUsers?: string[];
+    planKey: 'free_trial' | 'standard';
+    billingInterval?: 'monthly' | 'annual';
+    paymentGateway?: string;
+    paymentReference?: string;
+  }) {
+    return this.mutate('organizations:createOrganizationWithPlan', data as any);
+  }
+
+  public async getUserFreeTrialStatus(userId: string) {
+    return this.query('organizations:getUserFreeTrialStatus', { userId: userId as any });
+  }
+
+  public async getOrganizationCreationEligibility(userId: string) {
+    return this.query('organizations:getOrganizationCreationEligibility', { userId: userId as any }) as any;
+  }
+
+  public async getUserOrganizationsCategorized(userId: string) {
+    return this.query('organizations:getUserOrganizationsCategorized', { userId: userId as any }) as any;
+  }
+
+  public async archiveOrganization(organizationId: string, userId: string) {
+    return this.mutate('organizations:archiveOrganization', {
+      organizationId: organizationId as any,
+      userId: userId as any,
+    });
+  }
+
+  public async restoreOrganization(organizationId: string, userId: string) {
+    return this.mutate('organizations:restoreOrganization', {
+      organizationId: organizationId as any,
+      userId: userId as any,
+    });
+  }
+
+  public async transferOrganizationOwnership(organizationId: string, currentOwnerId: string, newOwnerId: string) {
+    return this.mutate('organizations:transferOrganizationOwnership', {
+      organizationId: organizationId as any,
+      currentOwnerId: currentOwnerId as any,
+      newOwnerId: newOwnerId as any,
+    });
+  }
+
+  public async setOrganizationLimitOverride(data: {
+    userId: string;
+    overrideLimit: number;
+    reason: string;
+    grantedBy: string;
+    expiresAt?: number;
+  }) {
+    return this.mutate('organizations:setOrganizationLimitOverride', {
+      userId: data.userId as any,
+      overrideLimit: data.overrideLimit,
+      reason: data.reason,
+      grantedBy: data.grantedBy,
+      expiresAt: data.expiresAt,
+    });
+  }
+
+  public async removeOrganizationLimitOverride(userId: string, removedBy: string) {
+    return this.mutate('organizations:removeOrganizationLimitOverride', {
+      userId: userId as any,
+      removedBy,
+    });
+  }
+
+  public async getOrganizationLimitEvents(userId?: string, limit?: number) {
+    return this.query('organizations:getOrganizationLimitEvents', {
+      userId: userId ? (userId as any) : undefined,
+      limit,
+    });
+  }
+
+  public async getSuperadminOrganizationUsage() {
+    return this.query('organizations:getSuperadminOrganizationUsage', {});
+  }
+
+  public async confirmPaymentAndActivateOrg(data: {
+    organizationId: string;
+    paymentReference: string;
+    provider?: string;
+    amount?: number;
+    billingInterval?: 'monthly' | 'annual';
+    userId?: string;
+  }) {
+    return this.mutate('subscriptions:confirmPaymentAndActivateOrg', {
+      organizationId: data.organizationId as any,
+      paymentReference: data.paymentReference,
+      provider: data.provider,
+      amount: data.amount,
+      billingInterval: data.billingInterval,
+      userId: data.userId as any,
+    });
+  }
+
+  public async switchOrgPlan(data: {
+    organizationId: string;
+    newPlanKey: 'free_trial' | 'standard';
+    billingInterval?: 'monthly' | 'annual';
+    userId?: string;
+  }) {
+    return this.mutate('subscriptions:switchOrgPlan', {
+      organizationId: data.organizationId as any,
+      newPlanKey: data.newPlanKey,
+      billingInterval: data.billingInterval,
+      userId: data.userId as any,
+    });
+  }
+
+  public async getOrganizationBillingContext(organizationId: string) {
+    return this.query('subscriptions:getBillingContext', {
+      organizationId: organizationId as any,
+    });
+  }
+
+  public async checkOrganizationBillingConsistency(organizationId: string) {
+    return this.query('subscriptions:checkOrganizationBillingConsistency', {
+      organizationId: organizationId as any,
+    });
+  }
+
+  public async initializeBillingCheckout(data: {
+    organizationId: string;
+    userId: string;
+    billingInterval: 'monthly' | 'annual';
+    amount?: number;
+  }) {
+    return this.mutate('subscriptions:initializeBillingCheckout', {
+      organizationId: data.organizationId as any,
+      userId: data.userId as any,
+      billingInterval: data.billingInterval,
+      amount: data.amount,
+    });
+  }
+
   public async saveInventoryOnboarding(data: {
     organizationId: string;
     userId?: string;
@@ -887,29 +1114,63 @@ export class DataService {
     return this.query('onboarding:getCurrentOrgAppContext', params as any);
   }
 
+  public async getAvailableApplications() {
+    return this.apps.getAvailableApplications();
+  }
+
+  public async getOrgApplications(organizationId: string) {
+    return this.apps.getOrgApplications(organizationId);
+  }
+
   public async activateApplication(data: {
     organizationId: string;
     applicationKey: string;
-    planKey: string;
+    planKey?: string;
     billingCycle?: string;
     paymentReference?: string;
     paymentGateway?: string;
     userId?: string;
   }) {
-    return this.mutate('onboarding:activateApplication', data as any);
+    return this.apps.activateApplication(data);
+  }
+
+  public async deactivateApplication(data: {
+    organizationId: string;
+    applicationKey: string;
+    userId?: string;
+  }) {
+    return this.apps.deactivateApplication(data);
   }
 
   public async getOrganizationApps(organizationId: string) {
-    return this.query('onboarding:getOrganizationApps', {
-      organizationId: organizationId as any,
-    });
+    return this.apps.getOrganizationApps(organizationId);
   }
 
   public async isApplicationActiveForOrg(organizationId: string, applicationKey?: string) {
-    return this.query('onboarding:isApplicationActiveForOrg', {
-      organizationId: organizationId as any,
-      applicationKey,
-    });
+    return this.apps.isApplicationActiveForOrg(organizationId, applicationKey);
+  }
+
+  public async getUserAppPermissions(organizationId: string, userId: string) {
+    return this.orgs.getUserAppPermissions(organizationId, userId);
+  }
+
+  public async checkUserAppAccess(organizationId: string, userId: string, applicationKey: string) {
+    return this.orgs.checkUserAppAccess(organizationId, userId, applicationKey);
+  }
+
+  public async checkUserBranchAccess(organizationId: string, userId: string, branchId: string) {
+    return this.orgs.checkUserBranchAccess(organizationId, userId, branchId);
+  }
+
+  public async updateMemberAppPermissions(data: {
+    organizationId: string;
+    callerUserId: string;
+    targetUserId: string;
+    allowedApplications?: string[];
+    allowedBranches?: string[];
+    primaryBranchId?: string;
+  }) {
+    return this.orgs.updateMemberAppPermissions(data);
   }
 
   public async updateOrganization(organizationId: string, userId: string, updates: Record<string, unknown>) { return asOrganization(await this.mutate('organizations:updateOrganization', { organizationId, userId, ...updates })); }
@@ -1086,9 +1347,38 @@ export class DataService {
     };
   }
 
+  public async savePersonalOnboardingProgress(userId: string, data: {
+    currentStep: number;
+    useCases?: string[];
+    acquisitionSource?: string;
+    acquisitionSourceOther?: string;
+    role?: string;
+    managesBusiness?: boolean;
+  }) {
+    try {
+      const res = await this.mutate('userProfiles:savePersonalOnboardingProgress', {
+        userId: userId as any,
+        currentStep: data.currentStep,
+        useCases: data.useCases,
+        acquisitionSource: data.acquisitionSource,
+        acquisitionSourceOther: data.acquisitionSourceOther,
+        role: data.role,
+        managesBusiness: data.managesBusiness,
+      }) as any;
+      if (res) return res;
+    } catch {
+      // Fallback
+    }
+    return {
+      success: true,
+      currentStep: data.currentStep,
+    };
+  }
+
   public async savePersonalOnboarding(userId: string, data: {
     useCases: string[];
     acquisitionSource: string;
+    acquisitionSourceOther?: string;
     role?: string;
     managesBusiness?: boolean;
   }) {
@@ -1097,6 +1387,7 @@ export class DataService {
         userId: userId as any,
         useCases: data.useCases,
         acquisitionSource: data.acquisitionSource,
+        acquisitionSourceOther: data.acquisitionSourceOther,
         role: data.role,
         managesBusiness: data.managesBusiness,
       }) as any;
@@ -1111,6 +1402,7 @@ export class DataService {
         userId,
         useCases: data.useCases,
         acquisitionSource: data.acquisitionSource,
+        acquisitionSourceOther: data.acquisitionSourceOther,
         role: data.role,
         managesBusiness: data.managesBusiness,
         personalOnboardingCompleted: true,
@@ -1220,6 +1512,43 @@ export class DataService {
     const err: Error & { code?: string } = new Error('Invalid verification code or backup code.');
     err.code = 'INVALID_2FA_CODE';
     throw err;
+  }
+
+  public async getTwoFactorStatus(userId: string) {
+    const user = await this.getUserById(userId);
+    if (!user) throw new Error('User not found.');
+    return {
+      enabled: Boolean(user.twoFactorEnabled),
+      backupCodesRemaining: user.twoFactorBackupCodes?.length ?? 0,
+    };
+  }
+
+  public async regenerateBackupCodes(userId: string, password?: string) {
+    const user = await this.getUserById(userId);
+    if (!user) throw new Error('User not found.');
+    if (!user.twoFactorEnabled) {
+      const err: Error & { code?: string } = new Error('2FA is not enabled.');
+      err.code = 'INVALID_REQUEST';
+      throw err;
+    }
+
+    if (user.passwordHash) {
+      if (!password) {
+        const err: Error & { code?: string } = new Error('Password is required to regenerate backup codes.');
+        err.code = 'INVALID_CREDENTIALS';
+        throw err;
+      }
+      const matches = await bcrypt.compare(password, user.passwordHash);
+      if (!matches) {
+        const err: Error & { code?: string } = new Error('Incorrect password.');
+        err.code = 'INVALID_CREDENTIALS';
+        throw err;
+      }
+    }
+
+    const backupCodes = totpService.generateBackupCodes(8);
+    await this.mutate('users:setBackupCodes', { userId: userId as any, backupCodes });
+    return { backupCodes };
   }
 
   public async completeOnboarding(userId: string) {
@@ -1363,20 +1692,33 @@ export class DataService {
     })) as any[]) || [];
 
     return list.map((item) => {
-      const wsObj = item.workspace || {
-        id: item._id || item.id,
-        name: item.name || 'Workspace',
-        slug: item.slug || '',
-        type: item.type || 'business',
-        currency: item.currency || 'NGN',
-        country: item.country,
-        timezone: item.timezone,
-        logoUrl: item.logoUrl,
-        status: item.status || 'active',
-        createdAt: item.createdAt,
+      const baseWs = item.workspace || item;
+      const wsId = baseWs.workspaceId || baseWs.id || baseWs._id || item._id || item.id;
+      const orgId = baseWs.organizationId || item.organizationId || null;
+      const wsObj = {
+        id: wsId,
+        workspaceId: wsId,
+        organizationId: orgId,
+        name: baseWs.name || item.name || 'Workspace',
+        slug: baseWs.slug || item.slug || '',
+        type: baseWs.type || item.type || 'business',
+        currency: baseWs.currency || item.currency || 'NGN',
+        country: baseWs.country || item.country,
+        state: baseWs.state || item.state,
+        city: baseWs.city || item.city,
+        timezone: baseWs.timezone || item.timezone,
+        logoUrl: baseWs.logoUrl || item.logoUrl,
+        planId: baseWs.planId || item.planId,
+        planKey: baseWs.planKey || item.planKey,
+        planName: baseWs.planName || item.planName,
+        subscriptionStatus: baseWs.subscriptionStatus || item.subscriptionStatus,
+        subscription: baseWs.subscription || item.subscription,
+        status: baseWs.status || item.status || 'active',
+        enabledModules: baseWs.enabledModules || [],
+        createdAt: baseWs.createdAt || item.createdAt,
       };
 
-      let rawProducts = item.enabledProducts || item.products || wsObj.enabledModules || [];
+      const rawProducts = item.enabledProducts || item.products || wsObj.enabledModules || baseWs.enabledModules || [];
       let enabledProducts: any[] = [];
       if (Array.isArray(rawProducts)) {
         enabledProducts = rawProducts.map((p) => {
@@ -1405,6 +1747,8 @@ export class DataService {
         role: (item.role || item.defaultRole || 'OWNER').toUpperCase(),
         membershipId: item.membershipId || item._id,
         enabledProducts,
+        workspaceId: wsId,
+        organizationId: orgId,
       };
     });
   }
@@ -1844,6 +2188,7 @@ export class DataService {
       name?: string;
       code?: string;
       isPrimary?: boolean;
+      isActive?: boolean;
       country?: string;
       state?: string;
       stateCode?: string;
@@ -1887,12 +2232,6 @@ export class DataService {
       phoneNormalized: data.phoneNormalized,
       verificationCode: data.verificationCode,
       codeExpiresAt: data.codeExpiresAt,
-    });
-  }
-
-  public async verifyBranchPhone(branchId: string) {
-    return this.mutate('branches:verifyPhone', {
-      branchId: branchId as any,
     });
   }
 
@@ -2287,9 +2626,100 @@ export class DataService {
     });
   }
 
-  public async cancelAccountDeletion(userId: string) {
+  public async cancelAccountDeletion(userId?: string, token?: string) {
     return this.mutate('userProfile:cancelAccountDeletion', {
       userId: userId as any,
+      token,
+    });
+  }
+
+  public async getAccountDeletionStatus(userId: string) {
+    return this.query('userProfile:getAccountDeletionStatus', {
+      userId: userId as any,
+    });
+  }
+
+  public async adminSuspendUser(sessionToken: string, userId: string, reason?: string, notes?: string) {
+    return this.mutate('adminUsers:suspendUser', {
+      sessionToken,
+      userId: userId as any,
+      reason,
+      notes,
+      revokeAllSessions: true,
+    });
+  }
+
+  public async adminRestoreUser(sessionToken: string, userId: string) {
+    return this.mutate('adminUsers:restoreUser', {
+      sessionToken,
+      userId: userId as any,
+    });
+  }
+
+  public async adminGetUserSuspensionHistory(sessionToken: string, userId: string) {
+    return this.query('adminUsers:getSuspensionHistory', {
+      sessionToken,
+      userId: userId as any,
+    });
+  }
+
+  public async adminDeleteUser(
+    sessionToken: string,
+    userId: string,
+    options: {
+      reason?: string;
+      notes?: string;
+      transferWorkspaceOwnership?: boolean;
+      newOwnerId?: string;
+      cancelSubscriptions?: boolean;
+      adminForceDelete?: boolean;
+    }
+  ) {
+    return this.mutate('adminUsers:deleteUser', {
+      sessionToken,
+      userId: userId as any,
+      reason: options.reason,
+      notes: options.notes,
+      transferWorkspaceOwnership: options.transferWorkspaceOwnership,
+      newOwnerId: options.newOwnerId as any,
+      cancelSubscriptions: options.cancelSubscriptions,
+      adminForceDelete: options.adminForceDelete,
+    });
+  }
+
+  public async adminSuspendWorkspace(sessionToken: string, workspaceId: string, reason?: string, notes?: string) {
+    return this.mutate('adminOrganizations:suspendOrganization', {
+      sessionToken,
+      workspaceId: workspaceId as any,
+      reason,
+      notes,
+    });
+  }
+
+  public async adminRestoreWorkspace(sessionToken: string, workspaceId: string) {
+    return this.mutate('adminOrganizations:restoreOrganization', {
+      sessionToken,
+      workspaceId: workspaceId as any,
+    });
+  }
+
+  public async adminDeleteWorkspace(
+    sessionToken: string,
+    workspaceId: string,
+    options: {
+      reason?: string;
+      notes?: string;
+      cancelSubscriptions?: boolean;
+      adminForceDelete?: boolean;
+    }
+  ) {
+    return this.mutate('adminOrganizations:deleteOrganization', {
+      sessionToken,
+      workspaceId: workspaceId as any,
+      reason: options.reason,
+      notes: options.notes,
+      cancelSubscriptions: options.cancelSubscriptions,
+      adminForceDelete: options.adminForceDelete,
     });
   }
 
@@ -2435,58 +2865,6 @@ export class DataService {
         createOrgRoute: '/app/organizations/new?product=inventory',
         isProductionReady: true,
       },
-      {
-        key: 'taskmanagement',
-        name: 'Task Management',
-        tagline: 'Manage tasks, projects, and team work.',
-        description: 'Collaborative task boards, team assignments, sprints, and project timelines.',
-        category: 'productivity',
-        status: 'BETA',
-        subdomain: 'tasks.orviohub.com',
-        appRoute: '/tasks/dashboard',
-        onboardingRoute: '/tasks/onboarding',
-        createOrgRoute: '/app/organizations/new?product=taskmanagement',
-        isProductionReady: false,
-      },
-      {
-        key: 'bookings',
-        name: 'Bookings',
-        tagline: 'Manage appointments and reservations.',
-        description: 'Omnichannel appointment scheduling, customer reminders, and calendar synchronization.',
-        category: 'operations',
-        status: 'COMING_SOON',
-        subdomain: 'bookings.orviohub.com',
-        appRoute: '/bookings',
-        onboardingRoute: '/bookings',
-        createOrgRoute: '/app/organizations/new?product=bookings',
-        isProductionReady: false,
-      },
-      {
-        key: 'gym',
-        name: 'Gym Management',
-        tagline: 'Manage members, plans, and attendance.',
-        description: 'Member check-in kiosk, recurring membership renewals, workout tracking, and trainer scheduling.',
-        category: 'operations',
-        status: 'COMING_SOON',
-        subdomain: 'gym.orviohub.com',
-        appRoute: '/gym',
-        onboardingRoute: '/gym',
-        createOrgRoute: '/app/organizations/new?product=gym',
-        isProductionReady: false,
-      },
-      {
-        key: 'crm',
-        name: 'CRM',
-        tagline: 'Manage customers and relationships.',
-        description: 'Lead tracking, deal pipelines, customer interactions, and sales automation.',
-        category: 'sales',
-        status: 'COMING_SOON',
-        subdomain: 'crm.orviohub.com',
-        appRoute: '/crm',
-        onboardingRoute: '/crm',
-        createOrgRoute: '/app/organizations/new?product=crm',
-        isProductionReady: false,
-      },
     ];
   }
 
@@ -2499,9 +2877,11 @@ export class DataService {
     const user = await this.getUserById(userId);
     if (!user) throw new Error('User not found');
 
+    const effectiveProductKey = 'inventory';
+
     const rawWorkspaces = (await this.query('workspaces:getUserWorkspaces', {
       userId: userId as any,
-      productKey,
+      productKey: effectiveProductKey,
     })) || [];
 
     const ownedOrganizations: any[] = [];
@@ -2524,7 +2904,7 @@ export class DataService {
         status: ws.status || 'active',
         role,
         isOwner,
-        enabledProducts: item.enabledProducts || (ws.enabledModules || []).map((m: string) => ({ productKey: m, status: 'active' })),
+        enabledProducts: [{ productKey: 'inventory', status: 'active' }],
         joinedAt: item.joinedAt || ws.createdAt,
       };
 
@@ -2550,26 +2930,16 @@ export class DataService {
 
     // Determine target route based on application state
     let targetRoute = '/app';
-    let accessibleCount = 0;
-    if (productKey) {
-      const matchingOwned = ownedOrganizations.filter((o) =>
-        o.enabledProducts?.some((p: any) => p.productKey === productKey)
-      );
-      const matchingJoined = joinedOrganizations.filter((o) =>
-        o.enabledProducts?.some((p: any) => p.productKey === productKey)
-      );
-      accessibleCount = matchingOwned.length + matchingJoined.length;
-
-      if (accessibleCount === 1) {
-        const singleOrg = matchingOwned[0] || matchingJoined[0];
-        targetRoute = `/${productKey}/dashboard?workspaceId=${singleOrg.workspaceId}`;
-      } else if (accessibleCount > 1) {
-        targetRoute = `/app?product=${productKey}&mode=select_org`;
-      } else if (pendingInvitations.length > 0) {
-        targetRoute = `/app/invitations`;
-      } else {
-        targetRoute = `/app/organizations/new?product=${productKey}`;
-      }
+    const totalCount = ownedOrganizations.length + joinedOrganizations.length;
+    if (totalCount === 1) {
+      const singleOrg = ownedOrganizations[0] || joinedOrganizations[0];
+      targetRoute = `/inventory/dashboard?workspaceId=${singleOrg.workspaceId}`;
+    } else if (totalCount > 1) {
+      targetRoute = `/app?product=inventory&mode=select_org`;
+    } else if (pendingInvitations.length > 0) {
+      targetRoute = `/app/invitations`;
+    } else {
+      targetRoute = `/app/organizations/new?product=inventory`;
     }
 
     return {
@@ -2577,14 +2947,14 @@ export class DataService {
         id: user.id,
         email: user.email,
         name: user.name,
-        lastSelectedProduct: user.lastSelectedProduct || null,
+        lastSelectedProduct: 'inventory',
         lastSelectedWorkspaceId: user.lastSelectedWorkspaceId || null,
       },
-      selectedProduct: productKey || user.lastSelectedProduct || null,
+      selectedProduct: 'inventory',
       ownedOrganizations,
       joinedOrganizations,
-      totalOrganizations: ownedOrganizations.length + joinedOrganizations.length,
-      accessibleCount,
+      totalOrganizations: totalCount,
+      accessibleCount: totalCount,
       pendingInvitations,
       products,
       targetRoute,
@@ -2595,12 +2965,12 @@ export class DataService {
     try {
       await this.mutate('users:updateUserProfile', {
         userId: userId as any,
-        lastSelectedProduct: productKey,
+        lastSelectedProduct: 'inventory',
       });
     } catch {
       // Fallback
     }
-    return { success: true, selectedProduct: productKey };
+    return { success: true, selectedProduct: 'inventory' };
   }
 
   // ==========================================
@@ -2610,10 +2980,12 @@ export class DataService {
   private inMemoryProducts: any[] = [
     {
       key: 'inventory',
-      name: 'Inventory Management System',
+      name: 'Inventory',
       description: 'Multi-branch warehouse stock, barcode POS checkout, receipts, sales history & telemetry.',
       subdomain: 'inventory.orviohub.com',
       status: 'active',
+      isVisibleToUsers: true,
+      isActivatable: true,
       isBeta: false,
       isFeatured: true,
       displayOrder: 1,
@@ -2625,9 +2997,11 @@ export class DataService {
       name: 'Task & Project Management',
       description: 'Collaborative task execution, agile sprints, kanban boards, and project tracking.',
       subdomain: 'tasks.orviohub.com',
-      status: 'active',
+      status: 'coming_soon',
+      isVisibleToUsers: false,
+      isActivatable: false,
       isBeta: false,
-      isFeatured: true,
+      isFeatured: false,
       displayOrder: 2,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -2638,6 +3012,8 @@ export class DataService {
       description: 'Client contact directories, communication history, pipelines, and deal conversions.',
       subdomain: 'crm.orviohub.com',
       status: 'coming_soon',
+      isVisibleToUsers: false,
+      isActivatable: false,
       isBeta: true,
       isFeatured: false,
       displayOrder: 3,
@@ -2650,6 +3026,8 @@ export class DataService {
       description: 'Online calendar reservations, service scheduling, reminders, and client appointments.',
       subdomain: 'booking.orviohub.com',
       status: 'coming_soon',
+      isVisibleToUsers: false,
+      isActivatable: false,
       isBeta: false,
       isFeatured: false,
       displayOrder: 4,
@@ -2662,6 +3040,8 @@ export class DataService {
       description: 'Member passes, attendance tracking, trainer schedules, and class subscriptions.',
       subdomain: 'gym.orviohub.com',
       status: 'coming_soon',
+      isVisibleToUsers: false,
+      isActivatable: false,
       isBeta: false,
       isFeatured: false,
       displayOrder: 5,
@@ -2689,21 +3069,21 @@ export class DataService {
     } catch {
       // Fallback to local memory catalog
     }
-    return this.inMemoryProducts.filter((p) => {
-      const s = (p.status || '').toLowerCase();
-      return s === 'active' || s === 'coming_soon' || s === 'beta';
-    });
+    return this.inMemoryProducts.filter((p) => p.isVisibleToUsers === true || p.key === 'inventory');
   }
 
   public async getProductByKey(productKey: string) {
+    const normKey = productKey.toLowerCase();
     try {
       const res = await this.query('products:getByKey', { productKey });
       if (res) return res;
     } catch {
       // Fallback
     }
-    const found = this.inMemoryProducts.find((p) => p.key === productKey);
-    if (!found) throw new Error('Product not found');
+    const found = this.inMemoryProducts.find((p) => p.key.toLowerCase() === normKey);
+    if (!found || found.isVisibleToUsers === false) {
+      throw new Error('PRODUCT_NOT_AVAILABLE');
+    }
     return found;
   }
 
@@ -2728,8 +3108,45 @@ export class DataService {
       // Fallback
     }
     return this.inMemoryProducts
-      .filter((p) => (p.status || '').toLowerCase() !== 'draft')
+      .filter((p) => p.isVisibleToUsers === true || p.key === 'inventory')
       .map((p) => ({ ...p, isActivated: p.key === 'inventory' }));
+  }
+
+  public async listApplicationWorkspaces(sessionToken: string, appKey: string, filters?: { status?: string; planKey?: string; search?: string }) {
+    try {
+      const res = await this.query('adminProducts:listApplicationWorkspaces', {
+        sessionToken,
+        appKey,
+        status: filters?.status,
+        planKey: filters?.planKey,
+        search: filters?.search,
+      });
+      if (res) return res;
+    } catch {
+      // Fallback in case of local offline testing
+    }
+    return [];
+  }
+
+  public async getApplicationStats(sessionToken: string, appKey: string) {
+    try {
+      const res = await this.query('adminProducts:getApplicationStats', {
+        sessionToken,
+        appKey,
+      });
+      if (res) return res;
+    } catch {
+      // Fallback
+    }
+    return {
+      appKey,
+      totalActivations: 0,
+      totalActive: 0,
+      totalSuspended: 0,
+      totalTrial: 0,
+      onboardingCompleted: 0,
+      onboardingInProgress: 0,
+    };
   }
 
   public async createProduct(data: {
@@ -3186,6 +3603,12 @@ export class DataService {
     notes?: string;
     extensionDays?: number;
   }) {
+    if (typeof (this as any).recordManualPayment === 'function') {
+      return await (this as any).recordManualPayment({
+        ...data,
+        workspaceId: data.workspaceId || data.organizationId,
+      });
+    }
     try {
       return await this.mutate('manualPayments:recordPayment', {
         organizationId: data.organizationId as any,
@@ -3717,10 +4140,6 @@ export class DataService {
     return await this.mutate('userPhones:createOrUpdate', data);
   }
 
-  public async verifyUserPhone(phoneId: string): Promise<any> {
-    return await this.mutate('userPhones:verify', { phoneId });
-  }
-
   public async setUserPrimaryPhone(userId: string, phoneId: string): Promise<any> {
     return await this.mutate('userPhones:setPrimary', { userId, phoneId });
   }
@@ -3939,9 +4358,944 @@ export class DataService {
       notificationId: notificationId as any,
     });
   }
+
+  public async getInvoicesByOrganization(organizationId: string) {
+    try {
+      return (await this.query('invoices:getByOrganization', {
+        organizationId: organizationId as any,
+      })) as any[];
+    } catch (err) {
+      console.warn('[DataService] Failed to fetch invoices by organization:', err);
+      return [];
+    }
+  }
+
+  public async getInvoiceById(invoiceId: string) {
+    try {
+      return await this.query('invoices:getById', {
+        invoiceId: invoiceId as any,
+      });
+    } catch (err) {
+      console.warn('[DataService] Failed to fetch invoice by ID:', err);
+      return null;
+    }
+  }
+
+  public async getInvoiceByNumber(invoiceNumber: string) {
+    try {
+      return await this.query('invoices:getByInvoiceNumber', {
+        invoiceNumber,
+      });
+    } catch (err) {
+      console.warn('[DataService] Failed to fetch invoice by number:', err);
+      return null;
+    }
+  }
+
+  public async createOrganizationInvoice(data: {
+    organizationId: string;
+    subscriptionId?: string;
+    paymentId?: string;
+    amount: number;
+    currency?: string;
+    periodStart?: number;
+    periodEnd?: number;
+    paymentReference?: string;
+    paymentMethod?: 'bank_transfer' | 'paystack' | 'flutterwave' | 'manual';
+    billingInterval?: string;
+    planName?: string;
+  }) {
+    return await this.mutate('invoices:createOrganizationInvoice', {
+      organizationId: data.organizationId as any,
+      subscriptionId: data.subscriptionId as any,
+      paymentId: data.paymentId as any,
+      amount: data.amount,
+      currency: data.currency,
+      periodStart: data.periodStart,
+      periodEnd: data.periodEnd,
+      paymentReference: data.paymentReference,
+      paymentMethod: data.paymentMethod,
+      billingInterval: data.billingInterval,
+      planName: data.planName,
+    });
+  }
+
+  // ─── Additional Application & Branch Helpers (new) ───────────────────────────
+
+  /**
+   * Create a branch for an organization/application (US-BR1)
+   */
+  public async createBranchForApplication(args: {
+    organizationId: string;
+    applicationId?: string;
+    applicationKey?: string;
+    name: string;
+    code?: string;
+    isPrimary?: boolean;
+    country?: string;
+    state?: string;
+    city?: string;
+    street?: string;
+    area?: string;
+    address?: string;
+    phone?: string;
+    email?: string;
+    callerUserId?: string;
+    userId?: string;
+  }) {
+    return this.branches.createBranchForApplication(args);
+  }
+
+  /**
+   * Get branches for an application (US-BR2)
+   */
+  public async getBranchesForApplication(organizationId: string, applicationId?: string, applicationKey?: string): Promise<any[]> {
+    return this.branches.getBranchesForApplication(organizationId, applicationId, applicationKey);
+  }
+
+  /**
+   * Deactivate a branch (soft delete) (US-BR2)
+   */
+  public async deactivateBranch(branchId: string, userId?: string) {
+    return this.branches.deactivateBranch(branchId, userId);
+  }
+
+  /**
+   * List branches for an organization (optionally filtered by application)
+   */
+  public async listBranchesForOrg(args: {
+    organizationId: string;
+    applicationId?: string;
+  }): Promise<any[]> {
+    return this.branches.listBranchesForOrg(args);
+  }
+
+  /**
+   * Get receipt settings for a workspace / organization
+   */
+  public async getReceiptSettings(workspaceId: string): Promise<any> {
+    return this.inventoryDomain.getReceiptSettings(workspaceId);
+  }
+
+  /**
+   * Update receipt settings for a workspace / organization
+   */
+  public async updateReceiptSettings(workspaceId: string, settings: any): Promise<any> {
+    return this.inventoryDomain.updateReceiptSettings(workspaceId, settings);
+  }
+
+  /**
+   * List team members for a branch or workspace application
+   */
+  public async listBranchMembers(workspaceId: string, options?: { applicationKey?: string; branchId?: string; status?: string }): Promise<any[]> {
+    return (await this.query('branchStaff:listBranchMembers', {
+      workspaceId,
+      applicationKey: options?.applicationKey || 'inventory',
+      branchId: options?.branchId,
+      status: options?.status,
+    })) || [];
+  }
+
+  /**
+   * Assign or update branch staff member
+   */
+  public async assignBranchMember(data: {
+    workspaceId: string;
+    applicationKey?: string;
+    branchId: string;
+    userId: string;
+    role: string;
+    assignedByUserId: string;
+    permissions?: string[];
+  }): Promise<any> {
+    return this.mutate('branchStaff:assignBranchMember', data as any);
+  }
+
+  /**
+   * Transfer staff member between branches atomically
+   */
+  public async transferBranchMember(data: {
+    workspaceId: string;
+    membershipId: string;
+    fromBranchId?: string;
+    targetBranchId?: string;
+    toBranchId?: string;
+    newRole?: string;
+    toRole?: string;
+    reason?: string;
+    message?: string;
+    transferredBy: string;
+    effectiveDate?: number;
+    effectiveAt?: number;
+  }): Promise<any> {
+    return this.mutate('branchStaff:transferBranchMember', data as any);
+  }
+
+  /**
+   * Suspend staff access to an Inventory branch
+   */
+  public async suspendBranchMember(data: {
+    workspaceId: string;
+    membershipId: string;
+    reason?: string;
+    suspendAllBranches?: boolean;
+    actingUserId: string;
+  }): Promise<any> {
+    return this.mutate('branchStaff:suspendBranchMember', data as any);
+  }
+
+  /**
+   * Restore suspended staff branch access
+   */
+  public async restoreBranchMember(data: {
+    workspaceId: string;
+    membershipId: string;
+    actingUserId: string;
+  }): Promise<any> {
+    return this.mutate('branchStaff:restoreBranchMember', data as any);
+  }
+
+  /**
+   * Remove staff member from a specific branch
+   */
+  public async removeBranchMember(data: {
+    workspaceId: string;
+    membershipId: string;
+    reason?: string;
+    removeFromInventory?: boolean;
+    actingUserId: string;
+  }): Promise<any> {
+    return this.mutate('branchStaff:removeBranchMember', data as any);
+  }
+
+  /**
+   * Remove staff from Inventory completely (preserves workspace membership & account)
+   */
+  public async removeInventoryMember(data: {
+    workspaceId: string;
+    membershipId?: string;
+    userId?: string;
+    reason?: string;
+    actingUserId: string;
+  }): Promise<any> {
+    return this.mutate('branchStaff:removeInventoryMember', data as any);
+  }
+
+  /**
+   * Add or grant branch access to a staff member
+   */
+  public async addBranchAccess(data: {
+    workspaceId: string;
+    membershipId?: string;
+    userId?: string;
+    branchId: string;
+    roleOverride?: string;
+    permissions?: string[];
+    assignedByUserId: string;
+  }): Promise<any> {
+    return this.mutate('branchStaff:addBranchAccess', data as any);
+  }
+
+  /**
+   * Get comprehensive staff access summary
+   */
+  public async getStaffAccessSummary(data: {
+    workspaceId: string;
+    userId?: string;
+    membershipId?: string;
+  }): Promise<any> {
+    return this.query('branchStaff:getStaffAccessSummary', data as any);
+  }
+
+  /**
+   * Update branch staff member role
+   */
+  public async updateBranchMemberRole(data: {
+    workspaceId: string;
+    membershipId: string;
+    role: string;
+    permissions?: string[];
+    updatedBy: string;
+  }): Promise<any> {
+    return this.mutate('branchStaff:updateBranchMemberRole', data as any);
+  }
+
+  /**
+   * Set branch member status (active / suspended / removed)
+   */
+  public async setBranchMemberStatus(data: {
+    workspaceId: string;
+    membershipId: string;
+    status: 'active' | 'suspended' | 'removed';
+    actingUserId: string;
+  }): Promise<any> {
+    return this.mutate('branchStaff:setBranchMemberStatus', data as any);
+  }
+
+  /**
+   * List branch transfer logs
+   */
+  public async listBranchTransfers(workspaceId: string, userId?: string): Promise<any[]> {
+    return (await this.query('branchStaff:listBranchTransfers', {
+      workspaceId,
+      userId: userId as any,
+    })) || [];
+  }
+
+  /**
+   * Safe public search for existing user by email
+   */
+  public async searchSafeUsersByEmail(email: string): Promise<any> {
+    return this.query('branchStaff:searchSafeUsersByEmail', { email });
+  }
+
+  /**
+   * Resolve runtime permissions and isolation context for Inventory
+   */
+  public async resolveInventoryContext(data: {
+    workspaceId: string;
+    userId: string;
+    branchId?: string;
+  }): Promise<any> {
+    return this.query('branchStaff:resolveInventoryContext', {
+      workspaceId: data.workspaceId,
+      userId: data.userId as any,
+      branchId: data.branchId,
+    });
+  }
+
+  /**
+   * Resolve access context tree for dashboard and application launcher
+   */
+  public async getAccessContext(userId: string, workspaceId?: string): Promise<any> {
+    return this.query('branchStaff:getAccessContext', {
+      userId: userId as any,
+      workspaceId,
+    });
+  }
+
+  // ==========================================
+  // Workspace / Organization Settings Services
+  // ==========================================
+
+  public async getFullWorkspaceSettings(workspaceId: string, callerUserId?: string): Promise<any> {
+    return this.query('workspaceSettings:getWorkspaceSettings', {
+      workspaceId: workspaceId as any,
+      callerUserId: callerUserId as any,
+    });
+  }
+
+  public async updateWorkspaceGeneralSettings(workspaceId: string, data: any, callerUserId?: string): Promise<any> {
+    return this.mutate('workspaceSettings:updateGeneralSettings', {
+      workspaceId: workspaceId as any,
+      ...data,
+      callerUserId: callerUserId as any,
+    });
+  }
+
+  public async updateWorkspaceBusinessSettings(workspaceId: string, data: any, callerUserId?: string): Promise<any> {
+    return this.mutate('workspaceSettings:updateBusinessSettings', {
+      workspaceId: workspaceId as any,
+      ...data,
+      callerUserId: callerUserId as any,
+    });
+  }
+
+  public async updateWorkspaceAddressSettings(workspaceId: string, data: any, callerUserId?: string): Promise<any> {
+    return this.mutate('workspaceSettings:updateAddressSettings', {
+      workspaceId: workspaceId as any,
+      ...data,
+      callerUserId: callerUserId as any,
+    });
+  }
+
+  public async updateWorkspaceBrandingSettings(workspaceId: string, data: any, callerUserId?: string): Promise<any> {
+    return this.mutate('workspaceSettings:updateBrandingSettings', {
+      workspaceId: workspaceId as any,
+      ...data,
+      callerUserId: callerUserId as any,
+    });
+  }
+
+  public async removeWorkspaceLogo(workspaceId: string, callerUserId?: string): Promise<any> {
+    return this.mutate('workspaceSettings:removeLogo', {
+      workspaceId: workspaceId as any,
+      callerUserId: callerUserId as any,
+    });
+  }
+
+  public async updateWorkspaceLocalizationSettings(workspaceId: string, data: any, callerUserId?: string): Promise<any> {
+    return this.mutate('workspaceSettings:updateLocalizationSettings', {
+      workspaceId: workspaceId as any,
+      ...data,
+      callerUserId: callerUserId as any,
+    });
+  }
+
+  public async updateWorkspaceNotificationSettings(workspaceId: string, data: any, callerUserId?: string): Promise<any> {
+    return this.mutate('workspaceSettings:updateNotificationSettings', {
+      workspaceId: workspaceId as any,
+      ...data,
+      callerUserId: callerUserId as any,
+    });
+  }
+
+  public async generateSettingsUploadUrl(): Promise<string> {
+    return this.mutate('workspaceSettings:generateUploadUrl', {});
+  }
+
+  // ==========================================
+  // Branch Settings Services
+  // ==========================================
+
+  public async getFullBranchSettings(branchId: string): Promise<any> {
+    return this.query('branches:getBranchSettings', {
+      branchId: branchId as any,
+    });
+  }
+
+  public async updateBranchOperationalSettings(branchId: string, data: any, callerUserId?: string): Promise<any> {
+    return this.mutate('branches:updateBranchSettings', {
+      branchId: branchId as any,
+      ...data,
+      callerUserId: callerUserId as any,
+    });
+  }
+
+  public async setPrimaryBranch(branchId: string, callerUserId?: string): Promise<any> {
+    return this.mutate('branches:setPrimaryBranch', {
+      branchId: branchId as any,
+      callerUserId: callerUserId as any,
+    });
+  }
+
+  public async suspendBranch(branchId: string, callerUserId?: string): Promise<any> {
+    return this.mutate('branches:suspendBranch', {
+      branchId: branchId as any,
+      callerUserId: callerUserId as any,
+    });
+  }
+
+  public async restoreBranch(branchId: string, callerUserId?: string): Promise<any> {
+    return this.mutate('branches:restoreBranch', {
+      branchId: branchId as any,
+      callerUserId: callerUserId as any,
+    });
+  }
+
+  public async archiveBranch(branchId: string, callerUserId?: string): Promise<any> {
+    return this.mutate('branches:archiveBranch', {
+      branchId: branchId as any,
+      callerUserId: callerUserId as any,
+    });
+  }
+
+  // ==========================================
+  // Application Settings Services
+  // ==========================================
+
+  public async getApplicationSettings(workspaceId: string, productKey: string): Promise<any> {
+    return this.query('applicationSettings:getApplicationSettings', {
+      workspaceId: workspaceId as any,
+      productKey,
+    });
+  }
+
+  public async updateApplicationSettings(workspaceId: string, productKey: string, settings: any, callerUserId?: string, displayName?: string): Promise<any> {
+    return this.mutate('applicationSettings:updateApplicationSettings', {
+      workspaceId: workspaceId as any,
+      productKey,
+      displayName,
+      settings,
+      callerUserId: callerUserId as any,
+    });
+  }
+
+  public async listWorkspaceApplications(workspaceId: string): Promise<any[]> {
+    return (await this.query('applicationSettings:listWorkspaceApplications', {
+      workspaceId: workspaceId as any,
+    })) || [];
+  }
+
+  public async setApplicationStatus(workspaceId: string, productKey: string, action: 'activate' | 'deactivate' | 'suspend' | 'restore', callerUserId?: string): Promise<any> {
+    return this.mutate('applicationSettings:setApplicationStatus', {
+      workspaceId: workspaceId as any,
+      productKey,
+      action,
+      callerUserId: callerUserId as any,
+    });
+  }
+
+  // Superadmin Phone Administration Methods
+  public async adminUnlinkUserPhone(sessionToken: string, userId: string, reason: string): Promise<any> {
+    return this.mutate('adminUsers:unlinkUserPhone', {
+      sessionToken,
+      userId: userId as any,
+      reason,
+    });
+  }
+
+  public async adminOverrideUserPhoneVerified(sessionToken: string, userId: string, reason: string): Promise<any> {
+    return this.mutate('adminUsers:overrideUserPhoneVerified', {
+      sessionToken,
+      userId: userId as any,
+      reason,
+    });
+  }
+
+  public async adminGetPhoneChallenges(sessionToken: string, params: any = {}): Promise<any> {
+    return this.query('adminPhoneChallenges:getPhoneChallenges', {
+      sessionToken,
+      ...params,
+    });
+  }
+
+  // ==========================================
+  // Phone Verification & Contact Services
+  // ==========================================
+
+  private smsService = new SmsService();
+
+  public async getUserContact(userId: string): Promise<any> {
+    const user = await this.getUserById(userId);
+    if (!user) throw new Error('USER_NOT_FOUND');
+
+    const status = await this.query('phoneVerification:getUserPhoneStatus', {
+      userId: userId as any,
+    });
+
+    let normalizedPhone = user.phoneNormalized || null;
+    if (!normalizedPhone && user.phone) {
+      try {
+        normalizedPhone = normalizePhoneNumber(user.phone, 'NG');
+      } catch {
+        normalizedPhone = null;
+      }
+    }
+
+    return {
+      phone: user.phone || null,
+      phoneNormalized: normalizedPhone,
+      phoneStatus: status?.phoneStatus || (user.phone ? (user.phoneVerifiedAt ? 'verified' : 'unverified') : 'not_set'),
+      phoneVerifiedAt: user.phoneVerifiedAt || null,
+      phoneUsedForRecovery: !!user.phoneUsedForRecovery,
+      phoneUsedForMfa: !!user.phoneUsedForMfa,
+      phoneVisibility: user.phoneVisibility || 'workspace',
+      country: user.country || 'Nigeria',
+      state: user.state || null,
+      city: user.city || null,
+      hasPendingChallenge: status?.hasPendingChallenge || false,
+      pendingChallengeExpiresAt: status?.pendingChallengeExpiresAt || null,
+    };
+  }
+
+  public async updateUserContact(
+    userId: string,
+    data: {
+      phone?: string;
+      country?: string;
+      state?: string;
+      city?: string;
+      phoneUsedForRecovery?: boolean;
+      phoneUsedForMfa?: boolean;
+    },
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<any> {
+    let phoneNormalized: string | undefined;
+    if (data.phone !== undefined) {
+      const trimmed = data.phone.trim();
+      if (trimmed) {
+        phoneNormalized = normalizePhoneNumber(trimmed, 'NG');
+      }
+    }
+
+    const res = await this.mutate('phoneVerification:updateUserContact', {
+      userId: userId as any,
+      phone: data.phone !== undefined ? (data.phone.trim() || undefined) : undefined,
+      phoneNormalized,
+      country: data.country,
+      state: data.state,
+      city: data.city,
+      phoneUsedForRecovery: data.phoneUsedForRecovery,
+      phoneUsedForMfa: data.phoneUsedForMfa,
+    });
+
+    if (data.phone !== undefined) {
+      await this.logAudit({
+        actorUserId: userId,
+        targetUserId: userId,
+        eventType: 'user.phone_added',
+        action: 'USER_PHONE_UPDATED',
+        severity: 'info',
+        metadata: {
+          phoneMasked: data.phone ? maskPhoneNumber(data.phone) : null,
+        },
+        ipAddress,
+        userAgent,
+      }).catch(() => {});
+    }
+
+    return res;
+  }
+
+  public async startUserPhoneVerification(
+    userId: string,
+    rawPhone?: string,
+    purpose = 'user_phone_verification',
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<{ challengeId: string; expiresAt: number; phoneNormalized: string }> {
+    const user = await this.getUserById(userId);
+    if (!user) throw new Error('USER_NOT_FOUND');
+
+    const phoneToVerify = rawPhone || user.phone;
+    if (!phoneToVerify) {
+      throw new Error('PHONE_REQUIRED: Please provide a phone number to verify.');
+    }
+
+    const phoneNormalized = normalizePhoneNumber(phoneToVerify, 'NG');
+    const otp = generateOtpCode();
+    const codeHash = hashOtpCode(otp);
+
+    const challenge = await this.mutate('phoneVerification:createChallenge', {
+      userId: userId as any,
+      phone: phoneToVerify,
+      phoneNormalized,
+      purpose,
+      codeHash,
+      maxAttempts: 5,
+      expiresInMs: 10 * 60 * 1000,
+    });
+
+    // Send SMS
+    await this.smsService.sendOtp(phoneNormalized, otp);
+
+    await this.logAudit({
+      actorUserId: userId,
+      targetUserId: userId,
+      eventType: 'user.phone_verification_started',
+      action: 'USER_PHONE_VERIFICATION_STARTED',
+      severity: 'info',
+      metadata: {
+        purpose,
+        phoneMasked: maskPhoneNumber(phoneNormalized),
+      },
+      ipAddress,
+      userAgent,
+    }).catch(() => {});
+
+    return challenge;
+  }
+
+  public async verifyUserPhone(
+    userId: string,
+    code: string,
+    purpose = 'user_phone_verification',
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<{ success: boolean; phoneNormalized?: string; verifiedAt?: number; error?: string; attemptsRemaining?: number }> {
+    const codeHash = hashOtpCode(code);
+
+    const res = await this.mutate('phoneVerification:verifyChallenge', {
+      userId: userId as any,
+      purpose,
+      codeHash,
+    });
+
+    if (res.success) {
+      await this.logAudit({
+        actorUserId: userId,
+        targetUserId: userId,
+        eventType: 'user.phone_verified',
+        action: 'USER_PHONE_VERIFIED',
+        severity: 'info',
+        metadata: {
+          purpose,
+          phoneMasked: maskPhoneNumber(res.phoneNormalized),
+        },
+        ipAddress,
+        userAgent,
+      }).catch(() => {});
+
+      // Send confirmation email
+      const user = await this.getUserById(userId);
+      if (user?.email) {
+        emailService.sendDirect(user.email, 'securityAlert', {
+          name: user.name || 'User',
+          action: 'Phone Number Verified',
+          details: `Your phone number (${maskPhoneNumber(res.phoneNormalized)}) was successfully verified on your Orviohub account.`,
+        }).catch(() => {});
+      }
+    } else {
+      await this.logAudit({
+        actorUserId: userId,
+        targetUserId: userId,
+        eventType: 'user.phone_verification_failed',
+        action: 'USER_PHONE_VERIFICATION_FAILED',
+        severity: 'warning',
+        metadata: {
+          purpose,
+          error: res.error,
+          attemptsRemaining: res.attemptsRemaining,
+        },
+        ipAddress,
+        userAgent,
+      }).catch(() => {});
+    }
+
+    return res;
+  }
+
+  public async resendUserPhoneVerification(
+    userId: string,
+    purpose = 'user_phone_verification',
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<any> {
+    const user = await this.getUserById(userId);
+    if (!user) throw new Error('USER_NOT_FOUND');
+
+    const otp = generateOtpCode();
+    const newCodeHash = hashOtpCode(otp);
+
+    const res = await this.mutate('phoneVerification:resendChallenge', {
+      userId: userId as any,
+      purpose,
+      newCodeHash,
+    });
+
+    await this.smsService.sendOtp(res.phoneNormalized, otp);
+
+    return res;
+  }
+
+  public async removeUserPhone(userId: string, ipAddress?: string, userAgent?: string): Promise<any> {
+    const user = await this.getUserById(userId);
+    const oldPhone = user?.phone;
+
+    const res = await this.mutate('phoneVerification:removeUserPhone', {
+      userId: userId as any,
+    });
+
+    await this.logAudit({
+      actorUserId: userId,
+      targetUserId: userId,
+      eventType: 'user.phone_removed',
+      action: 'USER_PHONE_REMOVED',
+      severity: 'warning',
+      metadata: {
+        previousPhoneMasked: oldPhone ? maskPhoneNumber(oldPhone) : null,
+      },
+      ipAddress,
+      userAgent,
+    }).catch(() => {});
+
+    return res;
+  }
+
+  public async startWorkspacePhoneVerification(
+    workspaceId: string,
+    actorUserId: string,
+    rawPhone: string,
+    purpose = 'workspace_phone_verification',
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<any> {
+    const phoneNormalized = normalizePhoneNumber(rawPhone, 'NG');
+    const otp = generateOtpCode();
+    const codeHash = hashOtpCode(otp);
+
+    const challenge = await this.mutate('phoneVerification:createChallenge', {
+      workspaceId,
+      phone: rawPhone,
+      phoneNormalized,
+      purpose,
+      codeHash,
+      maxAttempts: 5,
+      expiresInMs: 10 * 60 * 1000,
+    });
+
+    await this.smsService.sendOtp(phoneNormalized, otp);
+
+    await this.logAudit({
+      actorUserId,
+      workspaceId,
+      eventType: 'workspace.phone_verification_started',
+      action: 'WORKSPACE_PHONE_VERIFICATION_STARTED',
+      severity: 'info',
+      metadata: {
+        workspaceId,
+        purpose,
+        phoneMasked: maskPhoneNumber(phoneNormalized),
+      },
+      ipAddress,
+      userAgent,
+    }).catch(() => {});
+
+    return challenge;
+  }
+
+  public async verifyWorkspacePhone(
+    workspaceId: string,
+    actorUserId: string,
+    code: string,
+    purpose = 'workspace_phone_verification',
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<any> {
+    const codeHash = hashOtpCode(code);
+
+    const res = await this.mutate('phoneVerification:verifyChallenge', {
+      workspaceId,
+      purpose,
+      codeHash,
+    });
+
+    if (res.success) {
+      await this.logAudit({
+        actorUserId,
+        workspaceId,
+        eventType: 'workspace.phone_verified',
+        action: 'WORKSPACE_PHONE_VERIFIED',
+        severity: 'info',
+        metadata: {
+          workspaceId,
+          phoneMasked: maskPhoneNumber(res.phoneNormalized),
+        },
+        ipAddress,
+        userAgent,
+      }).catch(() => {});
+    }
+
+    return res;
+  }
+
+  public async resendWorkspacePhoneVerification(
+    workspaceId: string,
+    actorUserId: string,
+    purpose = 'workspace_phone_verification',
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<any> {
+    const otp = generateOtpCode();
+    const newCodeHash = hashOtpCode(otp);
+
+    const res = await this.mutate('phoneVerification:resendChallenge', {
+      workspaceId,
+      purpose,
+      newCodeHash,
+    });
+
+    await this.smsService.sendOtp(res.phoneNormalized, otp);
+    return res;
+  }
+
+  public async startBranchPhoneVerification(
+    branchId: string,
+    workspaceId: string,
+    actorUserId: string,
+    rawPhone: string,
+    purpose = 'branch_phone_verification',
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<any> {
+    const phoneNormalized = normalizePhoneNumber(rawPhone, 'NG');
+    const otp = generateOtpCode();
+    const codeHash = hashOtpCode(otp);
+
+    const challenge = await this.mutate('phoneVerification:createChallenge', {
+      branchId,
+      workspaceId,
+      phone: rawPhone,
+      phoneNormalized,
+      purpose,
+      codeHash,
+      maxAttempts: 5,
+      expiresInMs: 10 * 60 * 1000,
+    });
+
+    await this.smsService.sendOtp(phoneNormalized, otp);
+
+    await this.logAudit({
+      actorUserId,
+      workspaceId,
+      eventType: 'branch.phone_verification_started',
+      action: 'BRANCH_PHONE_VERIFICATION_STARTED',
+      severity: 'info',
+      metadata: {
+        branchId,
+        purpose,
+        phoneMasked: maskPhoneNumber(phoneNormalized),
+      },
+      ipAddress,
+      userAgent,
+    }).catch(() => {});
+
+    return challenge;
+  }
+
+  public async verifyBranchPhone(
+    branchId: string,
+    workspaceId: string,
+    actorUserId: string,
+    code: string,
+    purpose = 'branch_phone_verification',
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<any> {
+    const codeHash = hashOtpCode(code);
+
+    const res = await this.mutate('phoneVerification:verifyChallenge', {
+      branchId,
+      purpose,
+      codeHash,
+    });
+
+    if (res.success) {
+      await this.logAudit({
+        actorUserId,
+        workspaceId,
+        eventType: 'branch.phone_verified',
+        action: 'BRANCH_PHONE_VERIFIED',
+        severity: 'info',
+        metadata: {
+          branchId,
+          phoneMasked: maskPhoneNumber(res.phoneNormalized),
+        },
+        ipAddress,
+        userAgent,
+      }).catch(() => {});
+    }
+
+    return res;
+  }
+
+  public async resendBranchPhoneVerification(
+    branchId: string,
+    workspaceId: string,
+    actorUserId: string,
+    purpose = 'branch_phone_verification',
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<any> {
+    const otp = generateOtpCode();
+    const newCodeHash = hashOtpCode(otp);
+
+    const res = await this.mutate('phoneVerification:resendChallenge', {
+      branchId,
+      purpose,
+      newCodeHash,
+    });
+
+    await this.smsService.sendOtp(res.phoneNormalized, otp);
+    return res;
+  }
 }
 
 export const dataService = new DataService();
+
+
 
 
 

@@ -182,6 +182,32 @@ describe('Orviohub Subdomain & Hostname Resolution System', () => {
       assert.equal(json.error, 'Bad Request');
       await app.close();
     });
+
+    it('redirects legacy /v1/* routes to /api/v1/* with 308/307', async () => {
+      const app = await buildApp();
+      const getRes = await app.inject({
+        method: 'GET',
+        url: '/v1/products',
+        headers: {
+          host: 'inventory.orviohub.localhost:3000',
+        },
+      });
+
+      assert.equal(getRes.statusCode, 308);
+      assert.equal(getRes.headers.location, '/api/v1/products');
+
+      const postRes = await app.inject({
+        method: 'POST',
+        url: '/v1/billing/checkout',
+        headers: {
+          host: 'inventory.orviohub.localhost:3000',
+        },
+      });
+
+      assert.equal(postRes.statusCode, 307);
+      assert.equal(postRes.headers.location, '/api/v1/billing/checkout');
+      await app.close();
+    });
   });
 });
 

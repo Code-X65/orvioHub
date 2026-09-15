@@ -1,16 +1,15 @@
-import React, { useState } from "react";
-import { useAuthStore } from "@/stores/useAuthStore";
+import React, { useState, useEffect } from "react";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
+import { api } from "@/lib/api";
 import {
   Building2,
   Layers,
   Store,
   Users,
   Package,
-  ArrowUpRight,
   Sparkles,
   AlertTriangle,
-  Receipt,
+  ShoppingBag,
 } from "lucide-react";
 import { UpgradeModal } from "@/components/billing/UpgradeModal";
 
@@ -19,7 +18,7 @@ const PLAN_LIMITS_MAP: Record<
   {
     name: string;
     maxWorkspaces: number;
-    maxApps: number | "unlimited";
+    maxApps: number;
     maxBranches: number;
     maxMembers: number;
     maxProducts: number;
@@ -56,7 +55,7 @@ const PLAN_LIMITS_MAP: Record<
   premium: {
     name: "Premium Plan",
     maxWorkspaces: 10,
-    maxApps: "unlimited",
+    maxApps: 10,
     maxBranches: 10,
     maxMembers: 50,
     maxProducts: 25000,
@@ -70,6 +69,7 @@ interface UsageItemProps {
   current: number;
   max: number | "unlimited";
   unit: string;
+  onUpgrade?: () => void;
 }
 
 const UsageMetricCard: React.FC<UsageItemProps> = ({
@@ -78,24 +78,25 @@ const UsageMetricCard: React.FC<UsageItemProps> = ({
   current,
   max,
   unit,
+  onUpgrade,
 }) => {
-  const isUnlimited = max === "unlimited" || (typeof max === "number" && max >= 999);
+  const isUnlimited = max === "unlimited" || (typeof max === "number" && max >= 99999);
   const numericMax = typeof max === "number" ? max : 100;
   const percentage = isUnlimited ? 0 : Math.min(Math.round((current / numericMax) * 100), 100);
   const isNearLimit = !isUnlimited && percentage >= 80;
   const isAtLimit = !isUnlimited && percentage >= 100;
 
   return (
-    <div className="p-5 rounded-xl bg-[#140d12] border border-white/10 space-y-3 relative overflow-hidden">
+    <div className="p-5 rounded-2xl bg-[#140d12] border border-white/10 space-y-3 relative overflow-hidden shadow-lg">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2.5">
-          <div className="p-2 rounded-lg bg-[#714b67]/20 text-[#c79dbd] border border-[#714b67]/30">
+          <div className="p-2.5 rounded-xl bg-[#714b67]/20 text-[#c79dbd] border border-[#714b67]/30">
             {icon}
           </div>
           <div>
             <h4 className="text-xs font-bold text-white uppercase tracking-wider">{label}</h4>
             <p className="text-[11px] text-slate-400">
-              {current} / {isUnlimited ? "∞" : numericMax.toLocaleString()} {unit}
+              {current.toLocaleString()} / {isUnlimited ? "∞" : numericMax.toLocaleString()} {unit}
             </p>
           </div>
         </div>
@@ -120,9 +121,9 @@ const UsageMetricCard: React.FC<UsageItemProps> = ({
           <div
             className={`h-full transition-all duration-300 ${
               isAtLimit
-                ? "bg-rose-500"
+                ? "bg-rose-500 shadow-sm shadow-rose-500/50"
                 : isNearLimit
-                ? "bg-amber-500"
+                ? "bg-amber-500 shadow-sm shadow-amber-500/50"
                 : "bg-[#714b67]"
             }`}
             style={{ width: `${percentage}%` }}
@@ -131,36 +132,77 @@ const UsageMetricCard: React.FC<UsageItemProps> = ({
       )}
 
       {isAtLimit && (
-        <p className="text-[11px] text-rose-400 flex items-center gap-1 font-medium">
-          <AlertTriangle className="w-3 h-3" />
-          Plan quota reached. Upgrade to expand capacity.
-        </p>
+        <div className="pt-1 flex items-center justify-between text-[11px]">
+          <span className="text-rose-400 flex items-center gap-1 font-medium">
+            <AlertTriangle className="w-3 h-3 shrink-0" />
+            Quota reached
+          </span>
+          {onUpgrade && (
+            <button
+              onClick={onUpgrade}
+              className="text-[#c79dbd] hover:text-white font-bold underline cursor-pointer"
+            >
+              Upgrade
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
 };
 
 export const UsagePage: React.FC = () => {
-  const { user } = useAuthStore();
   const { currentWorkspace, workspaces, products } = useWorkspaceStore();
   const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
   const [upgradeReason, setUpgradeReason] = useState<string | undefined>(undefined);
+  const [liveUsage, setLiveUsage] = useState<any>(null);
 
-  const planKey = (currentWorkspace?.type || "free").toLowerCase();
-  const planInfo = PLAN_LIMITS_MAP[planKey] || PLAN_LIMITS_MAP.free;
+  const effectiveOrgId = currentWorkspace?.id || workspaces[0]?.workspace?.id;
+  const effectiveOrgName = currentWorkspace?.name || workspaces[0]?.workspace?.name || "Your Business";
+
+  const fetchUsage = async () => {
+    if (!effectiveOrgId) return;
+    try {
+      const res: any = await api.get(`/usage?workspaceId=${effectiveOrgId}&organizationId=${effectiveOrgId}`).catch(() => null);
+      if (res?.data) {
+        setLiveUsage(res.data);
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    fetchUsage();
+  }, [effectiveOrgId]);
+
+  const sub = currentWorkspace?.subscription;
+  const planKey = (
+    sub?.activePlan ||
+    (sub?.status === "active" ? (sub?.selectedPlan || sub?.planKey) : null) ||
+    currentWorkspace?.planKey ||
+    currentWorkspace?.planId ||
+    "free_trial"
+  ).toLowerCase();
+  const planInfo = PLAN_LIMITS_MAP[planKey] || PLAN_LIMITS_MAP.free_trial;
 
   const handleOpenUpgrade = (reason?: string) => {
     setUpgradeReason(reason);
     setUpgradeModalOpen(true);
   };
 
-  const activeAppsCount = (products || []).filter(
+  // Metric derivations
+  const currentWorkspacesCount = workspaces.length || 1;
+  const currentAppsCount = (products || []).filter(
     (p) => (p.status || "").toLowerCase() === "active" || (p.status || "").toLowerCase() === "trial"
-  ).length;
+  ).length || 1;
+  const currentBranchesCount = liveUsage?.branches || 1;
+  const currentMembersCount = liveUsage?.members || 1;
+  const currentProductsCount = liveUsage?.products || 0;
+  const currentTxCount = liveUsage?.transactions || 0;
 
   const isNearAnyLimit =
-    workspaces.length >= planInfo.maxWorkspaces ||
-    (typeof planInfo.maxApps === "number" && activeAppsCount >= planInfo.maxApps);
+    currentWorkspacesCount >= planInfo.maxWorkspaces ||
+    currentAppsCount >= planInfo.maxApps ||
+    currentBranchesCount >= planInfo.maxBranches;
 
   return (
     <div className="max-w-5xl mx-auto p-6 sm:p-8 space-y-8 animate-fadeIn">
@@ -168,133 +210,113 @@ export const UsagePage: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-6">
         <div>
           <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#714b67]/20 border border-[#714b67]/30 text-[#c79dbd] text-[11px] font-bold mb-2">
-            <Sparkles className="w-3 h-3" />
-            <span>Zoho-Style Per-User Subscription</span>
+            <Building2 className="w-3 h-3 text-[#FDB02F]" />
+            <span>Organization: {effectiveOrgName}</span>
           </div>
           <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
-            Usage & Capacity Dashboard
+            Resource Usage & Quotas
           </h1>
           <p className="text-xs sm:text-sm text-slate-400 mt-1">
-            Real-time resource utilization across all your workspaces and business applications.
+            Real-time capacity tracking for {planInfo.name}. All limits are shared across this organization.
           </p>
         </div>
 
         <button
           onClick={() => handleOpenUpgrade("usage_limit")}
-          className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/25 transition cursor-pointer self-start sm:self-center shrink-0"
+          className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/25 transition cursor-pointer self-start sm:self-center shrink-0 active:scale-95"
         >
-          <ArrowUpRight className="w-4 h-4" />
+          <Sparkles className="w-4 h-4 text-[#FDB02F]" />
           <span>Upgrade Capacity</span>
         </button>
       </div>
 
       {/* Near Limit Alert */}
       {isNearAnyLimit && (
-        <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 flex items-center justify-between gap-4">
+        <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300 flex items-center justify-between gap-4">
           <div className="flex items-center gap-2.5">
             <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
             <span>
-              You have reached or are approaching your current plan limits. Upgrade to Standard or Premium for higher resource capacity.
+              You have reached or are approaching one or more resource limits on the <strong>{planInfo.name}</strong>. Upgrade to unlock higher capacity.
             </span>
           </div>
           <button
-            onClick={() => handleOpenUpgrade("usage_limit")}
-            className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 text-xs font-bold transition whitespace-nowrap cursor-pointer"
+            onClick={() => handleOpenUpgrade("capacity_exceeded")}
+            className="px-3.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 text-xs font-bold border border-amber-500/40 cursor-pointer shrink-0"
           >
             Upgrade Now
           </button>
         </div>
       )}
 
-      {/* Current Plan Overview Card */}
-      <div className="p-6 rounded-2xl bg-gradient-to-br from-[#180f16] to-[#0d070b] border border-[#714b67]/40 shadow-xl space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <span className="text-[10px] font-bold uppercase tracking-widest text-[#c79dbd]">
-              Active Plan
-            </span>
-            <h2 className="text-2xl font-extrabold text-white mt-0.5">
-              {planInfo.name}
-            </h2>
-            <p className="text-xs text-slate-400 mt-1">
-              Covers all organizations and applications owned by{" "}
-              <span className="text-slate-200 font-medium">{user?.email}</span>
-            </p>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <span className="px-3 py-1 rounded-full text-xs font-bold border bg-emerald-500/10 text-emerald-400 border-emerald-500/20">
-              ACTIVE
-            </span>
-            <button
-              onClick={() => handleOpenUpgrade("general")}
-              className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold transition cursor-pointer"
-            >
-              Change Plan
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Grid of Usage Counters */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+      {/* Metric Cards Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         <UsageMetricCard
-          label="Workspaces / Orgs"
+          label="Organizations / Workspaces"
           icon={<Building2 className="w-4 h-4" />}
-          current={workspaces.length || 1}
+          current={currentWorkspacesCount}
           max={planInfo.maxWorkspaces}
-          unit="workspaces"
+          unit="orgs"
+          onUpgrade={() => handleOpenUpgrade("workspace_limit")}
         />
 
         <UsageMetricCard
-          label="Apps per Workspace"
+          label="Active Applications"
           icon={<Layers className="w-4 h-4" />}
-          current={activeAppsCount || 1}
+          current={currentAppsCount}
           max={planInfo.maxApps}
           unit="apps"
+          onUpgrade={() => handleOpenUpgrade("app_limit")}
         />
 
         <UsageMetricCard
-          label="Branches per App"
+          label="Branches per Application"
           icon={<Store className="w-4 h-4" />}
-          current={1}
+          current={currentBranchesCount}
           max={planInfo.maxBranches}
           unit="branches"
+          onUpgrade={() => handleOpenUpgrade("branch_limit")}
         />
 
         <UsageMetricCard
-          label="Team Members"
+          label="Team Members / Staff"
           icon={<Users className="w-4 h-4" />}
-          current={1}
+          current={currentMembersCount}
           max={planInfo.maxMembers}
           unit="members"
+          onUpgrade={() => handleOpenUpgrade("member_limit")}
         />
 
         <UsageMetricCard
-          label="Products Catalogue"
+          label="Catalogue Products (SKUs)"
           icon={<Package className="w-4 h-4" />}
-          current={0}
+          current={currentProductsCount}
           max={planInfo.maxProducts}
           unit="products"
+          onUpgrade={() => handleOpenUpgrade("product_limit")}
         />
 
         <UsageMetricCard
           label="Monthly Transactions"
-          icon={<Receipt className="w-4 h-4" />}
-          current={0}
+          icon={<ShoppingBag className="w-4 h-4" />}
+          current={currentTxCount}
           max={planInfo.maxTransactions}
           unit="transactions"
+          onUpgrade={() => handleOpenUpgrade("transaction_limit")}
         />
       </div>
 
       <UpgradeModal
         isOpen={upgradeModalOpen}
-        workspaceId={currentWorkspace?.id || ""}
+        workspaceId={effectiveOrgId || ""}
         workspaceSlug={currentWorkspace?.slug || "org"}
         triggerReason={upgradeReason}
         onClose={() => setUpgradeModalOpen(false)}
+        onSuccess={() => {
+          fetchUsage();
+        }}
       />
     </div>
   );
 };
+
 export default UsagePage;

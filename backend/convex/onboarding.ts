@@ -1,7 +1,7 @@
 import { query, mutation } from "./_generated/server.js";
 import { Id } from "./_generated/dataModel.js";
 import { v } from "convex/values";
-import { ensureUserHasNoOtherFreeTrial } from "./organizations.js";
+import { ensureUserHasNoOtherFreeTrial, ensureUserCanCreateOrganization } from "./organizations.js";
 
 export const MANDATORY_STEPS = [
   "EMAIL_VERIFICATION",
@@ -175,7 +175,8 @@ export const completeOnboarding = mutation({
       )
       .first();
 
-    if (!membership || (membership.role !== "OWNER" && membership.role !== "ADMIN")) {
+    const roleUpper = String(membership?.role || '').toUpperCase();
+    if (!membership || (roleUpper !== "OWNER" && roleUpper !== "ADMIN")) {
       throw new Error("ORGANIZATION_ACCESS_DENIED");
     }
 
@@ -356,6 +357,9 @@ export const createOrganizationWithOnboarding = mutation({
     const user = await ctx.db.get(args.userId);
     if (!user) throw new Error("USER_NOT_FOUND");
 
+    // Enforce Rule 1: Max 3 owned organizations per user
+    await ensureUserCanCreateOrganization(ctx, args.userId);
+
     // Enforce Rule 2: One free trial organization per user
     await ensureUserHasNoOtherFreeTrial(ctx, args.userId);
 
@@ -521,13 +525,28 @@ export const createOrganizationWithOnboarding = mutation({
 async function resolveOrganization(
   ctx: { db: any },
   rawId: string
-): Promise<{ org: any; orgId: Id<"organizations"> | null; workspace?: any }> {
+): Promise<{
+  org: any;
+  orgId: Id<"organizations"> | null;
+  workspace?: any;
+  workspaceId?: Id<"workspaces"> | null;
+}> {
   // 1. Check if rawId is a direct organizations ID
   const directOrgId = ctx.db.normalizeId("organizations", rawId);
   if (directOrgId) {
     const org = await ctx.db.get(directOrgId);
     if (org) {
-      return { org, orgId: directOrgId };
+      let ws = await ctx.db
+        .query("workspaces")
+        .withIndex("by_organizationId", (q: any) => q.eq("organizationId", directOrgId))
+        .first();
+      if (!ws && org.ownerId) {
+        ws = await ctx.db
+          .query("workspaces")
+          .withIndex("by_owner", (q: any) => q.eq("ownerId", org.ownerId))
+          .first();
+      }
+      return { org, orgId: directOrgId, workspace: ws || null, workspaceId: ws?._id || null };
     }
   }
 
@@ -539,7 +558,7 @@ async function resolveOrganization(
       if (ws.organizationId) {
         const org = await ctx.db.get(ws.organizationId);
         if (org) {
-          return { org, orgId: ws.organizationId, workspace: ws };
+          return { org, orgId: ws.organizationId, workspace: ws, workspaceId: ws._id };
         }
       }
       // If workspace has no organizationId linked, look for an org with matching owner or slug
@@ -549,7 +568,7 @@ async function resolveOrganization(
           .withIndex("by_ownerId", (q: any) => q.eq("ownerId", ws.ownerId))
           .first();
         if (org) {
-          return { org, orgId: org._id, workspace: ws };
+          return { org, orgId: org._id, workspace: ws, workspaceId: ws._id };
         }
       }
       if (ws.slug) {
@@ -558,14 +577,14 @@ async function resolveOrganization(
           .withIndex("by_slug", (q: any) => q.eq("slug", ws.slug))
           .first();
         if (org) {
-          return { org, orgId: org._id, workspace: ws };
+          return { org, orgId: org._id, workspace: ws, workspaceId: ws._id };
         }
       }
-      return { org: null, orgId: null, workspace: ws };
+      return { org: null, orgId: null, workspace: ws, workspaceId: ws._id };
     }
   }
 
-  return { org: null, orgId: null };
+  return { org: null, orgId: null, workspace: null, workspaceId: null };
 }
 
 /**
@@ -913,7 +932,15 @@ export const getMyOrganizations = query({
         branchCount: activeBranches.length,
         subscription: sub
           ? {
-              planKey: sub.planKey,
+              planKey:
+                sub.activePlan ||
+                (sub.status === "active" ? (sub.selectedPlan || sub.planKey) : null) ||
+                sub.planKey ||
+                "free_trial",
+              activePlan:
+                sub.activePlan ||
+                (sub.status === "active" ? (sub.selectedPlan || sub.planKey) : null),
+              selectedPlan: sub.selectedPlan,
               status: sub.status,
               trialEndsAt: sub.trialEndsAt,
               currentPeriodEnd: sub.currentPeriodEnd,
@@ -927,9 +954,9 @@ export const getMyOrganizations = query({
 });
 
 /**
- * Query: Get all applications and status for an organization (US-A4)
+ * Query: Get raw org application documents for an organization
  */
-export const getOrganizationApps = query({
+export const getOrgApplicationsRaw = query({
   args: {
     organizationId: v.union(v.id("organizations"), v.id("workspaces"), v.string()),
   },
@@ -1361,6 +1388,57 @@ export const getCurrentOrgAppContext = query({
       onboardingCompleted: !!onboardingResponses,
       onboardingResponses,
     };
+  },
+});
+
+/**
+ * Query: List all applications and their activation status for an org (US-A4)
+ */
+export const getOrganizationApps = query({
+  args: {
+    organizationId: v.union(v.id("organizations"), v.id("workspaces"), v.string()),
+  },
+  handler: async (ctx, args) => {
+    const { org, orgId } = await resolveOrganization(ctx, args.organizationId);
+    if (!org || !orgId) return [];
+
+    // Get all available applications
+    const allApps = await ctx.db.query("applications").collect();
+
+    // Get all orgApplications for this org
+    const orgApps = await ctx.db
+      .query("orgApplications")
+      .withIndex("by_organizationId", (q: any) => q.eq("organizationId", orgId))
+      .collect();
+
+    const orgAppMap = new Map(orgApps.map((oa: any) => [oa.applicationId, oa]));
+
+    return allApps
+      .filter((app) => app.enabled)
+      .map((app) => {
+        const orgApp = orgAppMap.get(app._id);
+        const key = app.key || "inventory";
+        const defaultNames: Record<string, string> = {
+          inventory: "Inventory",
+          pos: "POS",
+          booking: "Booking",
+          gym: "Gym Management",
+          taskmanagement: "Task Management",
+        };
+        const name = app.name || defaultNames[key] || (key.charAt(0).toUpperCase() + key.slice(1));
+
+        return {
+          applicationId: app._id,
+          key,
+          name,
+          isActivated: !!orgApp?.enabled,
+          status: orgApp?.status || "inactive",
+          planId: orgApp?.planId,
+          billingCycle: orgApp?.billingCycle,
+          trialEndsAt: orgApp?.trialEndsAt,
+          activatedAt: orgApp?.activatedAt,
+        };
+      });
   },
 });
 

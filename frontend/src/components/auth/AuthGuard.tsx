@@ -132,6 +132,14 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({
       return null;
     }
 
+    // If user has already completed personal onboarding, prevent access to /onboard/personal
+    if (
+      user?.personalOnboardingCompleted === true &&
+      isPersonalOnboardingRoute
+    ) {
+      return <Navigate to="/" replace />;
+    }
+
     const isPlatformOnboardingSurface = host.application === 'launcher' || host.application === 'accounts';
     const isOnboardingRoute = isPlatformOnboardingSurface && location.pathname.startsWith('/onboarding');
 

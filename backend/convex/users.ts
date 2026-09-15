@@ -490,7 +490,7 @@ export const unlinkIdentity = mutation({
   args: {
     userId: v.id("users"),
     identityId: v.optional(v.union(v.id("authIdentities"), v.string())),
-    provider: v.optional(v.union(v.literal("password"), v.literal("google"), v.literal("facebook"), v.literal("phone"), v.literal("apple"), v.string())),
+    provider: v.optional(v.union(v.literal("password"), v.literal("google"), v.literal("facebook"), v.literal("phone"), v.string())),
   },
   handler: async (ctx, args) => {
     const user = await ctx.db.get(args.userId);
@@ -691,6 +691,7 @@ export const updatePassword = mutation({
   args: {
     userId: v.id("users"),
     passwordHash: v.string(),
+    keepSessionId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const user = await ctx.db.get(args.userId);
@@ -704,6 +705,15 @@ export const updatePassword = mutation({
       tokenVersion: nextVersion,
       updatedAt: now,
     });
+
+    if (args.keepSessionId) {
+      try {
+        const keepSession = await ctx.db.get(args.keepSessionId as any);
+        if (keepSession) {
+          await ctx.db.patch(keepSession._id, { tokenVersion: nextVersion, updatedAt: now });
+        }
+      } catch {}
+    }
 
     // Enqueue security notification email
     await ctx.db.insert("emailOutbox", {
@@ -970,16 +980,20 @@ export const confirmEmailChange = mutation({
     }
 
     const now = Date.now();
+    const newEmail = user.pendingEmail.toLowerCase().trim();
+    const oldEmail = user.email;
     await ctx.db.patch(user._id, {
-      email: user.pendingEmail,
+      email: newEmail,
+      emailNormalized: newEmail,
       pendingEmail: undefined,
       emailChangeToken: undefined,
       emailChangeExpiresAt: undefined,
       emailVerified: true,
+      emailVerifiedAt: now,
       updatedAt: now,
     });
 
-    return { userId: user._id, email: user.pendingEmail };
+    return { userId: user._id, email: newEmail, oldEmail };
   },
 });
 
@@ -1241,6 +1255,22 @@ export const consumeBackupCode = mutation({
   },
 });
 
+export const setBackupCodes = mutation({
+  args: {
+    userId: v.id("users"),
+    backupCodes: v.array(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.userId);
+    if (!user) throw new Error("USER_NOT_FOUND");
+    await ctx.db.patch(args.userId, {
+      twoFactorBackupCodes: args.backupCodes,
+      updatedAt: Date.now(),
+    });
+    return { success: true };
+  },
+});
+
 
 
 export const recordFailedLogin = mutation({
@@ -1302,7 +1332,7 @@ export const incrementTokenVersion = mutation({
 
 export const handleSocialAuth = mutation({
   args: {
-    provider: v.union(v.literal("google"), v.literal("facebook"), v.literal("apple")),
+    provider: v.union(v.literal("google"), v.literal("facebook")),
     providerUserId: v.string(),
     email: v.string(),
     emailVerified: v.boolean(),

@@ -67,17 +67,16 @@ const TEAM_COMFORT_OPTIONS = [
 export const InventoryOnboarding: React.FC = () => {
   const navigate = useNavigate();
   const { currentWorkspace, workspaces, fetchWorkspaces } = useWorkspaceStore();
-  const { branches, loadBranches, createBranch } = useBranchStore();
+  const { branches, loadBranches, createBranch, setActiveBranch } = useBranchStore();
 
   const [isLoading, setIsLoading] = useState(false);
   const [isCheckingStatus, setIsCheckingStatus] = useState(true);
 
   // Questionnaire State (US-2)
-  const [questionIndex, setQuestionIndex] = useState(0); // 0 to 4
+  const [questionIndex, setQuestionIndex] = useState(0); // 0 to 3
   const [previousTools, setPreviousTools] = useState<string[]>([]);
   const [painPoints, setPainPoints] = useState<string[]>([]);
   const [priorityFeatures, setPriorityFeatures] = useState<string[]>([]);
-  const [needsMultiBranch, setNeedsMultiBranch] = useState<boolean>(false);
   const [teamComfortLevel, setTeamComfortLevel] = useState<string>('somewhat');
 
   // Branch Setup Phase (US-3)
@@ -169,7 +168,6 @@ export const InventoryOnboarding: React.FC = () => {
         previousTools: skip ? [] : previousTools,
         painPoints: skip ? [] : painPoints,
         priorityFeatures: skip ? [] : priorityFeatures,
-        needsMultiBranch: skip ? false : needsMultiBranch,
         teamComfortLevel: skip ? 'somewhat' : teamComfortLevel,
       };
 
@@ -229,8 +227,13 @@ export const InventoryOnboarding: React.FC = () => {
       toast.error('Please create at least one branch before using Inventory.');
       return;
     }
+    const target = branches.find((b) => b.isPrimary) || branches[0];
+    if (target) {
+      setActiveBranch(target);
+    }
+    const targetId = target?.id || target?._id;
     toast.success('Inventory workstation ready!');
-    navigate('/dashboard');
+    navigate(`/dashboard?org=${activeOrgId || ''}${targetId ? `&branchId=${targetId}` : ''}`);
   };
 
   if (isCheckingStatus) {
@@ -285,16 +288,15 @@ export const InventoryOnboarding: React.FC = () => {
                 {questionIndex === 0 && 'How were you tracking inventory and sales before?'}
                 {questionIndex === 1 && 'What is your biggest pain point with your current setup?'}
                 {questionIndex === 2 && 'Which features are most important right now?'}
-                {questionIndex === 3 && 'Do you need to track multiple branches or locations?'}
-                {questionIndex === 4 && 'How comfortable is your team with apps & software?'}
+                {questionIndex === 3 && 'How comfortable is your team with apps & software?'}
               </h1>
               <p className="text-xs text-slate-400">
-                Question {questionIndex + 1} of 5 — {questionIndex === 2 ? 'Select up to 3' : 'Select options'}
+                Question {questionIndex + 1} of 4 — {questionIndex === 2 ? 'Select up to 3' : 'Select options'}
               </p>
 
               {/* Progress Dots */}
               <div className="flex gap-1.5 pt-1">
-                {[0, 1, 2, 3, 4].map((idx) => (
+                {[0, 1, 2, 3].map((idx) => (
                   <div
                     key={idx}
                     className={cn(
@@ -402,45 +404,8 @@ export const InventoryOnboarding: React.FC = () => {
               </div>
             )}
 
-            {/* Question 4: Multi-Branch Needs */}
+            {/* Question 4: Team Comfort Level */}
             {questionIndex === 3 && (
-              <div className="p-6 rounded-2xl bg-[#120b10] border border-white/10 shadow-xl space-y-4">
-                <button
-                  type="button"
-                  onClick={() => setNeedsMultiBranch(false)}
-                  className={cn(
-                    'w-full p-4 rounded-xl border text-left transition-all',
-                    !needsMultiBranch
-                      ? 'bg-[#714b67]/25 border-[#714b67] text-white'
-                      : 'bg-black/30 border-white/5 text-slate-300 hover:border-white/20'
-                  )}
-                >
-                  <div className="font-bold text-xs text-white">No (Single Location)</div>
-                  <div className="text-[11px] text-slate-400 mt-0.5">
-                    We manage all stock and sales in one primary store or warehouse.
-                  </div>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setNeedsMultiBranch(true)}
-                  className={cn(
-                    'w-full p-4 rounded-xl border text-left transition-all',
-                    needsMultiBranch
-                      ? 'bg-[#714b67]/25 border-[#714b67] text-white'
-                      : 'bg-black/30 border-white/5 text-slate-300 hover:border-white/20'
-                  )}
-                >
-                  <div className="font-bold text-xs text-white">Yes (Multiple Branches)</div>
-                  <div className="text-[11px] text-slate-400 mt-0.5">
-                    We have 2 or more physical locations and need inter-branch stock transfers and branch-level reporting.
-                  </div>
-                </button>
-              </div>
-            )}
-
-            {/* Question 5: Team Comfort Level */}
-            {questionIndex === 4 && (
               <div className="p-6 rounded-2xl bg-[#120b10] border border-white/10 shadow-xl space-y-3">
                 {TEAM_COMFORT_OPTIONS.map((opt) => (
                   <button
@@ -484,7 +449,7 @@ export const InventoryOnboarding: React.FC = () => {
                   variant="ghost"
                   size="sm"
                   onClick={() => {
-                    if (questionIndex < 4) {
+                    if (questionIndex < 3) {
                       setQuestionIndex(questionIndex + 1);
                     } else {
                       handleSaveQuestionnaire(false);

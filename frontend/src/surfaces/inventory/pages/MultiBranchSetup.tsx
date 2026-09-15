@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
+import { getCrossSubdomainUrl } from '@/lib/domain';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { useBranchStore } from '@/stores/useBranchStore';
+import { useLocationStore } from '@/stores/useLocationStore';
+import { CustomSelect, type SelectOption } from '@/components/ui/custom-select';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -20,6 +23,7 @@ import {
   Phone,
   Check,
   Star,
+  Copy,
 } from 'lucide-react';
 
 export const MultiBranchSetup: React.FC = () => {
@@ -28,7 +32,8 @@ export const MultiBranchSetup: React.FC = () => {
   const orgParam = searchParams.get('org');
 
   const { currentWorkspace, workspaces, selectWorkspace } = useWorkspaceStore();
-  const { branches, loadBranches, createBranch, updateBranch } = useBranchStore();
+  const { branches, loadBranches, createBranch, updateBranch, setActiveBranch } = useBranchStore();
+  const { states, fetchStates } = useLocationStore();
 
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -37,12 +42,46 @@ export const MultiBranchSetup: React.FC = () => {
   // Branch Form Inputs
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
-  const [address, setAddress] = useState('');
-  const [phone, setPhone] = useState('');
+  const [street, setStreet] = useState('');
+  const [city, setCity] = useState('');
+  const [stateName, setStateName] = useState('Lagos');
+  const [country] = useState('Nigeria');
+  const [phoneDigits, setPhoneDigits] = useState('');
   const [isPrimary, setIsPrimary] = useState(false);
 
   const activeOrgId = orgParam || currentWorkspace?.id || localStorage.getItem('orvio_active_workspace_id') || workspaces[0]?.workspace?.id;
   const activeOrgName = currentWorkspace?.name || workspaces.find((w) => w.workspace.id === activeOrgId)?.workspace.name || 'Your Business';
+
+  useEffect(() => {
+    fetchStates();
+  }, [fetchStates]);
+
+  const stateOptions: SelectOption[] = states.length > 0
+    ? states.map((s) => ({ value: s.name, label: s.name }))
+    : [
+        { value: 'Lagos', label: 'Lagos' },
+        { value: 'Abuja (FCT)', label: 'Abuja (FCT)' },
+        { value: 'Rivers', label: 'Rivers' },
+        { value: 'Oyo', label: 'Oyo' },
+        { value: 'Kano', label: 'Kano' },
+        { value: 'Delta', label: 'Delta' },
+        { value: 'Ogun', label: 'Ogun' },
+        { value: 'Anambra', label: 'Anambra' },
+        { value: 'Kaduna', label: 'Kaduna' },
+        { value: 'Enugu', label: 'Enugu' },
+      ];
+
+  const cleanPhone = (val: string) => {
+    let raw = val.replace(/\s+/g, '');
+    if (raw.startsWith('+234')) {
+      raw = raw.slice(4);
+    } else if (raw.startsWith('234')) {
+      raw = raw.slice(3);
+    } else if (raw.startsWith('0')) {
+      raw = raw.slice(1);
+    }
+    return raw;
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -59,12 +98,23 @@ export const MultiBranchSetup: React.FC = () => {
         }
 
         // Fetch organization subscription status
-        api.get<{ success: boolean; data?: any }>(`/organizations/${activeOrgId}/subscription`)
+        api.get<any>(`/organizations/${activeOrgId}/subscription`)
           .then((res) => {
-            if (mounted && res?.data?.subscription?.planKey) {
-              const subPlan = res.data.subscription.planKey.toLowerCase();
-              if (subPlan === 'standard') {
+            const sub = res?.subscription || res?.data?.subscription || currentWorkspace?.subscription;
+            const rawPk = (
+              sub?.activePlan ||
+              (sub?.status === 'active' ? (sub?.selectedPlan || sub?.planKey) : null) ||
+              res?.activePlan ||
+              sub?.planKey ||
+              res?.planKey ||
+              currentWorkspace?.planKey
+            );
+            if (mounted && rawPk) {
+              const subPlan = String(rawPk).toLowerCase();
+              if (subPlan === 'standard' || subPlan === 'premium') {
                 setPlanKey('standard');
+              } else {
+                setPlanKey('free_trial');
               }
             }
           })
@@ -90,7 +140,43 @@ export const MultiBranchSetup: React.FC = () => {
     };
   }, [activeOrgId, currentWorkspace?.id, selectWorkspace, loadBranches]);
 
+  const handlePrefillFromOrg = async () => {
+    try {
+      const ws = currentWorkspace as any;
+      const meta = ws?.metadata || {};
+      let orgStreet = ws?.street || meta.street || '';
+      let orgCity = ws?.city || meta.city || '';
+      let orgState = ws?.state || meta.state || '';
+      let orgPhone = ws?.phone || meta.phone || '';
+
+      if (!orgStreet && !orgPhone && activeOrgId) {
+        const res = await api.get<any>(`/organizations/${activeOrgId}`).catch(() => null);
+        const orgData = res?.organization || res?.data?.organization || res;
+        if (orgData) {
+          orgStreet = orgData.street || orgData.address || '';
+          orgCity = orgData.city || '';
+          orgState = orgData.state || '';
+          orgPhone = orgData.phone || '';
+        }
+      }
+
+      if (orgStreet) setStreet(orgStreet);
+      if (orgCity) setCity(orgCity);
+      if (orgState) setStateName(orgState);
+      if (orgPhone) setPhoneDigits(cleanPhone(orgPhone));
+
+      toast.success('Pre-filled address and contact details from organization!');
+    } catch {
+      toast.info('Could not retrieve organization address details.');
+    }
+  };
+
   const handleAddBranch = async (andFinish: boolean = false) => {
+    if (planKey !== 'standard' && branches.length >= 1) {
+      toast.error('Free Trial organizations can only have 1 branch per application. Upgrade to Standard to add more branches.');
+      return;
+    }
+
     if (!name.trim()) {
       toast.error('Please enter a branch name.');
       return;
@@ -103,12 +189,23 @@ export const MultiBranchSetup: React.FC = () => {
 
     setIsSubmitting(true);
     try {
+      const formattedPhone = phoneDigits.trim() ? `+234${cleanPhone(phoneDigits)}` : undefined;
+      const addressParts = [street.trim(), city.trim(), stateName.trim(), country].filter(Boolean);
+      const formattedAddress = addressParts.length > 0 ? addressParts.join(', ') : undefined;
+
       await createBranch({
         workspaceId: activeOrgId,
+        organizationId: activeOrgId,
+        applicationKey: 'inventory',
         name: name.trim(),
-        code: code.trim() || undefined,
-        address: address.trim() || undefined,
-        phone: phone.trim() || undefined,
+        code: code.trim().toUpperCase() || undefined,
+        street: street.trim() || undefined,
+        city: city.trim() || undefined,
+        state: stateName.trim() || undefined,
+        country: 'Nigeria',
+        address: formattedAddress,
+        formattedAddress,
+        phone: formattedPhone,
         isPrimary: isPrimary || branches.length === 0,
       });
 
@@ -117,18 +214,25 @@ export const MultiBranchSetup: React.FC = () => {
       // Reset form
       setName('');
       setCode('');
-      setAddress('');
-      setPhone('');
+      setStreet('');
+      setCity('');
+      setStateName('Lagos');
+      setPhoneDigits('');
       setIsPrimary(false);
 
-      const updated = await loadBranches(activeOrgId, 'inventory');
+      const updated = await loadBranches(activeOrgId, 'inventory', true);
 
       if (andFinish) {
         if (updated.length === 0) {
           toast.error('At least one branch is required.');
           return;
         }
-        navigate(`/dashboard?org=${activeOrgId}`);
+        const target = updated.find((b) => b.isPrimary) || updated[0];
+        if (target) {
+          setActiveBranch(target);
+        }
+        const targetId = target?.id || target?._id;
+        navigate(`/dashboard?org=${activeOrgId}${targetId ? `&branchId=${targetId}` : ''}`);
       }
     } catch (err: any) {
       toast.error(err?.message || 'Failed to add branch.');
@@ -152,7 +256,7 @@ export const MultiBranchSetup: React.FC = () => {
         await updateBranch(bId, { status: 'deleted' });
       }
       toast.success(`Branch "${bName}" removed.`);
-      if (activeOrgId) await loadBranches(activeOrgId, 'inventory');
+      if (activeOrgId) await loadBranches(activeOrgId, 'inventory', true);
     } catch (err: any) {
       toast.error(err?.message || 'Failed to delete branch.');
     }
@@ -163,8 +267,13 @@ export const MultiBranchSetup: React.FC = () => {
       toast.error('Please add at least one branch before finishing setup.');
       return;
     }
+    const target = branches.find((b) => b.isPrimary) || branches[0];
+    if (target) {
+      setActiveBranch(target);
+    }
+    const targetId = target?.id || target?._id;
     toast.success(`Setup finished for ${activeOrgName}!`);
-    navigate(`/dashboard?org=${activeOrgId}`);
+    navigate(`/dashboard?org=${activeOrgId}${targetId ? `&branchId=${targetId}` : ''}`);
   };
 
   if (isLoading) {
@@ -240,50 +349,111 @@ export const MultiBranchSetup: React.FC = () => {
               }}
               className="space-y-4"
             >
-              <div className="space-y-1.5">
-                <Label className="text-xs text-slate-300 font-semibold">
-                  Branch Name <span className="text-rose-400">*</span>
-                </Label>
-                <Input
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. Marina Main Store, Ikeja Outlet, Abuja Hub"
-                  className="bg-black/60 border-white/15 text-xs text-white"
-                  required
-                />
+              {/* Quick-fill Button */}
+              <div className="flex items-center justify-between p-2.5 rounded-xl bg-white/[0.03] border border-white/10 text-xs">
+                <span className="text-slate-300 font-medium">Use organization details?</span>
+                <button
+                  type="button"
+                  onClick={handlePrefillFromOrg}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#714b67]/30 hover:bg-[#714b67]/50 border border-[#714b67]/40 text-[#d4a8c9] text-xs font-semibold transition cursor-pointer"
+                >
+                  <Copy className="w-3 h-3" />
+                  <span>Use Org Address & Phone</span>
+                </button>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* Branch Name & Code */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="sm:col-span-2 space-y-1.5">
+                  <Label className="text-xs text-slate-300 font-semibold">
+                    Branch Name <span className="text-rose-400">*</span>
+                  </Label>
+                  <Input
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="e.g. Marina Main Store, Ikeja Outlet"
+                    className="bg-black/60 border-white/15 text-xs text-white"
+                    required
+                  />
+                </div>
+
                 <div className="space-y-1.5">
-                  <Label className="text-xs text-slate-300 font-semibold">Branch Code (Optional)</Label>
+                  <Label className="text-xs text-slate-300 font-semibold">Branch Code</Label>
                   <Input
                     value={code}
-                    onChange={(e) => setCode(e.target.value)}
-                    placeholder="e.g. MAR, IKJ, ABJ"
-                    className="bg-black/60 border-white/15 text-xs text-white uppercase"
+                    onChange={(e) => setCode(e.target.value.toUpperCase())}
+                    placeholder="e.g. MAR"
+                    className="bg-black/60 border-white/15 text-xs text-white uppercase font-mono"
                     maxLength={6}
                   />
                 </div>
+              </div>
 
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-slate-300 font-semibold">Phone (Optional)</Label>
-                  <Input
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
-                    placeholder="e.g. +234 801 234 5678"
-                    className="bg-black/60 border-white/15 text-xs text-white"
+              {/* Contact Phone (Standardized +234) */}
+              <div className="space-y-1.5">
+                <Label className="text-xs text-slate-300 font-semibold">Branch Contact Phone</Label>
+                <div className="relative flex items-center h-10 bg-[#0e0a0d] border border-white/15 rounded-md text-xs transition-all focus-within:ring-1 focus-within:ring-[#714b67] focus-within:border-[#714b67]">
+                  <div className="flex items-center gap-1.5 pl-3 pr-2.5 h-full border-r border-white/10 text-slate-300 select-none shrink-0 bg-white/[0.02]">
+                    <Phone className="w-3.5 h-3.5 text-slate-500" />
+                    <span className="text-xs font-medium text-slate-200">+234</span>
+                  </div>
+                  <input
+                    type="tel"
+                    placeholder="801 234 5678"
+                    value={phoneDigits}
+                    onChange={(e) => setPhoneDigits(e.target.value)}
+                    className="w-full h-full bg-transparent px-3 text-white placeholder:text-slate-600 text-xs focus:outline-none"
                   />
                 </div>
               </div>
 
-              <div className="space-y-1.5">
-                <Label className="text-xs text-slate-300 font-semibold">Address / Area (Optional)</Label>
-                <Input
-                  value={address}
-                  onChange={(e) => setAddress(e.target.value)}
-                  placeholder="e.g. Plot 4, Commercial Avenue, Ikeja"
-                  className="bg-black/60 border-white/15 text-xs text-white"
-                />
+              {/* Structured Address Fields (Split like Organization Wizard) */}
+              <div className="space-y-3 pt-2 border-t border-white/10">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-300">
+                  <MapPin className="w-3.5 h-3.5 text-[#FDB02F]" />
+                  <span>Physical Location & Address</span>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-slate-300 font-medium">Street / Area Address</Label>
+                  <Input
+                    placeholder="e.g. 14 Marina Road, Victoria Island"
+                    value={street}
+                    onChange={(e) => setStreet(e.target.value)}
+                    className="bg-black/60 border-white/15 text-xs text-white"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-slate-300 font-medium">City / Town</Label>
+                    <Input
+                      placeholder="e.g. Ikeja"
+                      value={city}
+                      onChange={(e) => setCity(e.target.value)}
+                      className="bg-black/60 border-white/15 text-xs text-white"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-slate-300 font-medium">State</Label>
+                    <CustomSelect
+                      value={stateName}
+                      onChange={setStateName}
+                      options={stateOptions}
+                      placeholder="Select State"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-slate-300 font-medium">Country</Label>
+                    <Input
+                      value={country}
+                      disabled
+                      className="bg-white/5 border-white/10 text-slate-400 cursor-not-allowed text-xs"
+                    />
+                  </div>
+                </div>
               </div>
 
               <div className="pt-1">
@@ -307,8 +477,9 @@ export const MultiBranchSetup: React.FC = () => {
                   type="button"
                   variant="outline"
                   onClick={() => handleAddBranch(false)}
-                  disabled={isSubmitting}
-                  className="w-full sm:w-1/2 border-white/10 bg-white/5 hover:bg-white/10 text-white text-xs font-semibold"
+                  disabled={isSubmitting || (planKey !== 'standard' && branches.length >= 1)}
+                  className="w-full sm:w-1/2 border-white/10 bg-white/5 hover:bg-white/10 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                  title={planKey !== 'standard' && branches.length >= 1 ? "Free Trial organizations can only have 1 branch per application. Upgrade to Standard to add more branches." : undefined}
                 >
                   {isSubmitting ? <Spinner className="w-3.5 h-3.5 mr-2" /> : <Plus className="w-3.5 h-3.5 mr-1.5" />}
                   <span>Save & Add Another</span>
@@ -317,13 +488,26 @@ export const MultiBranchSetup: React.FC = () => {
                 <Button
                   type="button"
                   onClick={() => handleAddBranch(true)}
-                  disabled={isSubmitting}
-                  className="w-full sm:w-1/2 bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/30"
+                  disabled={isSubmitting || (planKey !== 'standard' && branches.length >= 1)}
+                  className="w-full sm:w-1/2 bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/30 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                  title={planKey !== 'standard' && branches.length >= 1 ? "Free Trial organizations can only have 1 branch per application. Upgrade to Standard to add more branches." : undefined}
                 >
                   {isSubmitting ? <Spinner className="w-3.5 h-3.5 mr-2" /> : <Check className="w-3.5 h-3.5 mr-1.5" />}
                   <span>Save & Finish Setup</span>
                 </Button>
               </div>
+
+              {planKey !== 'standard' && branches.length >= 1 && (
+                <div className="text-[11px] text-amber-400 mt-2 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 space-y-1">
+                  <div className="font-bold flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Free Trial Limit Reached (1 Branch Max)</span>
+                  </div>
+                  <p className="text-slate-300">
+                    Your 30-Day Free Trial includes 1 operational branch. Upgrade your organization subscription to Standard to unlock multi-branch inventory.
+                  </p>
+                </div>
+              )}
             </form>
           </div>
 
@@ -355,7 +539,7 @@ export const MultiBranchSetup: React.FC = () => {
                   Your organization is currently on the 30-Day Free Trial. To add up to 3 branch locations, upgrade your organization to the Standard Plan.
                 </p>
                 <a
-                  href={`/onboard/activate?org=${activeOrgId}`}
+                  href={getCrossSubdomainUrl('home', '/billing')}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold transition-colors"
                 >
                   <span>Upgrade to Standard (₦7,500/mo)</span>

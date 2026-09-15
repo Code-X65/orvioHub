@@ -11,12 +11,14 @@ import {
   MailCheck,
   LogOut,
   Building,
-  BarChart3,
+  Phone,
+  CheckCircle2,
+  XCircle,
+  AlertTriangle,
+  CreditCard,
   Layers,
-  GitBranch,
-  Package,
-  Receipt,
-  X,
+  Sparkles,
+  Filter,
 } from "lucide-react";
 import { useAuth } from "../hooks/useAuth";
 import { adminUsersApi } from "../api/adminUsers";
@@ -24,6 +26,8 @@ import SearchBar from "../components/SearchBar";
 import StatusBadge from "../components/StatusBadge";
 import Pagination from "../components/Pagination";
 import ConfirmDialog from "../components/ConfirmDialog";
+import SuspendModal from "../components/SuspendModal";
+import DeleteModal from "../components/DeleteModal";
 
 export const Users: React.FC = () => {
   const { sessionToken } = useAuth();
@@ -32,16 +36,24 @@ export const Users: React.FC = () => {
   const [totalPages, setTotalPages] = useState(1);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
+
+  // Filters
   const [verifiedFilter, setVerifiedFilter] = useState<"all" | "verified" | "unverified">("all");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [userTypeFilter, setUserTypeFilter] = useState<"all" | "ACCOUNT_OWNER" | "ORG_MEMBER" | "GENERAL_USER">("all");
+  const [userTypeFilter, setUserTypeFilter] = useState("all");
+  const [orgFilter, setOrgFilter] = useState("all");
+  const [billingFilter, setBillingFilter] = useState("all");
+  const [onboardingFilter, setOnboardingFilter] = useState("all");
+  const [roleFilter, setRoleFilter] = useState("all");
+
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
 
-  // Usage Modal State
-  const [selectedUserUsage, setSelectedUserUsage] = useState<any | null>(null);
+  // Modals for structured suspension and deletion
+  const [suspendModalUser, setSuspendModalUser] = useState<any>(null);
+  const [deleteModalUser, setDeleteModalUser] = useState<any>(null);
 
-  // Dialog State
+  // General Dialog State
   const [dialogConfig, setDialogConfig] = useState<{
     isOpen: boolean;
     title: string;
@@ -64,7 +76,12 @@ export const Users: React.FC = () => {
         sessionToken,
         search,
         verifiedFilter,
-        statusFilter,
+        statusFilter: statusFilter === "all" ? undefined : statusFilter,
+        userTypeFilter: userTypeFilter === "all" ? undefined : userTypeFilter,
+        orgFilter: orgFilter === "all" ? undefined : orgFilter,
+        billingFilter: billingFilter === "all" ? undefined : billingFilter,
+        onboardingFilter: onboardingFilter === "all" ? undefined : onboardingFilter,
+        roleFilter: roleFilter === "all" ? undefined : roleFilter,
         page,
         pageSize: 10,
       });
@@ -80,44 +97,62 @@ export const Users: React.FC = () => {
 
   useEffect(() => {
     loadUsers();
-  }, [sessionToken, page, search, verifiedFilter, statusFilter]);
-
-  const filteredUsers = users.filter((u) => {
-    if (userTypeFilter === "all") return true;
-    return u.userType === userTypeFilter;
-  });
+  }, [
+    sessionToken,
+    page,
+    search,
+    verifiedFilter,
+    statusFilter,
+    userTypeFilter,
+    orgFilter,
+    billingFilter,
+    onboardingFilter,
+    roleFilter,
+  ]);
 
   const handleSuspend = (user: any) => {
-    setDialogConfig({
-      isOpen: true,
-      title: "Suspend User Account",
-      message: `Are you sure you want to suspend ${user.email}? This will immediately revoke all active sessions and block access.`,
-      confirmLabel: "Suspend User",
-      isDestructive: true,
-      action: async () => {
-        setActionLoading(true);
-        try {
-          await adminUsersApi.suspendUser(sessionToken!, user.id, "Admin suspension");
-          await loadUsers();
-        } finally {
-          setActionLoading(false);
-          setDialogConfig((prev) => ({ ...prev, isOpen: false }));
-        }
-      },
-    });
+    setSuspendModalUser(user);
+  };
+
+  const handleConfirmSuspend = async (data: { reason: string; notes: string }) => {
+    if (!sessionToken || !suspendModalUser) return;
+    setActionLoading(true);
+    try {
+      await adminUsersApi.suspendUser(sessionToken, suspendModalUser.id, data.reason, data.notes);
+      setSuspendModalUser(null);
+      await loadUsers();
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDelete = (user: any) => {
+    setDeleteModalUser(user);
+  };
+
+  const handleConfirmDelete = async (options: any) => {
+    if (!sessionToken || !deleteModalUser) return;
+    setActionLoading(true);
+    try {
+      await adminUsersApi.deleteUser(sessionToken, deleteModalUser.id, options);
+      setDeleteModalUser(null);
+      await loadUsers();
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   const handleActivate = (user: any) => {
     setDialogConfig({
       isOpen: true,
       title: "Reactivate User Account",
-      message: `Activate ${user.email} and allow them to log in to the platform?`,
-      confirmLabel: "Activate User",
+      message: `Reactivate ${user.email}? This will restore account access and allow the user to sign in immediately.`,
+      confirmLabel: "Reactivate Account",
       isDestructive: false,
       action: async () => {
         setActionLoading(true);
         try {
-          await adminUsersApi.activateUser(sessionToken!, user.id);
+          await adminUsersApi.restoreUser(sessionToken!, user.id);
           await loadUsers();
         } finally {
           setActionLoading(false);
@@ -137,8 +172,8 @@ export const Users: React.FC = () => {
       action: async () => {
         setActionLoading(true);
         try {
-          await adminUsersApi.revokeUserSessions(sessionToken!, user.id);
-          alert(`All active sessions for ${user.email} were revoked.`);
+          await adminUsersApi.revokeUserSessions(sessionToken!, user.id, "Admin user list trigger");
+          await loadUsers();
         } finally {
           setActionLoading(false);
           setDialogConfig((prev) => ({ ...prev, isOpen: false }));
@@ -167,51 +202,27 @@ export const Users: React.FC = () => {
     });
   };
 
-  const handleDelete = (user: any) => {
-    setDialogConfig({
-      isOpen: true,
-      title: "Permanently Delete User",
-      message: `Permanently delete user ${user.email}? This action cannot be undone.`,
-      confirmLabel: "Delete User",
-      isDestructive: true,
-      action: async () => {
-        setActionLoading(true);
-        try {
-          await adminUsersApi.deleteUser(sessionToken!, user.id);
-          await loadUsers();
-        } finally {
-          setActionLoading(false);
-          setDialogConfig((prev) => ({ ...prev, isOpen: false }));
-        }
-      },
-    });
+  const resetFilters = () => {
+    setSearch("");
+    setVerifiedFilter("all");
+    setStatusFilter("all");
+    setUserTypeFilter("all");
+    setOrgFilter("all");
+    setBillingFilter("all");
+    setOnboardingFilter("all");
+    setRoleFilter("all");
+    setPage(1);
   };
 
-  const getPlanBadge = (planKey?: string) => {
-    const key = (planKey || "free").toLowerCase();
-    switch (key) {
-      case "premium":
-        return (
-          <span className="px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/30 text-[10px] font-bold">
-            Premium
-          </span>
-        );
-      case "standard":
-        return (
-          <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/30 text-[10px] font-bold">
-            Standard
-          </span>
-        );
-      case "free":
-      case "free_trial":
-      default:
-        return (
-          <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
-            Free Trial
-          </span>
-        );
-    }
-  };
+  const hasActiveFilters =
+    search !== "" ||
+    verifiedFilter !== "all" ||
+    statusFilter !== "all" ||
+    userTypeFilter !== "all" ||
+    orgFilter !== "all" ||
+    billingFilter !== "all" ||
+    onboardingFilter !== "all" ||
+    roleFilter !== "all";
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
@@ -220,44 +231,91 @@ export const Users: React.FC = () => {
         <div>
           <div className="flex items-center gap-2">
             <UsersIcon className="w-5 h-5 text-brand-400" />
-            <h1 className="text-xl font-bold text-white tracking-tight">Platform Users & Plan Usage</h1>
+            <h1 className="text-xl font-bold text-white tracking-tight">Platform Users</h1>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Manage all registered user accounts, active subscription tiers, and live entitlement usage counters.
+            Superadmin directory for inspecting, auditing, and managing registered user records, access permissions, and organization ownerships.
           </p>
         </div>
 
-        <button
-          onClick={loadUsers}
-          className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-semibold border border-slate-800 transition flex items-center gap-2 self-start sm:self-auto cursor-pointer"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
-          <span>Refresh</span>
-        </button>
+        <div className="flex items-center gap-2">
+          {hasActiveFilters && (
+            <button
+              onClick={resetFilters}
+              className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700 transition cursor-pointer"
+            >
+              Reset Filters
+            </button>
+          )}
+
+          <button
+            onClick={loadUsers}
+            className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-semibold border border-slate-800 transition flex items-center gap-2 cursor-pointer"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
+            <span>Refresh</span>
+          </button>
+        </div>
       </div>
 
-      {/* Filters & Search */}
-      <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
-        <div className="flex-1 max-w-md">
-          <SearchBar
-            value={search}
-            onChange={(val) => {
-              setSearch(val);
-              setPage(1);
-            }}
-            placeholder="Search by name or email address..."
-          />
+      {/* Filters & Search Bar */}
+      <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-3 shadow-xl">
+        <div className="flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
+          <div className="flex-1 max-w-xl">
+            <SearchBar
+              value={search}
+              onChange={(val) => {
+                setSearch(val);
+                setPage(1);
+              }}
+              placeholder="Search by name, email, user ID, phone, organization, or Paystack ref..."
+            />
+          </div>
+
+          <div className="flex items-center gap-2 text-xs text-slate-400">
+            <Filter className="w-4 h-4 text-slate-500" />
+            <span>Filters:</span>
+          </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
-          {/* User Type Filter */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 pt-1">
+          {/* Account Status */}
+          <select
+            value={statusFilter}
+            onChange={(e) => {
+              setStatusFilter(e.target.value);
+              setPage(1);
+            }}
+            className="px-2 py-2 rounded-xl bg-slate-950/90 border border-slate-800 text-xs text-slate-300 outline-none focus:border-brand-500 cursor-pointer"
+          >
+            <option value="all">All Statuses</option>
+            <option value="ACTIVE">Active</option>
+            <option value="SUSPENDED">Suspended</option>
+            <option value="DELETED">Deleted</option>
+          </select>
+
+          {/* Email Verification */}
+          <select
+            value={verifiedFilter}
+            onChange={(e) => {
+              setVerifiedFilter(e.target.value as any);
+              setPage(1);
+            }}
+            className="px-2 py-2 rounded-xl bg-slate-950/90 border border-slate-800 text-xs text-slate-300 outline-none focus:border-brand-500 cursor-pointer"
+          >
+            <option value="all">All Verification</option>
+            <option value="verified">Email Verified</option>
+            <option value="unverified">Unverified</option>
+          </select>
+
+          {/* User Type */}
           <select
             value={userTypeFilter}
             onChange={(e) => {
-              setUserTypeFilter(e.target.value as any);
+              setUserTypeFilter(e.target.value);
               setPage(1);
             }}
-            className="px-3 py-2 rounded-xl bg-slate-950/90 border border-slate-800 text-xs text-slate-300 outline-none focus:border-brand-500 cursor-pointer"
+            className="px-2 py-2 rounded-xl bg-slate-950/90 border border-slate-800 text-xs text-slate-300 outline-none focus:border-brand-500 cursor-pointer"
           >
             <option value="all">All User Types</option>
             <option value="ACCOUNT_OWNER">Account Owners</option>
@@ -265,32 +323,62 @@ export const Users: React.FC = () => {
             <option value="GENERAL_USER">General Users</option>
           </select>
 
-          {/* Email Verification Filter */}
+          {/* Organizations State */}
           <select
-            value={verifiedFilter}
+            value={orgFilter}
             onChange={(e) => {
-              setVerifiedFilter(e.target.value as any);
+              setOrgFilter(e.target.value);
               setPage(1);
             }}
-            className="px-3 py-2 rounded-xl bg-slate-950/90 border border-slate-800 text-xs text-slate-300 outline-none focus:border-brand-500 cursor-pointer"
+            className="px-2 py-2 rounded-xl bg-slate-950/90 border border-slate-800 text-xs text-slate-300 outline-none focus:border-brand-500 cursor-pointer"
           >
-            <option value="all">All Verification</option>
-            <option value="verified">Verified Only</option>
-            <option value="unverified">Unverified Only</option>
+            <option value="all">All Organizations</option>
+            <option value="has_orgs">With Organizations</option>
+            <option value="no_orgs">Without Organizations</option>
+            <option value="limit_reached">At Limit (3/3)</option>
           </select>
 
-          {/* Account Status Filter */}
+          {/* Billing & Subscriptions */}
           <select
-            value={statusFilter}
+            value={billingFilter}
             onChange={(e) => {
-              setStatusFilter(e.target.value);
+              setBillingFilter(e.target.value);
               setPage(1);
             }}
-            className="px-3 py-2 rounded-xl bg-slate-950/90 border border-slate-800 text-xs text-slate-300 outline-none focus:border-brand-500 cursor-pointer"
+            className="px-2 py-2 rounded-xl bg-slate-950/90 border border-slate-800 text-xs text-slate-300 outline-none focus:border-brand-500 cursor-pointer"
           >
-            <option value="all">All Statuses</option>
-            <option value="ACTIVE">Active</option>
-            <option value="SUSPENDED">Suspended</option>
+            <option value="all">All Billing</option>
+            <option value="active_sub">Active Subscriptions</option>
+            <option value="trial">Free Trial</option>
+            <option value="failed_payments">Failed Payments</option>
+          </select>
+
+          {/* Onboarding State */}
+          <select
+            value={onboardingFilter}
+            onChange={(e) => {
+              setOnboardingFilter(e.target.value);
+              setPage(1);
+            }}
+            className="px-2 py-2 rounded-xl bg-slate-950/90 border border-slate-800 text-xs text-slate-300 outline-none focus:border-brand-500 cursor-pointer"
+          >
+            <option value="all">All Onboarding</option>
+            <option value="completed">Onboarding Done</option>
+            <option value="incomplete">Incomplete</option>
+          </select>
+
+          {/* Role */}
+          <select
+            value={roleFilter}
+            onChange={(e) => {
+              setRoleFilter(e.target.value);
+              setPage(1);
+            }}
+            className="px-2 py-2 rounded-xl bg-slate-950/90 border border-slate-800 text-xs text-slate-300 outline-none focus:border-brand-500 cursor-pointer"
+          >
+            <option value="all">All Roles</option>
+            <option value="superadmin">Superadmins</option>
+            <option value="user">Regular Users</option>
           </select>
         </div>
       </div>
@@ -301,11 +389,11 @@ export const Users: React.FC = () => {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="border-b border-slate-800 bg-slate-950/60 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                <th className="py-3.5 px-5">User & Type</th>
-                <th className="py-3.5 px-4">Plan Tier</th>
-                <th className="py-3.5 px-4">Usage vs Limits</th>
-                <th className="py-3.5 px-4">Status</th>
-                <th className="py-3.5 px-4">Joined Date</th>
+                <th className="py-3.5 px-5">User & Identity</th>
+                <th className="py-3.5 px-4">Org / App / Branch</th>
+                <th className="py-3.5 px-4">Contact & Location</th>
+                <th className="py-3.5 px-4">Subscription & Risk</th>
+                <th className="py-3.5 px-4">Status & Dates</th>
                 <th className="py-3.5 px-5 text-right">Actions</th>
               </tr>
             </thead>
@@ -317,33 +405,37 @@ export const Users: React.FC = () => {
                     Loading users...
                   </td>
                 </tr>
-              ) : filteredUsers.length === 0 ? (
+              ) : users.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="py-16 text-center text-slate-500">
                     No users matching criteria.
                   </td>
                 </tr>
               ) : (
-                filteredUsers.map((u) => {
-                  const subPlanKey = u.subscription?.planKey || "free";
-                  const ent = u.entitlements || {};
-                  const usage = u.usage || {};
-
-                  const maxOrgs = ent.maxOrganizations ?? 1;
-                  const currentOrgs = usage.workspaces ?? u.organizationCount ?? 0;
-
-                  const maxApps = ent.maxAppsPerOrganization === "unlimited" ? "∞" : (ent.maxAppsPerOrganization ?? 1);
-                  const currentApps = usage.apps ?? 0;
-
-                  const maxBranches = ent.maxBranchesPerApp === "unlimited" ? "∞" : (ent.maxBranchesPerApp ?? 1);
-                  const currentBranches = usage.branches ?? 0;
+                users.map((u) => {
+                  const ownedCount = u.ownedOrganizationsCount ?? 0;
+                  const memberCount = u.memberOrganizationsCount ?? 0;
+                  const isSuperadmin = u.role === "superadmin" || u.role === "admin";
+                  const quota = u.ownershipQuota;
 
                   return (
                     <tr key={u.id} className="hover:bg-slate-800/40 transition">
+                      {/* User & Identity */}
                       <td className="py-4 px-5">
                         <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 rounded-full bg-brand-500/20 border border-brand-500/30 flex items-center justify-center font-bold text-brand-300 text-xs shrink-0">
-                            {u.name?.charAt(0)?.toUpperCase() || "U"}
+                          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-brand-600 to-indigo-600 flex items-center justify-center font-bold text-white text-xs shrink-0 shadow overflow-hidden border border-slate-700/60">
+                            {u.avatar || u.avatarUrl ? (
+                              <img
+                                src={u.avatar || u.avatarUrl}
+                                alt={u.name || "User"}
+                                className="w-full h-full object-cover"
+                                onError={(e) => {
+                                  (e.target as HTMLElement).style.display = "none";
+                                }}
+                              />
+                            ) : (
+                              u.name?.charAt(0)?.toUpperCase() || "U"
+                            )}
                           </div>
                           <div>
                             <div className="flex items-center gap-2">
@@ -355,7 +447,13 @@ export const Users: React.FC = () => {
                                 <ExternalLink className="w-3 h-3 text-slate-500 opacity-60 hover:opacity-100" />
                               </Link>
 
-                              {u.userType === "ACCOUNT_OWNER" && (
+                              {isSuperadmin && (
+                                <span className="px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/30 text-[9px] font-bold flex items-center gap-0.5">
+                                  <Sparkles className="w-2.5 h-2.5" /> Superadmin
+                                </span>
+                              )}
+
+                              {u.userType === "ACCOUNT_OWNER" && !isSuperadmin && (
                                 <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[9px] font-bold">
                                   Owner
                                 </span>
@@ -365,74 +463,151 @@ export const Users: React.FC = () => {
                                   Staff
                                 </span>
                               )}
-                              {u.userType === "GENERAL_USER" && (
-                                <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700 text-[9px] font-medium">
-                                  General
+                            </div>
+
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <p className="text-[11px] text-slate-400">{u.email}</p>
+                              {u.emailVerified ? (
+                                <span title="Email verified" className="inline-flex items-center text-emerald-400 text-[10px]">
+                                  <CheckCircle2 className="w-3 h-3" />
+                                </span>
+                              ) : (
+                                <span title="Email unverified" className="inline-flex items-center text-rose-400 text-[10px]">
+                                  <XCircle className="w-3 h-3" />
                                 </span>
                               )}
                             </div>
-                            <p className="text-[11px] text-slate-400">{u.email}</p>
+
+                            <p className="text-[10px] text-slate-500 font-mono mt-0.5">
+                              ID: {u.id}
+                            </p>
                           </div>
                         </div>
                       </td>
 
-                      {/* Plan Tier Column */}
+                      {/* Org / App / Branch */}
+                      <td className="py-4 px-4">
+                        <div className="space-y-1.5">
+                          <div className="flex items-center gap-1.5 text-slate-200 font-medium">
+                            <Building className="w-3.5 h-3.5 text-brand-400" />
+                            <span>
+                              {ownedCount} Owned / {memberCount} Member
+                            </span>
+                            {quota?.isLimitReached && (
+                              <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 text-[9px] font-bold border border-amber-500/20">
+                                {quota.ownedCount}/{quota.maxLimit} Limit
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Active apps & Branches */}
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {u.activeApplications && u.activeApplications.length > 0 ? (
+                              u.activeApplications.map((appKey: string) => (
+                                <span
+                                  key={appKey}
+                                  className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[9px] font-semibold border border-slate-700 flex items-center gap-1"
+                                >
+                                  <Layers className="w-2.5 h-2.5 text-indigo-400" />
+                                  {appKey}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-[10px] text-slate-500">No apps activated</span>
+                            )}
+
+                            <span className="px-1.5 py-0.5 rounded bg-slate-950 text-slate-400 text-[9px] font-medium border border-slate-800 flex items-center gap-1">
+                              <Building className="w-2.5 h-2.5 text-emerald-400" />
+                              {u.activeBranchesCount ?? 0} {(u.activeBranchesCount ?? 0) === 1 ? 'Branch' : 'Branches'}
+                            </span>
+                          </div>
+                        </div>
+                      </td>
+
+                      {/* Contact & Location */}
+                      <td className="py-4 px-4">
+                        <div className="space-y-0.5 text-[11px]">
+                          {u.phone ? (
+                            <div className="flex items-center gap-1.5 font-mono">
+                              <Phone className="w-3 h-3 text-slate-500 shrink-0" />
+                              <span className="text-slate-300">{u.phoneNormalized || u.phone}</span>
+                              {u.phoneStatus === "verified" ? (
+                                <span title="Phone verified" className="inline-flex items-center text-emerald-400 text-[10px]">
+                                  <CheckCircle2 className="w-3 h-3 shrink-0" />
+                                </span>
+                              ) : (
+                                <span title="Phone unverified" className="inline-flex items-center text-amber-400 text-[10px]">
+                                  <AlertTriangle className="w-3 h-3 shrink-0" />
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-slate-500">No phone</span>
+                          )}
+                          <div className="text-slate-400 text-[10px]">
+                            {u.country || "Nigeria"}
+                          </div>
+                        </div>
+                      </td>
+
+                      {/* Subscription & Risk Indicators */}
                       <td className="py-4 px-4">
                         <div className="space-y-1">
-                          {getPlanBadge(subPlanKey)}
-                          <div className="text-[10px] text-slate-500 capitalize">
-                            status: {u.subscription?.status || "trialing"}
-                          </div>
-                        </div>
-                      </td>
-
-                      {/* Usage vs Limits Column */}
-                      <td className="py-4 px-4">
-                        <div className="flex items-center gap-2">
-                          <div className="px-2 py-1 rounded-lg bg-slate-950 border border-slate-800/80 text-[11px]">
-                            <span className="text-slate-400 font-medium">Orgs: </span>
+                          <div className="flex items-center gap-1.5">
+                            <CreditCard className="w-3.5 h-3.5 text-slate-400" />
+                            <span className="font-semibold text-slate-200 capitalize text-[11px]">
+                              {u.subscription?.planKey || "Free"}
+                            </span>
                             <span
-                              className={`font-mono font-bold ${
-                                currentOrgs >= maxOrgs ? "text-amber-400" : "text-white"
+                              className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
+                                u.subscription?.status === "active"
+                                  ? "bg-emerald-500/10 text-emerald-400"
+                                  : "bg-purple-500/10 text-purple-300"
                               }`}
                             >
-                              {currentOrgs}/{maxOrgs}
+                              {u.subscription?.status || "trial"}
                             </span>
                           </div>
-                          <div className="px-2 py-1 rounded-lg bg-slate-950 border border-slate-800/80 text-[11px]">
-                            <span className="text-slate-400 font-medium">Apps: </span>
-                            <span className="font-mono font-bold text-indigo-300">
-                              {currentApps}/{maxApps}
-                            </span>
+
+                          {/* Warnings */}
+                          {u.warnings && u.warnings.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-1">
+                              {u.warnings.map((w: string) => (
+                                <span
+                                  key={w}
+                                  className="px-1.5 py-0.2 rounded bg-rose-500/10 text-rose-400 text-[9px] font-medium border border-rose-500/20 flex items-center gap-0.5"
+                                >
+                                  <AlertTriangle className="w-2.5 h-2.5" />
+                                  {w.replace(/_/g, " ")}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* Status & Dates */}
+                      <td className="py-4 px-4 text-[11px]">
+                        <div className="space-y-1">
+                          <StatusBadge status={u.status} size="sm" />
+                          <div className="text-[10px] text-slate-500">
+                            Joined: {u.createdAt ? new Date(u.createdAt).toLocaleDateString() : "—"}
                           </div>
-                          <div className="px-2 py-1 rounded-lg bg-slate-950 border border-slate-800/80 text-[11px]">
-                            <span className="text-slate-400 font-medium">Branches: </span>
-                            <span className="font-mono font-bold text-amber-300">
-                              {currentBranches}/{maxBranches}
-                            </span>
+                          <div className="text-[10px] text-slate-400">
+                            Last Login: {u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleDateString() : "Never"}
                           </div>
                         </div>
                       </td>
 
-                      <td className="py-4 px-4">
-                        <StatusBadge status={u.status} size="sm" />
-                      </td>
-
-                      <td className="py-4 px-4 text-[11px] text-slate-400">
-                        {u.createdAt ? new Date(u.createdAt).toLocaleDateString() : "—"}
-                      </td>
-
+                      {/* Actions */}
                       <td className="py-4 px-5 text-right">
                         <div className="flex items-center justify-end gap-1.5">
-                          {/* View Usage Button */}
-                          <button
-                            title="Inspect user entitlements and live usage counters"
-                            onClick={() => setSelectedUserUsage(u)}
-                            className="px-2 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-brand-300 hover:bg-brand-500/10 hover:border-brand-500/30 transition flex items-center gap-1 text-[11px] font-semibold cursor-pointer"
+                          <Link
+                            to={`/users/${u.id}`}
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-[11px] font-semibold transition"
                           >
-                            <BarChart3 className="w-3.5 h-3.5" />
-                            <span>Usage</span>
-                          </button>
+                            Details
+                          </Link>
 
                           {!u.emailVerified && (
                             <button
@@ -496,187 +671,31 @@ export const Users: React.FC = () => {
         />
       </div>
 
-      {/* View Usage Modal */}
-      {selectedUserUsage && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in overflow-y-auto">
-          <div className="max-w-lg w-full rounded-2xl bg-slate-900 border border-slate-800 p-6 space-y-6 shadow-2xl my-8">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-brand-500/10 border border-brand-500/20 flex items-center justify-center text-brand-400">
-                  <BarChart3 className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-base text-white">{selectedUserUsage.name}</h3>
-                  <p className="text-[11px] text-slate-400">{selectedUserUsage.email}</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setSelectedUserUsage(null)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+      {/* Structured Suspend User Modal */}
+      {suspendModalUser && (
+        <SuspendModal
+          isOpen={!!suspendModalUser}
+          targetType="user"
+          targetName={suspendModalUser.name || suspendModalUser.email}
+          targetId={suspendModalUser.id}
+          isLoading={actionLoading}
+          onClose={() => setSuspendModalUser(null)}
+          onConfirm={handleConfirmSuspend}
+        />
+      )}
 
-            <div className="flex items-center justify-between p-3 rounded-xl bg-slate-950 border border-slate-800">
-              <div className="text-xs">
-                <span className="text-slate-400">Active Subscription: </span>
-                <span className="font-bold text-white uppercase ml-1">
-                  {selectedUserUsage.subscription?.planKey || "Free Trial"}
-                </span>
-              </div>
-              {getPlanBadge(selectedUserUsage.subscription?.planKey)}
-            </div>
-
-            {/* Usage Progress Cards */}
-            <div className="space-y-3">
-              <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                Batch Entitlements & Live Usage
-              </h4>
-
-              {/* 1. Organizations */}
-              {(() => {
-                const max = selectedUserUsage.entitlements?.maxOrganizations ?? 1;
-                const cur = selectedUserUsage.usage?.workspaces ?? selectedUserUsage.organizationCount ?? 0;
-                const pct = Math.min(100, Math.round((cur / max) * 100));
-                return (
-                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-300 font-medium flex items-center gap-1.5">
-                        <Building className="w-3.5 h-3.5 text-blue-400" /> Organizations
-                      </span>
-                      <span className="font-mono font-bold text-white">
-                        {cur} / {max}
-                      </span>
-                    </div>
-                    <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all ${
-                          pct >= 100 ? "bg-rose-500" : pct >= 80 ? "bg-amber-400" : "bg-blue-500"
-                        }`}
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })()}
-
-              {/* 2. Apps per Workspace */}
-              {(() => {
-                const max = selectedUserUsage.entitlements?.maxAppsPerOrganization;
-                const cur = selectedUserUsage.usage?.apps ?? 0;
-                const isUnlimited = max === "unlimited";
-                const numMax = isUnlimited ? 999 : (max ?? 1);
-                const pct = isUnlimited ? 15 : Math.min(100, Math.round((cur / numMax) * 100));
-                return (
-                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-300 font-medium flex items-center gap-1.5">
-                        <Layers className="w-3.5 h-3.5 text-indigo-400" /> Applications
-                      </span>
-                      <span className="font-mono font-bold text-white">
-                        {cur} / {isUnlimited ? "Unlimited" : numMax}
-                      </span>
-                    </div>
-                    <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all ${
-                          !isUnlimited && pct >= 100 ? "bg-rose-500" : "bg-indigo-500"
-                        }`}
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })()}
-
-              {/* 3. Branches per App */}
-              {(() => {
-                const max = selectedUserUsage.entitlements?.maxBranchesPerApp ?? 1;
-                const cur = selectedUserUsage.usage?.branches ?? 0;
-                const pct = Math.min(100, Math.round((cur / max) * 100));
-                return (
-                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-300 font-medium flex items-center gap-1.5">
-                        <GitBranch className="w-3.5 h-3.5 text-amber-400" /> Branches per App
-                      </span>
-                      <span className="font-mono font-bold text-white">
-                        {cur} / {max}
-                      </span>
-                    </div>
-                    <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all ${
-                          pct >= 100 ? "bg-rose-500" : pct >= 80 ? "bg-amber-400" : "bg-amber-500"
-                        }`}
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })()}
-
-              {/* 4. Team Members */}
-              {(() => {
-                const max = selectedUserUsage.entitlements?.maxMembersPerOrganization ?? 2;
-                const cur = selectedUserUsage.usage?.members ?? 1;
-                const pct = Math.min(100, Math.round((cur / max) * 100));
-                return (
-                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-300 font-medium flex items-center gap-1.5">
-                        <UsersIcon className="w-3.5 h-3.5 text-emerald-400" /> Team Members
-                      </span>
-                      <span className="font-mono font-bold text-white">
-                        {cur} / {max}
-                      </span>
-                    </div>
-                    <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all ${
-                          pct >= 100 ? "bg-rose-500" : pct >= 80 ? "bg-amber-400" : "bg-emerald-500"
-                        }`}
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })()}
-
-              {/* 5. Products & 6. Transactions */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
-                  <span className="text-[11px] text-slate-400 flex items-center gap-1">
-                    <Package className="w-3 h-3 text-slate-400" /> Product Limit
-                  </span>
-                  <div className="font-mono font-bold text-white text-xs">
-                    {(selectedUserUsage.entitlements?.maxProductsPerWorkspace ?? 500).toLocaleString()} items
-                  </div>
-                </div>
-
-                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
-                  <span className="text-[11px] text-slate-400 flex items-center gap-1">
-                    <Receipt className="w-3 h-3 text-slate-400" /> Monthly Tx Limit
-                  </span>
-                  <div className="font-mono font-bold text-white text-xs">
-                    {(selectedUserUsage.entitlements?.maxTransactionsPerMonth ?? 500).toLocaleString()} txs
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex justify-end pt-2 border-t border-slate-800">
-              <button
-                type="button"
-                onClick={() => setSelectedUserUsage(null)}
-                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold transition cursor-pointer"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* Structured Delete User Modal */}
+      {deleteModalUser && (
+        <DeleteModal
+          isOpen={!!deleteModalUser}
+          targetType="user"
+          targetName={deleteModalUser.name || deleteModalUser.email}
+          targetId={deleteModalUser.id}
+          ownedWorkspacesCount={deleteModalUser.ownedOrganizationsCount ?? 0}
+          isLoading={actionLoading}
+          onClose={() => setDeleteModalUser(null)}
+          onConfirm={handleConfirmDelete}
+        />
       )}
 
       {/* Confirmation Modal */}

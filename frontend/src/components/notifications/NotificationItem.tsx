@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Check, X, Clock, Info, CheckCircle2, AlertTriangle, AlertCircle, Loader2 } from 'lucide-react';
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { cn } from '@/lib/utils';
 
 export interface NotificationData {
@@ -20,6 +21,9 @@ export interface NotificationData {
     role?: string;
     inviterName?: string;
     tokenHash?: string;
+    isResolved?: boolean;
+    inviteStatus?: string;
+    isAlreadyMember?: boolean;
     [key: string]: any;
   };
   severity: 'INFO' | 'SUCCESS' | 'WARNING' | 'ERROR';
@@ -55,19 +59,58 @@ export const NotificationItem: React.FC<NotificationItemProps> = ({
   onDecline,
   onMarkRead,
 }) => {
+  const { workspaces } = useWorkspaceStore();
   const [isAccepting, setIsAccepting] = useState(false);
   const [isDeclining, setIsDeclining] = useState(false);
   const [actionDone, setActionDone] = useState<'accepted' | 'declined' | null>(null);
 
-  const isInvite = notification.type === 'org_invite' || notification.type === 'workspace_invite';
+  const isInvite =
+    notification.type === 'org_invite' ||
+    notification.type === 'workspace_invite' ||
+    notification.type === 'application_invite' ||
+    notification.type === 'branch_invite';
   const isUnread = notification.status === 'UNREAD';
 
+  const orgId =
+    notification.data?.organizationId ||
+    notification.data?.workspaceId ||
+    notification.workspaceId;
   const orgName =
     notification.data?.organizationName ||
     notification.data?.workspaceName ||
     'an organization';
   const roleName = notification.data?.role || 'Member';
   const inviter = notification.data?.inviterName || 'A teammate';
+
+  // Cross-reference against local workspace list and backend resolution data
+  const alreadyMember =
+    Boolean(notification.data?.isAlreadyMember) ||
+    Boolean(notification.data?.isResolved && notification.data?.inviteStatus === 'ACCEPTED') ||
+    notification.data?.inviteStatus === 'ACCEPTED' ||
+    workspaces.some((entry) => {
+      const wsId = entry.workspace?.id || entry.workspaceId || entry.organizationId;
+      const wsName = entry.workspace?.name || '';
+      return (
+        (orgId && wsId === orgId) ||
+        (wsName && orgName && wsName.trim().toLowerCase() === orgName.trim().toLowerCase())
+      );
+    });
+
+  const isCancelled =
+    notification.data?.inviteStatus === 'CANCELLED' ||
+    notification.data?.inviteStatus === 'cancelled' ||
+    notification.data?.inviteStatus === 'declined' ||
+    notification.data?.inviteStatus === 'revoked';
+
+  const isExpired =
+    notification.data?.inviteStatus === 'EXPIRED' ||
+    notification.data?.inviteStatus === 'expired';
+
+  const isResolved =
+    alreadyMember ||
+    isCancelled ||
+    isExpired ||
+    Boolean(notification.data?.isResolved);
 
   const handleAccept = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -114,7 +157,7 @@ export const NotificationItem: React.FC<NotificationItemProps> = ({
       )}
     >
       {/* Unread indicator dot */}
-      {isUnread && (
+      {isUnread && !isResolved && (
         <span className="absolute top-3 right-3 w-2 h-2 rounded-full bg-[#FDB02F] shadow-[0_0_8px_#FDB02F]" />
       )}
 
@@ -164,8 +207,8 @@ export const NotificationItem: React.FC<NotificationItemProps> = ({
             {isInvite && inviter && <span>• by {inviter}</span>}
           </div>
 
-          {/* Accept / Decline Action Buttons for Invites */}
-          {isInvite && !actionDone && (
+          {/* Accept / Decline Action Buttons for Invites (only if active & unresolved) */}
+          {isInvite && !actionDone && !isResolved && (
             <div className="flex items-center gap-2 mt-3 pt-2 border-t border-white/5">
               <button
                 type="button"
@@ -207,17 +250,25 @@ export const NotificationItem: React.FC<NotificationItemProps> = ({
             </div>
           )}
 
-          {actionDone === 'accepted' && (
-            <div className="mt-2 text-[11px] font-medium text-emerald-400 flex items-center gap-1">
-              <Check className="w-3.5 h-3.5" />
-              <span>Invitation accepted! You are now a member.</span>
+          {/* Resolved State Indicators */}
+          {(actionDone === 'accepted' || (isInvite && alreadyMember)) && (
+            <div className="mt-2.5 pt-2 border-t border-white/5 text-[11px] font-medium text-emerald-400 flex items-center gap-1.5">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              <span>Invitation accepted • You are an active member</span>
             </div>
           )}
 
-          {actionDone === 'declined' && (
-            <div className="mt-2 text-[11px] font-medium text-slate-400 flex items-center gap-1">
-              <X className="w-3.5 h-3.5" />
-              <span>Invitation declined.</span>
+          {(actionDone === 'declined' || (isInvite && isCancelled && !alreadyMember)) && (
+            <div className="mt-2.5 pt-2 border-t border-white/5 text-[11px] font-medium text-slate-400 flex items-center gap-1.5">
+              <X className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+              <span>Invitation no longer active</span>
+            </div>
+          )}
+
+          {isInvite && isExpired && !alreadyMember && !actionDone && (
+            <div className="mt-2.5 pt-2 border-t border-white/5 text-[11px] font-medium text-amber-400/80 flex items-center gap-1.5">
+              <Clock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span>Invitation expired</span>
             </div>
           )}
         </div>

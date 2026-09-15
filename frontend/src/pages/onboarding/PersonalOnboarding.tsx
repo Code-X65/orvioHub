@@ -17,8 +17,11 @@ import {
   Check,
   CheckCircle2,
   ArrowRight,
+  ArrowLeft,
   User,
   Share2,
+  Briefcase,
+  Store,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -56,8 +59,8 @@ const USE_CASES: UseCaseOption[] = [
   },
   {
     id: 'join_other',
-    title: "Join an existing business",
-    description: "I was invited by an employer, partner, or business associate.",
+    title: 'Join an existing business',
+    description: 'I was invited by an employer, partner, or business associate.',
     icon: Users,
   },
   {
@@ -86,16 +89,102 @@ const ROLES = [
   { id: 'Other', label: 'Other' },
 ];
 
+const STEPS = [
+  { step: 1, title: 'Purpose', description: 'What you want to do' },
+  { step: 2, title: 'Role', description: 'Your current position' },
+  { step: 3, title: 'Business', description: 'Operational status' },
+  { step: 4, title: 'Discovery', description: 'How you found us' },
+];
+
 export const PersonalOnboarding: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { user, updateUser } = useAuthStore();
 
+  const [loadingInitial, setLoadingInitial] = useState<boolean>(true);
+  const [currentStep, setCurrentStep] = useState<number>(1);
   const [selectedUseCases, setSelectedUseCases] = useState<string[]>(['inventory']);
-  const [acquisitionSource, setAcquisitionSource] = useState<string>('friend');
   const [role, setRole] = useState<string>('Owner');
   const [managesBusiness, setManagesBusiness] = useState<boolean>(true);
+  const [acquisitionSource, setAcquisitionSource] = useState<string>('friend');
+  const [acquisitionSourceOther, setAcquisitionSourceOther] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+
+  // 1. Initial Mount: Check if already completed and restore draft progress
+  React.useEffect(() => {
+    if (user?.personalOnboardingCompleted) {
+      const inviteToken = searchParams.get('invite_token') || searchParams.get('token');
+      if (inviteToken) {
+        navigate(`/invite/${inviteToken}`, { replace: true });
+      } else {
+        navigate('/', { replace: true });
+      }
+      return;
+    }
+
+    let isMounted = true;
+    const fetchPersonalDraft = async () => {
+      try {
+        const res = await api.get<{
+          success: boolean;
+          data: {
+            personalOnboardingCompleted: boolean;
+            currentStep?: number;
+            profile?: any;
+          };
+        }>('/onboarding/personal');
+
+        if (!isMounted) return;
+
+        if (res?.data?.personalOnboardingCompleted) {
+          updateUser({ personalOnboardingCompleted: true });
+          const inviteToken = searchParams.get('invite_token') || searchParams.get('token');
+          if (inviteToken) {
+            navigate(`/invite/${inviteToken}`, { replace: true });
+          } else {
+            navigate('/', { replace: true });
+          }
+          return;
+        }
+
+        const draft = res?.data;
+        if (draft) {
+          if (draft.currentStep && draft.currentStep >= 1 && draft.currentStep <= 4) {
+            setCurrentStep(draft.currentStep);
+          }
+          if (draft.profile) {
+            const p = draft.profile;
+            if (Array.isArray(p.useCases) && p.useCases.length > 0) {
+              setSelectedUseCases(p.useCases);
+            }
+            if (p.role) {
+              setRole(p.role);
+            }
+            if (p.managesBusiness !== undefined) {
+              setManagesBusiness(Boolean(p.managesBusiness));
+            }
+            if (p.acquisitionSource) {
+              setAcquisitionSource(p.acquisitionSource);
+            }
+            if (p.acquisitionSourceOther) {
+              setAcquisitionSourceOther(p.acquisitionSourceOther);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load personal onboarding draft:', err);
+      } finally {
+        if (isMounted) {
+          setLoadingInitial(false);
+        }
+      }
+    };
+
+    fetchPersonalDraft();
+    return () => {
+      isMounted = false;
+    };
+  }, [navigate, searchParams, updateUser, user?.personalOnboardingCompleted]);
 
   const toggleUseCase = (id: string) => {
     setSelectedUseCases((prev) =>
@@ -103,14 +192,55 @@ export const PersonalOnboarding: React.FC = () => {
     );
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleNext = () => {
+    if (currentStep === 1 && selectedUseCases.length === 0) {
+      toast.error('Please select at least one purpose to continue.');
+      return;
+    }
+
+    if (currentStep < 4) {
+      const nextStep = currentStep + 1;
+      setCurrentStep(nextStep);
+
+      // Persist real-time draft progress so user can resume seamlessly if interrupted
+      api.post('/onboarding/personal/progress', {
+        currentStep: nextStep,
+        useCases: selectedUseCases,
+        role,
+        managesBusiness,
+        acquisitionSource,
+        acquisitionSourceOther: acquisitionSource === 'other' ? acquisitionSourceOther.trim() : undefined,
+      }).catch((err) => {
+        console.warn('Silent draft sync error:', err);
+      });
+    }
+  };
+
+  const handleBack = () => {
+    if (currentStep > 1) {
+      const prevStep = currentStep - 1;
+      setCurrentStep(prevStep);
+
+      // Persist current step backwards
+      api.post('/onboarding/personal/progress', {
+        currentStep: prevStep,
+        useCases: selectedUseCases,
+        role,
+        managesBusiness,
+        acquisitionSource,
+        acquisitionSourceOther: acquisitionSource === 'other' ? acquisitionSourceOther.trim() : undefined,
+      }).catch(() => {});
+    }
+  };
+
+  const handleSubmit = async (createOrg = false) => {
     setIsSubmitting(true);
 
     try {
       await api.post('/onboarding/personal', {
         useCases: selectedUseCases,
         acquisitionSource,
+        acquisitionSourceOther: acquisitionSource === 'other' ? acquisitionSourceOther.trim() : undefined,
         role,
         managesBusiness,
       });
@@ -126,7 +256,13 @@ export const PersonalOnboarding: React.FC = () => {
         return;
       }
 
-      // Smoothly navigate to the personal dashboard
+      // If user selected to create organization
+      if (createOrg) {
+        navigate('/onboard/organization');
+        return;
+      }
+
+      // Smoothly navigate to personal dashboard
       navigate('/');
     } catch (err: any) {
       toast.error(err.message || 'Failed to save personal preferences. Please try again.');
@@ -135,199 +271,407 @@ export const PersonalOnboarding: React.FC = () => {
     }
   };
 
+  if (loadingInitial) {
+    return (
+      <div className="min-h-screen bg-black text-slate-100 flex flex-col items-center justify-center">
+        <Spinner size="lg" className="text-[#714b67]" />
+        <p className="text-xs text-slate-400 mt-4 animate-pulse">Loading your onboarding session...</p>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-black text-slate-100 flex flex-col selection:bg-[#714b67] selection:text-white">
       <Header />
 
-      <main className="flex-1 max-w-3xl w-full mx-auto px-4 sm:px-6 py-10 space-y-8 animate-in fade-in duration-300">
-        {/* Step Indicator Header */}
-        <div className="space-y-3 pb-6 border-b border-white/10 text-center">
-          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#714b67]/20 border border-[#714b67]/40 text-xs font-bold text-[#FDB02F] tracking-wide uppercase">
-            <User className="w-3.5 h-3.5" />
-            <span>Step 1: Personal Account Setup</span>
+      <main className="flex-1 max-w-3xl w-full mx-auto px-4 sm:px-6 py-8 sm:py-12 flex flex-col justify-center">
+        {/* Step Progress Header */}
+        <div className="mb-8 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#714b67]/20 border border-[#714b67]/40 text-xs font-bold text-[#FDB02F] tracking-wide uppercase">
+              <User className="w-3.5 h-3.5" />
+              <span>Step {currentStep} of 4: Personal Setup</span>
+            </div>
+            <span className="text-xs font-medium text-slate-400">
+              {Math.round((currentStep / 4) * 100)}% Completed
+            </span>
           </div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-            Tell us about yourself{user?.name ? `, ${user.name.split(' ')[0]}` : ''}
-          </h1>
-          <p className="text-xs sm:text-sm text-slate-400 max-w-xl mx-auto">
-            Help us tailor your experience. You can create or join an organization right after, or simply explore Orviohub at your own pace.
-          </p>
+
+          {/* Progress Bar & Indicators */}
+          <div className="grid grid-cols-4 gap-2">
+            {STEPS.map((s) => {
+              const isDone = s.step < currentStep;
+              const isCurrent = s.step === currentStep;
+              return (
+                <div key={s.step} className="space-y-1.5">
+                  <div
+                    className={cn(
+                      'h-1.5 w-full rounded-full transition-all duration-300',
+                      isDone
+                        ? 'bg-[#FDB02F]'
+                        : isCurrent
+                        ? 'bg-[#714b67] shadow-sm shadow-[#714b67]/50'
+                        : 'bg-white/10'
+                    )}
+                  />
+                  <div className="hidden sm:flex items-center justify-between text-[11px]">
+                    <span
+                      className={cn(
+                        'font-semibold transition-colors',
+                        isCurrent
+                          ? 'text-white'
+                          : isDone
+                          ? 'text-[#FDB02F]'
+                          : 'text-slate-500'
+                      )}
+                    >
+                      {s.title}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-8">
-          {/* Question 1: What do you want to use Orviohub for? */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <Label className="text-sm font-semibold text-white">
-                What do you want to use Orviohub for?
-              </Label>
-              <span className="text-[11px] text-slate-400">Select all that apply</span>
-            </div>
+        {/* Wizard Card Body */}
+        <div className="bg-[#120b10] border border-white/10 rounded-2xl p-6 sm:p-8 shadow-2xl relative overflow-hidden backdrop-blur-sm">
+          {/* Step 1: Use Cases */}
+          {currentStep === 1 && (
+            <div key="step-1" className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+              <div>
+                <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">
+                  What do you want to use Orviohub for?
+                </h1>
+                <p className="text-xs sm:text-sm text-slate-400 mt-1">
+                  Select all that apply to help us personalize your workspace tools.
+                </p>
+              </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {USE_CASES.map((item) => {
-                const Icon = item.icon;
-                const isSelected = selectedUseCases.includes(item.id);
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {USE_CASES.map((item) => {
+                  const Icon = item.icon;
+                  const isSelected = selectedUseCases.includes(item.id);
 
-                return (
-                  <div
-                    key={item.id}
-                    onClick={() => toggleUseCase(item.id)}
-                    className={cn(
-                      'group relative p-4 rounded-xl border transition-all duration-200 cursor-pointer flex items-start gap-3.5 select-none',
-                      isSelected
-                        ? 'bg-gradient-to-br from-[#241321] to-[#140b12] border-[#714b67] shadow-lg shadow-[#714b67]/20 ring-1 ring-[#714b67]'
-                        : 'bg-[#120b10] border-white/10 hover:border-[#714b67]/40 hover:bg-[#180e15]'
-                    )}
-                  >
+                  return (
                     <div
+                      key={item.id}
+                      onClick={() => toggleUseCase(item.id)}
                       className={cn(
-                        'w-9 h-9 rounded-lg flex items-center justify-center shrink-0 transition-colors',
+                        'group relative p-4 rounded-xl border transition-all duration-200 cursor-pointer flex items-start gap-3.5 select-none',
                         isSelected
-                          ? 'bg-[#714b67] text-white'
-                          : 'bg-white/5 text-slate-400 group-hover:text-white'
+                          ? 'bg-gradient-to-br from-[#241321] to-[#140b12] border-[#714b67] shadow-lg shadow-[#714b67]/20 ring-1 ring-[#714b67]'
+                          : 'bg-[#160f14] border-white/10 hover:border-[#714b67]/40 hover:bg-[#1d121b]'
                       )}
                     >
-                      <Icon className="w-5 h-5" />
-                    </div>
+                      <div
+                        className={cn(
+                          'w-9 h-9 rounded-lg flex items-center justify-center shrink-0 transition-colors',
+                          isSelected
+                            ? 'bg-[#714b67] text-white'
+                            : 'bg-white/5 text-slate-400 group-hover:text-white'
+                        )}
+                      >
+                        <Icon className="w-5 h-5" />
+                      </div>
 
-                    <div className="flex-1 min-w-0 pr-6">
-                      <h4 className="text-xs font-bold text-white tracking-tight">{item.title}</h4>
-                      <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
-                        {item.description}
-                      </p>
-                    </div>
+                      <div className="flex-1 min-w-0 pr-6">
+                        <h4 className="text-xs font-bold text-white tracking-tight">{item.title}</h4>
+                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                          {item.description}
+                        </p>
+                      </div>
 
-                    <div
+                      <div
+                        className={cn(
+                          'absolute top-4 right-4 w-5 h-5 rounded-full flex items-center justify-center transition-colors',
+                          isSelected ? 'bg-[#FDB02F] text-black' : 'border border-white/20'
+                        )}
+                      >
+                        {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Step 2: Role */}
+          {currentStep === 2 && (
+            <div key="step-2" className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+              <div>
+                <div className="inline-flex items-center gap-1.5 text-xs text-[#FDB02F] font-semibold mb-1">
+                  <Briefcase className="w-3.5 h-3.5" />
+                  <span>Your Role</span>
+                </div>
+                <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">
+                  What best describes your role?
+                </h1>
+                <p className="text-xs sm:text-sm text-slate-400 mt-1">
+                  Choose the title that matches what you do on a day-to-day basis.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {ROLES.map((r) => {
+                  const isSelected = role === r.id;
+                  return (
+                    <button
+                      key={r.id}
+                      type="button"
+                      onClick={() => setRole(r.id)}
                       className={cn(
-                        'absolute top-4 right-4 w-5 h-5 rounded-full flex items-center justify-center transition-colors',
-                        isSelected ? 'bg-[#FDB02F] text-black' : 'border border-white/20'
+                        'p-4 rounded-xl border text-left transition-all duration-150 flex items-center justify-between cursor-pointer select-none',
+                        isSelected
+                          ? 'bg-[#714b67]/25 border-[#714b67] text-white font-bold ring-1 ring-[#714b67] shadow-md shadow-[#714b67]/20'
+                          : 'bg-[#160f14] border-white/10 text-slate-300 hover:text-white hover:border-white/20 hover:bg-[#1d121b]'
                       )}
                     >
-                      {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
-                    </div>
+                      <span className="text-xs font-semibold">{r.label}</span>
+                      {isSelected ? (
+                        <CheckCircle2 className="w-5 h-5 text-[#FDB02F]" />
+                      ) : (
+                        <div className="w-4 h-4 rounded-full border border-white/20" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Step 3: Manage Business */}
+          {currentStep === 3 && (
+            <div key="step-3" className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+              <div>
+                <div className="inline-flex items-center gap-1.5 text-xs text-[#FDB02F] font-semibold mb-1">
+                  <Store className="w-3.5 h-3.5" />
+                  <span>Business Operations</span>
+                </div>
+                <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">
+                  Do you currently manage a business?
+                </h1>
+                <p className="text-xs sm:text-sm text-slate-400 mt-1">
+                  Whether you're running a shop right now or preparing to start one, we'll set up the right shortcuts.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <button
+                  type="button"
+                  onClick={() => setManagesBusiness(true)}
+                  className={cn(
+                    'p-5 rounded-2xl border text-left transition-all cursor-pointer select-none space-y-2',
+                    managesBusiness
+                      ? 'bg-gradient-to-br from-[#241321] to-[#140b12] border-[#714b67] ring-1 ring-[#714b67] shadow-lg shadow-[#714b67]/25'
+                      : 'bg-[#160f14] border-white/10 hover:border-white/20 hover:bg-[#1d121b]'
+                  )}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-bold text-white">Yes, I currently manage a business</span>
+                    {managesBusiness ? (
+                      <CheckCircle2 className="w-5 h-5 text-[#FDB02F]" />
+                    ) : (
+                      <div className="w-4 h-4 rounded-full border border-white/20" />
+                    )}
                   </div>
-                );
-              })}
-            </div>
-          </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    I own or manage an active shop, wholesale store, warehouse, or retail outfit.
+                  </p>
+                </button>
 
-          {/* Question 2: What best describes your role? */}
-          <div className="space-y-3">
-            <Label className="text-sm font-semibold text-white">
-              What best describes your role?
-            </Label>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-              {ROLES.map((r) => {
-                const isSelected = role === r.id;
-                return (
-                  <button
-                    key={r.id}
-                    type="button"
-                    onClick={() => setRole(r.id)}
-                    className={cn(
-                      'p-3 rounded-xl border text-xs font-medium text-left transition-all duration-150 flex items-center justify-between cursor-pointer',
-                      isSelected
-                        ? 'bg-[#714b67]/20 border-[#714b67] text-white font-bold ring-1 ring-[#714b67]'
-                        : 'bg-[#120b10] border-white/10 text-slate-400 hover:text-white hover:border-white/20'
+                <button
+                  type="button"
+                  onClick={() => setManagesBusiness(false)}
+                  className={cn(
+                    'p-5 rounded-2xl border text-left transition-all cursor-pointer select-none space-y-2',
+                    !managesBusiness
+                      ? 'bg-gradient-to-br from-[#241321] to-[#140b12] border-[#714b67] ring-1 ring-[#714b67] shadow-lg shadow-[#714b67]/25'
+                      : 'bg-[#160f14] border-white/10 hover:border-white/20 hover:bg-[#1d121b]'
+                  )}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-bold text-white">Not currently</span>
+                    {!managesBusiness ? (
+                      <CheckCircle2 className="w-5 h-5 text-[#FDB02F]" />
+                    ) : (
+                      <div className="w-4 h-4 rounded-full border border-white/20" />
                     )}
-                  >
-                    <span>{r.label}</span>
-                    {isSelected && <CheckCircle2 className="w-4 h-4 text-[#FDB02F]" />}
-                  </button>
-                );
-              })}
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    I am exploring for future ventures, learning the platform, or awaiting an invitation.
+                  </p>
+                </button>
+              </div>
             </div>
-          </div>
+          )}
 
-          {/* Question 3: Do you currently manage a business? */}
-          <div className="space-y-3">
-            <Label className="text-sm font-semibold text-white">
-              Do you currently manage a business?
-            </Label>
-            <div className="grid grid-cols-2 gap-3 max-w-md">
-              <button
-                type="button"
-                onClick={() => setManagesBusiness(true)}
-                className={cn(
-                  'p-3.5 rounded-xl border text-xs font-bold text-center transition-all cursor-pointer',
-                  managesBusiness
-                    ? 'bg-[#714b67] text-white border-[#714b67] shadow-md shadow-[#714b67]/25'
-                    : 'bg-[#120b10] border-white/10 text-slate-400 hover:text-white hover:border-white/20'
-                )}
-              >
-                Yes, I do
-              </button>
-              <button
-                type="button"
-                onClick={() => setManagesBusiness(false)}
-                className={cn(
-                  'p-3.5 rounded-xl border text-xs font-bold text-center transition-all cursor-pointer',
-                  !managesBusiness
-                    ? 'bg-[#714b67] text-white border-[#714b67] shadow-md shadow-[#714b67]/25'
-                    : 'bg-[#120b10] border-white/10 text-slate-400 hover:text-white hover:border-white/20'
-                )}
-              >
-                Not currently
-              </button>
-            </div>
-          </div>
+          {/* Step 4: Acquisition Source */}
+          {currentStep === 4 && (
+            <div key="step-4" className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+              <div>
+                <div className="inline-flex items-center gap-1.5 text-xs text-[#FDB02F] font-semibold mb-1">
+                  <Share2 className="w-3.5 h-3.5" />
+                  <span>Discovery</span>
+                </div>
+                <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">
+                  How did you hear about Orviohub?
+                </h1>
+                <p className="text-xs sm:text-sm text-slate-400 mt-1">
+                  Help our community and product team understand how people find us.
+                </p>
+              </div>
 
-          {/* Question 4: How did you hear about Orviohub? */}
-          <div className="space-y-3">
-            <Label className="text-sm font-semibold text-white flex items-center gap-1.5">
-              <Share2 className="w-4 h-4 text-[#FDB02F]" />
-              <span>How did you hear about Orviohub?</span>
-            </Label>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-              {ACQUISITION_SOURCES.map((source) => {
-                const isSelected = acquisitionSource === source.id;
-                return (
-                  <button
-                    key={source.id}
-                    type="button"
-                    onClick={() => setAcquisitionSource(source.id)}
-                    className={cn(
-                      'p-3 rounded-xl border text-xs text-left transition-all cursor-pointer truncate',
-                      isSelected
-                        ? 'bg-[#714b67]/25 border-[#714b67] text-white font-bold ring-1 ring-[#714b67]'
-                        : 'bg-[#120b10] border-white/10 text-slate-400 hover:text-white hover:border-white/20'
-                    )}
-                  >
-                    {source.label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                {ACQUISITION_SOURCES.map((source) => {
+                  const isSelected = acquisitionSource === source.id;
+                  return (
+                    <button
+                      key={source.id}
+                      type="button"
+                      onClick={() => setAcquisitionSource(source.id)}
+                      className={cn(
+                        'p-3.5 rounded-xl border text-xs font-semibold text-left transition-all cursor-pointer flex items-center justify-between select-none',
+                        isSelected
+                          ? 'bg-[#714b67]/25 border-[#714b67] text-white ring-1 ring-[#714b67] shadow-md shadow-[#714b67]/20'
+                          : 'bg-[#160f14] border-white/10 text-slate-300 hover:text-white hover:border-white/20 hover:bg-[#1d121b]'
+                      )}
+                    >
+                      <span className="truncate">{source.label}</span>
+                      {isSelected ? (
+                        <CheckCircle2 className="w-4 h-4 text-[#FDB02F] shrink-0 ml-2" />
+                      ) : (
+                        <div className="w-4 h-4 rounded-full border border-white/20 shrink-0 ml-2" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
 
-          {/* Form Actions */}
-          <div className="pt-4 border-t border-white/10 flex flex-col sm:flex-row items-center justify-between gap-4">
-            <p className="text-[11px] text-slate-500">
-              You can modify your personal preferences anytime from Account Settings.
-            </p>
-
-            <Button
-              type="submit"
-              disabled={isSubmitting}
-              className="w-full sm:w-auto px-7 py-2.5 rounded-xl bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/25 transition-all flex items-center justify-center gap-2 cursor-pointer"
-            >
-              {isSubmitting ? (
-                <>
-                  <Spinner size="sm" />
-                  <span>Saving preferences...</span>
-                </>
-              ) : (
-                <>
-                  <span>Continue to Dashboard</span>
-                  <ArrowRight className="w-4 h-4" />
-                </>
+              {/* Conditional Other Input */}
+              {acquisitionSource === 'other' && (
+                <div className="pt-2 animate-in fade-in slide-in-from-top-2 duration-200 space-y-2">
+                  <Label className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
+                    <span>Please specify how you heard about us:</span>
+                    <span className="text-[#FDB02F]">*</span>
+                  </Label>
+                  <input
+                    type="text"
+                    value={acquisitionSourceOther}
+                    onChange={(e) => setAcquisitionSourceOther(e.target.value)}
+                    placeholder="e.g. YouTube review, Tech podcast, Billboard, Blog post, etc."
+                    className="w-full px-4 py-3 rounded-xl bg-[#160f14] border border-white/15 focus:border-[#714b67] focus:ring-1 focus:ring-[#714b67] text-white text-xs placeholder:text-slate-500 outline-none transition-all shadow-inner"
+                    autoFocus
+                  />
+                </div>
               )}
-            </Button>
+
+              {/* Conditional Business Manager Organization Creation Prompt */}
+              {managesBusiness && (
+                <div className="p-4 rounded-xl bg-gradient-to-r from-[#241321] to-[#170e16] border border-[#714b67]/60 shadow-lg space-y-2 animate-in fade-in duration-300">
+                  <div className="flex items-center gap-2">
+                    <Building2 className="w-4 h-4 text-[#FDB02F]" />
+                    <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                      Business Organization Setup
+                    </h4>
+                  </div>
+                  <p className="text-[11px] text-slate-300 leading-relaxed">
+                    Since you actively manage a business, you can create your organization workspace now to configure stores and inventory, or go straight to your personal dashboard.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Navigation Controls Footer */}
+          <div className="mt-8 pt-6 border-t border-white/10 flex items-center justify-between gap-4">
+            <div>
+              {currentStep > 1 ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleBack}
+                  disabled={isSubmitting}
+                  className="px-4 py-2 rounded-xl bg-transparent border-white/10 hover:border-white/20 hover:bg-white/5 text-slate-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                  <span>Back</span>
+                </Button>
+              ) : (
+                <span className="text-[11px] text-slate-500 hidden sm:inline">
+                  Step 1 of 4: Setup is personalized & completely free.
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3">
+              {currentStep < 4 ? (
+                <Button
+                  type="button"
+                  onClick={handleNext}
+                  className="px-6 py-2.5 rounded-xl bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/25 transition-all flex items-center gap-2 cursor-pointer"
+                >
+                  <span>Continue</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </Button>
+              ) : managesBusiness ? (
+                <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center gap-2.5">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => handleSubmit(false)}
+                    disabled={isSubmitting}
+                    className="px-4 py-2.5 rounded-xl bg-transparent border-white/10 hover:border-white/20 hover:bg-white/5 text-slate-300 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <span>Go to Dashboard</span>
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={() => handleSubmit(true)}
+                    disabled={isSubmitting}
+                    className="px-6 py-2.5 rounded-xl bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/25 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    {isSubmitting ? (
+                      <>
+                        <Spinner size="sm" />
+                        <span>Saving...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Building2 className="w-3.5 h-3.5 text-[#FDB02F]" />
+                        <span>Create Organization & Continue</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </>
+                    )}
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  type="button"
+                  onClick={() => handleSubmit(false)}
+                  disabled={isSubmitting}
+                  className="px-6 py-2.5 rounded-xl bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/25 transition-all flex items-center gap-2 cursor-pointer"
+                >
+                  {isSubmitting ? (
+                    <>
+                      <Spinner size="sm" />
+                      <span>Saving preferences...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Complete Setup & Go to Dashboard</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </>
+                  )}
+                </Button>
+              )}
+            </div>
           </div>
-        </form>
+        </div>
       </main>
     </div>
   );
 };
+
 export default PersonalOnboarding;

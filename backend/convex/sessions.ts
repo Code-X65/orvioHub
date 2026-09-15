@@ -19,6 +19,17 @@ export const createSession = mutation({
     lastVisitedAt: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.userId);
+    if (
+      user &&
+      (user.status === "SUSPENDED" ||
+        user.status === "suspended" ||
+        user.status === "DELETED" ||
+        user.status === "deleted")
+    ) {
+      throw new Error("ACCOUNT_SUSPENDED");
+    }
+
     const now = Date.now();
     const sessionId = await ctx.db.insert("sessions", {
       userId: args.userId,
@@ -95,7 +106,13 @@ export const rotateSession = mutation({
     }
 
     const user = await ctx.db.get(session.userId);
-    if (!user || user.status === "SUSPENDED" || user.status === "INACTIVE") {
+    if (!user || user.status === "DELETED" || user.status === "deleted") {
+      throw new Error("USER_NOT_ACTIVE");
+    }
+    if (user.status === "SUSPENDED" || user.status === "suspended") {
+      throw new Error("USER_SUSPENDED");
+    }
+    if (user.status === "INACTIVE" || user.status === "inactive") {
       throw new Error("USER_NOT_ACTIVE");
     }
 
@@ -234,7 +251,17 @@ export const validateSession = query({
     }
 
     const user = await ctx.db.get(session.userId);
-    if (!user || user.status === "SUSPENDED" || user.status === "INACTIVE") {
+    if (!user || user.status === "DELETED" || user.status === "deleted") {
+      return { valid: false, error: "USER_INACTIVE" };
+    }
+    if (user.status === "SUSPENDED" || user.status === "suspended") {
+      return {
+        valid: false,
+        error: "USER_SUSPENDED",
+        reason: user.suspensionReason || "Account suspended",
+      };
+    }
+    if (user.status === "INACTIVE" || user.status === "inactive") {
       return { valid: false, error: "USER_INACTIVE" };
     }
 

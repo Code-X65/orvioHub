@@ -15,11 +15,10 @@ function getEnv(key) {
     return undefined;
 }
 export function getApplicationUrl(key, env = "development", path = "") {
-    const app = applications[key];
-    if (!app)
-        throw new Error(`Unknown application: ${key}`);
-    if (!app.enabled)
-        throw new Error(`Application not enabled: ${key}`);
+    const app = applications[key] || applications.home || applications.marketing;
+    if (!app) {
+        return resolveDevUrl("home", path);
+    }
     const cleanPath = path ? (path.startsWith("/") ? path : `/${path}`) : "";
     if (env === "production")
         return `${app.productionUrl}${cleanPath}`;
@@ -32,11 +31,14 @@ export function getApplicationUrl(key, env = "development", path = "") {
     if (key === "accounts" && getEnv("BASE_URL_ACCOUNT")) {
         return `${getEnv("BASE_URL_ACCOUNT").replace(/\/$/, "")}${cleanPath}`;
     }
-    if ((key === "home" || key === "launcher") && getEnv("BASE_URL_HOME")) {
+    if ((key === "home" || key === "launcher" || key === "booking" || key === "gym") && getEnv("BASE_URL_HOME")) {
         return `${getEnv("BASE_URL_HOME").replace(/\/$/, "")}${cleanPath}`;
     }
-    if (key === "inventory" && getEnv("BASE_URL_INVENTORY")) {
+    if ((key === "inventory" || key === "pos") && getEnv("BASE_URL_INVENTORY")) {
         return `${getEnv("BASE_URL_INVENTORY").replace(/\/$/, "")}${cleanPath}`;
+    }
+    if (key === "taskmanagement" && getEnv("BASE_URL_TASKS")) {
+        return `${getEnv("BASE_URL_TASKS").replace(/\/$/, "")}${cleanPath}`;
     }
     return resolveDevUrl(app.subdomain, cleanPath);
 }
@@ -45,6 +47,10 @@ export const getAccountsUrl = (e = "development", path = "") => getApplicationUr
 export const getHomeUrl = (e = "development", path = "") => getApplicationUrl("home", e, path);
 export const getLauncherUrl = (e = "development", path = "") => getApplicationUrl("launcher", e, path);
 export const getInventoryUrl = (e = "development", path = "") => getApplicationUrl("inventory", e, path);
+export const getPosUrl = (e = "development", path = "") => getApplicationUrl("pos", e, path);
+export const getBookingUrl = (e = "development", path = "") => getApplicationUrl("booking", e, path);
+export const getGymUrl = (e = "development", path = "") => getApplicationUrl("gym", e, path);
+export const getTaskmanagementUrl = (e = "development", path = "") => getApplicationUrl("taskmanagement", e, path);
 export const getBillingUrl = (e = "development", path = "") => getApplicationUrl("billing", e, path);
 export const getApiUrl = (e = "development") => {
     if (e === "production")

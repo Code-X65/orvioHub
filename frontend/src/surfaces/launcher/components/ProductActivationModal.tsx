@@ -28,7 +28,7 @@ export const ProductActivationModal: React.FC<ProductActivationModalProps> = ({
 
   const workspaceId = currentWorkspace?.id || localStorage.getItem('orvio_active_workspace_id');
   const orgName = currentWorkspace?.name || 'Your Organization';
-  const planKey = (currentWorkspace?.type || 'free').toLowerCase();
+  const planKey = (currentWorkspace?.planKey || currentWorkspace?.planId || 'free').toLowerCase();
 
   const handleActivate = async () => {
     if (!workspaceId) {

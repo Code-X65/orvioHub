@@ -21,6 +21,7 @@ export function useSessionTracker() {
   const location = useLocation();
   const { isAuthenticated } = useAuthStore();
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastRecordedUrlRef = useRef<string>('');
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -31,18 +32,21 @@ export function useSessionTracker() {
     const subdomain = getCurrentSubdomain();
     const fullTargetUrl = `${location.pathname}${location.search}`;
 
+    if (lastRecordedUrlRef.current === fullTargetUrl) return;
+
     if (timerRef.current) {
       clearTimeout(timerRef.current);
     }
 
     timerRef.current = setTimeout(() => {
+      lastRecordedUrlRef.current = fullTargetUrl;
       api.post('/auth/session/context', {
         lastVisitedUrl: fullTargetUrl,
         lastVisitedSubdomain: subdomain,
       }).catch(() => {
         // Silently ignore context recording failures
       });
-    }, 800);
+    }, 1200);
 
     return () => {
       if (timerRef.current) {

@@ -130,6 +130,8 @@ describe('Local Subdomain Architecture & User Journey Test Suite', () => {
       assert.ok(orvioSessionCookie.includes('Domain=.orviohub.localhost'), 'orvio_session must have Domain=.orviohub.localhost');
     });
 
+    let sessionVal: string | undefined;
+
     it('authenticates user on inventory subdomain using wildcard session cookie', async () => {
       const unique = Date.now();
       const signupRes = await app.inject({
@@ -148,7 +150,7 @@ describe('Local Subdomain Architecture & User Journey Test Suite', () => {
       const setCookies = signupRes.headers['set-cookie'];
       const cookieArray = Array.isArray(setCookies) ? setCookies : [setCookies];
       const sessionMatch = cookieArray.find((c: string) => c.startsWith('session='));
-      const sessionVal = sessionMatch?.split(';')[0];
+      sessionVal = sessionMatch?.split(';')[0];
 
       // Visit user profile / me endpoint simulating request from inventory.orviohub.localhost
       const authCheckRes = await app.inject({
@@ -169,7 +171,10 @@ describe('Local Subdomain Architecture & User Journey Test Suite', () => {
       const logoutRes = await app.inject({
         method: 'POST',
         url: '/api/v1/auth/logout',
-        headers: { host: 'account.orviohub.localhost:4000' },
+        headers: {
+          host: 'account.orviohub.localhost:4000',
+          cookie: sessionVal,
+        },
       });
 
       assert.equal(logoutRes.statusCode, 200);

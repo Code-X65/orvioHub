@@ -10,7 +10,6 @@ import { useAuthStore } from '@/stores/useAuthStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { WorkspaceSwitcher } from '@/components/workspace/WorkspaceSwitcher';
 import { ProductCard, ProductCardData } from '../components/ProductCard';
-import { JoinWaitlistModal } from '../components/JoinWaitlistModal';
 import { ProductActivationModal } from '../components/ProductActivationModal';
 import { BranchSelectorModal, BranchOption } from '../components/BranchSelectorModal';
 import { ApplicationKey } from '@orviohub/shared';
@@ -19,7 +18,7 @@ import { toast } from 'sonner';
 const FALLBACK_VISIBLE_PRODUCTS: ProductCardData[] = [
   {
     key: 'inventory',
-    name: 'Inventory Management & POS',
+    name: 'Inventory',
     headline: 'Multi-branch stock, barcode POS checkout, sales telemetry & warehouse operations.',
     description: 'Real-time multi-branch warehouse stock, barcode POS checkout, receipts, sales history & telemetry.',
     status: 'active',
@@ -31,70 +30,6 @@ const FALLBACK_VISIBLE_PRODUCTS: ProductCardData[] = [
       'Barcode scanner & instant POS terminal',
       'Multi-branch and staff access',
       'Supplier POs & automated reorders',
-    ],
-  },
-  {
-    key: 'taskmanagement',
-    name: 'Task & Workflow Management',
-    headline: 'Agile sprints, interactive kanban boards, team workflows & project tracking.',
-    description: 'Collaborative task execution, backlog refinement, automated assignments and timelines.',
-    status: 'active',
-    isFeatured: true,
-    isBeta: false,
-    displayOrder: 2,
-    features: [
-      'Interactive Kanban & sprint boards',
-      'Milestones & cross-team assignments',
-      'Automated workflow rules',
-      'Real-time status updates',
-    ],
-  },
-  {
-    key: 'crm',
-    name: 'Customer CRM & Pipeline',
-    headline: 'Client contact directories, communication history, pipelines & deal tracking.',
-    description: 'Keep track of customer interactions, leads, follow-ups, and sales opportunities.',
-    status: 'coming_soon',
-    isFeatured: false,
-    isBeta: true,
-    displayOrder: 3,
-    features: [
-      'Customer Contact Directory',
-      'Lead & Deal Pipelines',
-      'Interaction History & Notes',
-      'Custom Segmentation',
-    ],
-  },
-  {
-    key: 'booking',
-    name: 'Appointments & Scheduling',
-    headline: 'Online calendar reservations, service scheduling, reminders & booking.',
-    description: 'Automate client bookings, calendar synchronization, and service appointments.',
-    status: 'coming_soon',
-    isFeatured: false,
-    isBeta: false,
-    displayOrder: 4,
-    features: [
-      'Online Booking Portal',
-      'Automated WhatsApp/SMS Reminders',
-      'Calendar Synchronization',
-      'Service Duration Management',
-    ],
-  },
-  {
-    key: 'gym',
-    name: 'Gym & Fitness Membership',
-    headline: 'Member passes, attendance tracking, trainer schedules & subscriptions.',
-    description: 'Complete member pass management, attendance barcode scanning, and trainer plans.',
-    status: 'coming_soon',
-    isFeatured: false,
-    isBeta: false,
-    displayOrder: 5,
-    features: [
-      'Member Pass Management',
-      'Attendance Barcode Scanner',
-      'Trainer & Class Timetables',
-      'Membership Subscriptions',
     ],
   },
 ];
@@ -119,9 +54,7 @@ export const ProductCatalog: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
 
   // Modals state
-  const [selectedWaitlistProduct, setSelectedWaitlistProduct] = useState<ProductCardData | null>(null);
   const [selectedActivationProduct, setSelectedActivationProduct] = useState<ProductCardData | null>(null);
-  const [joinedWaitlists, setJoinedWaitlists] = useState<Record<string, boolean>>({});
   const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
   const [upgradeReason, setUpgradeReason] = useState<string | undefined>(undefined);
 
@@ -147,7 +80,7 @@ export const ProductCatalog: React.FC = () => {
   }, [isAuthenticated, fetchWorkspaces, workspaces.length]);
 
   // Determine current active plan key & limits
-  const activePlanKey = (currentWorkspace?.type || 'free').toLowerCase();
+  const activePlanKey = (currentWorkspace?.planKey || currentWorkspace?.planId || 'free').toLowerCase();
   const planInfo = PLAN_LIMITS[activePlanKey] || PLAN_LIMITS.free;
 
   // Set of active product keys in workspace
@@ -166,18 +99,14 @@ export const ProductCatalog: React.FC = () => {
 
   // Filter out draft products and sort by displayOrder
   const visibleProducts = useMemo(() => {
-    return products
-      .filter((p) => {
-        const s = (p.status || 'active').toLowerCase();
-        return s === 'active' || s === 'coming_soon' || s === 'beta';
-      })
-      .sort((a, b) => (a.displayOrder ?? 99) - (b.displayOrder ?? 99));
+    return products.filter(
+      (p) => p.key.toLowerCase() === 'inventory' && (p.status || '').toLowerCase() !== 'disabled'
+    );
   }, [products]);
 
-  // Apply search query filter
   const filteredProducts = useMemo(() => {
-    if (!searchQuery.trim()) return visibleProducts;
     const q = searchQuery.toLowerCase().trim();
+    if (!q) return visibleProducts;
     return visibleProducts.filter(
       (p) =>
         p.name.toLowerCase().includes(q) ||
@@ -188,26 +117,9 @@ export const ProductCatalog: React.FC = () => {
   }, [visibleProducts, searchQuery]);
 
   const activeCatalogProducts = useMemo(
-    () => filteredProducts.filter((p) => (p.status || '').toLowerCase() === 'active'),
+    () => filteredProducts.filter((p) => p.key.toLowerCase() === 'inventory'),
     [filteredProducts]
   );
-
-  const comingSoonProducts = useMemo(
-    () =>
-      filteredProducts.filter((p) => {
-        const s = (p.status || '').toLowerCase();
-        return s === 'coming_soon' || s === 'beta';
-      }),
-    [filteredProducts]
-  );
-
-  const handleOpenWaitlist = (product: ProductCardData) => {
-    setSelectedWaitlistProduct(product);
-  };
-
-  const handleWaitlistSuccess = (productKey: string) => {
-    setJoinedWaitlists((prev) => ({ ...prev, [productKey]: true }));
-  };
 
   const handleOpenActivation = (product: ProductCardData) => {
     const maxApps = typeof planInfo.maxApps === 'number' ? planInfo.maxApps : 999;
@@ -346,7 +258,7 @@ export const ProductCatalog: React.FC = () => {
             Explore Platform Applications
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
-            Discover connected business modules or request early access to upcoming tools.
+            Discover connected business modules for your active workspace.
           </p>
         </div>
 
@@ -364,7 +276,7 @@ export const ProductCatalog: React.FC = () => {
       {/* Loading Skeleton State */}
       {isLoading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {[1, 2, 3, 4, 5, 6].map((i) => (
+          {[1].map((i) => (
             <div
               key={i}
               className="p-6 rounded-2xl bg-white/[0.02] border border-white/5 flex flex-col justify-between space-y-6 animate-pulse"
@@ -408,7 +320,7 @@ export const ProductCatalog: React.FC = () => {
           </Button>
         </div>
       ) : (
-        /* 3-Column Responsive Grid */
+        /* Responsive Grid (Displaying only available MVP apps) */
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {/* Active Catalog Products */}
           {activeCatalogProducts.map((product) => {
@@ -435,15 +347,20 @@ export const ProductCatalog: React.FC = () => {
                   isActivated={isActivatedInWorkspace}
                   ctaText={
                     isActivatedInWorkspace
-                      ? 'Open Application'
+                      ? 'Open Inventory'
                       : needsUpgrade
-                      ? '⬆ Upgrade Plan to Activate'
-                      : `+ Activate for ${currentWorkspace.name}`
+                      ? 'Upgrade or resolve billing'
+                      : 'Activate Inventory'
                   }
                   ctaHref={isActivatedInWorkspace ? ctaHref : undefined}
                   onCtaClick={
                     isActivatedInWorkspace
                       ? () => handleLaunchApp(product)
+                      : needsUpgrade
+                      ? () => {
+                          setUpgradeReason('app_limit');
+                          setUpgradeModalOpen(true);
+                        }
                       : () => handleOpenActivation(product)
                   }
                 />
@@ -456,24 +373,8 @@ export const ProductCatalog: React.FC = () => {
                 key={product.key}
                 product={product}
                 type="active"
-                ctaText="Explore Application"
+                ctaText="Explore Inventory"
                 ctaHref={ctaHref}
-              />
-            );
-          })}
-
-          {/* Coming Soon Products */}
-          {comingSoonProducts.map((product) => {
-            const isNotified = Boolean(joinedWaitlists[product.key]);
-
-            return (
-              <ProductCard
-                key={product.key}
-                product={product}
-                type="coming_soon"
-                ctaText={isNotified ? '✓ Notified' : 'Notify Me When Available'}
-                onCtaClick={() => handleOpenWaitlist(product)}
-                isNotified={isNotified}
               />
             );
           })}
@@ -508,17 +409,6 @@ export const ProductCatalog: React.FC = () => {
           onActivated={() => {
             fetchWorkspaces();
           }}
-        />
-      )}
-
-      {/* Waitlist Modal */}
-      {selectedWaitlistProduct && (
-        <JoinWaitlistModal
-          productKey={selectedWaitlistProduct.key}
-          productName={selectedWaitlistProduct.name}
-          isOpen={Boolean(selectedWaitlistProduct)}
-          onClose={() => setSelectedWaitlistProduct(null)}
-          onSuccess={handleWaitlistSuccess}
         />
       )}
 

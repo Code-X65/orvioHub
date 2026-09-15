@@ -28,14 +28,31 @@ export default defineSchema({
       v.union(
         v.literal("ACTIVE"),
         v.literal("INACTIVE"),
-        v.literal("SUSPENDED")
+        v.literal("SUSPENDED"),
+        v.literal("DELETED"),
+        v.literal("active"),
+        v.literal("inactive"),
+        v.literal("suspended"),
+        v.literal("deleted")
       )
     ),
     tokenVersion: v.optional(v.number()),
     avatar: v.optional(v.string()),
     avatarUrl: v.optional(v.string()),
     phone: v.optional(v.string()),
+    phoneNormalized: v.optional(v.string()),
     phoneVerifiedAt: v.optional(v.number()),
+    phoneStatus: v.optional(
+      v.union(
+        v.literal("unverified"),
+        v.literal("pending"),
+        v.literal("verified"),
+        v.literal("disabled"),
+        v.literal("not_set")
+      )
+    ),
+    phoneUsedForRecovery: v.optional(v.boolean()),
+    phoneUsedForMfa: v.optional(v.boolean()),
     phoneVerificationCode: v.optional(v.string()),
     phoneVerificationExpiresAt: v.optional(v.number()),
     phoneVisibility: v.optional(v.union(v.literal("private"), v.literal("workspace"))),
@@ -73,7 +90,14 @@ export default defineSchema({
     failedLoginAttempts: v.optional(v.number()),
     lockedUntil: v.optional(v.number()),
     role: v.optional(v.union(v.literal("user"), v.literal("superadmin"), v.literal("admin"))),
+    suspendedAt: v.optional(v.number()),
+    suspendedBy: v.optional(v.string()),
+    suspensionReason: v.optional(v.string()),
+    suspensionNotes: v.optional(v.string()),
+    deletionRequestedAt: v.optional(v.number()),
+    deletionScheduledAt: v.optional(v.number()),
     deletedAt: v.optional(v.number()),
+    deletedBy: v.optional(v.string()),
     personalOnboardingCompleted: v.optional(v.boolean()),
     lastLoginIp: v.optional(v.string()),
     totalLoginCount: v.optional(v.number()),
@@ -82,8 +106,11 @@ export default defineSchema({
   })
     .index("by_email", ["email"])
     .index("by_role", ["role"])
+    .index("by_status", ["status"])
+    .index("by_status_suspended", ["status", "suspendedAt"])
     .index("by_deletedAt", ["deletedAt"])
     .index("by_email_normalized", ["emailNormalized"])
+    .index("by_phone_normalized", ["phoneNormalized"])
     .index("by_verification_token", ["emailVerificationToken"])
     .index("by_verification_code", ["emailVerificationCode"])
     .index("by_password_reset_token", ["passwordResetToken"])
@@ -91,12 +118,14 @@ export default defineSchema({
 
   userProfiles: defineTable({
     userId: v.id("users"),
-    useCases: v.array(v.string()),
-    acquisitionSource: v.string(),
+    useCases: v.optional(v.array(v.string())),
+    acquisitionSource: v.optional(v.string()),
+    acquisitionSourceOther: v.optional(v.string()),
     role: v.optional(v.string()),
     managesBusiness: v.optional(v.boolean()),
+    currentStep: v.optional(v.number()),
     personalOnboardingCompleted: v.boolean(),
-    completedAt: v.number(),
+    completedAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
   }).index("by_userId", ["userId"]),
@@ -107,8 +136,7 @@ export default defineSchema({
       v.literal("password"),
       v.literal("google"),
       v.literal("facebook"),
-      v.literal("phone"),
-      v.literal("apple")
+      v.literal("phone")
     ),
     providerSubject: v.string(),
     providerEmail: v.optional(v.string()),
@@ -181,6 +209,15 @@ export default defineSchema({
     size: v.optional(v.string()),
     logo: v.optional(v.string()),
     phone: v.optional(v.string()),
+    phoneNormalized: v.optional(v.string()),
+    phoneVerifiedAt: v.optional(v.number()),
+    phoneStatus: v.optional(
+      v.union(
+        v.literal("unverified"),
+        v.literal("pending"),
+        v.literal("verified")
+      )
+    ),
     currency: v.optional(v.string()),
     ownerId: v.optional(v.id("users")),
     category: v.optional(v.string()),
@@ -188,11 +225,43 @@ export default defineSchema({
     city: v.optional(v.string()),
     state: v.optional(v.string()),
     address: v.optional(v.string()),
+    type: v.optional(v.string()),
+    status: v.optional(v.string()),
+    archivedAt: v.optional(v.number()),
+    deletedAt: v.optional(v.number()),
+    deletedBy: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
     .index("by_slug", ["slug"])
-    .index("by_ownerId", ["ownerId"]),
+    .index("by_ownerId", ["ownerId"])
+    .index("by_owner_status", ["ownerId", "status"])
+    .index("by_phone_normalized", ["phoneNormalized"]),
+
+  organizationLimitOverrides: defineTable({
+    userId: v.id("users"),
+    featureKey: v.string(), // "organization.max_owned_count"
+    overrideLimit: v.number(),
+    reason: v.string(),
+    grantedBy: v.string(),
+    expiresAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_userId", ["userId"])
+    .index("by_user_feature", ["userId", "featureKey"]),
+
+  organizationAuditLogs: defineTable({
+    organizationId: v.optional(v.string()),
+    userId: v.id("users"),
+    eventType: v.string(),
+    metadata: v.optional(v.any()),
+    createdAt: v.number(),
+  })
+    .index("by_userId", ["userId"])
+    .index("by_eventType", ["eventType"])
+    .index("by_org", ["organizationId"])
+    .index("by_createdAt", ["createdAt"]),
 
   organizationMemberships: defineTable({
     organizationId: v.id("organizations"),
@@ -211,6 +280,9 @@ export default defineSchema({
       v.literal("INACTIVE"),
       v.literal("INVITED")
     ),
+    allowedApplications: v.optional(v.array(v.string())),
+    allowedBranches: v.optional(v.array(v.id("branches"))),
+    primaryBranchId: v.optional(v.id("branches")),
     joinedAt: v.number(),
     updatedAt: v.number(),
   })
@@ -240,30 +312,94 @@ export default defineSchema({
   workspaces: defineTable({
     organizationId: v.optional(v.id("organizations")),
     name: v.string(),
+    displayName: v.optional(v.string()),
     slug: v.string(),
     type: v.optional(v.string()),
+    category: v.optional(v.string()),
+    description: v.optional(v.string()),
     ownerId: v.optional(v.id("users")),
+    logoUrl: v.optional(v.string()),
+    logoStorageId: v.optional(v.id("_storage")),
+    email: v.optional(v.string()),
+    phone: v.optional(v.string()),
+    phoneNormalized: v.optional(v.string()),
+    phoneVerifiedAt: v.optional(v.number()),
+    phoneStatus: v.optional(
+      v.union(
+        v.literal("unverified"),
+        v.literal("pending"),
+        v.literal("verified")
+      )
+    ),
+    phoneVerificationPurpose: v.optional(v.string()),
     country: v.optional(v.string()),
     state: v.optional(v.string()),
     city: v.optional(v.string()),
+    addressLine1: v.optional(v.string()),
+    addressLine2: v.optional(v.string()),
+    postalCode: v.optional(v.string()),
     timezone: v.optional(v.string()),
     currency: v.optional(v.string()),
-    logoUrl: v.optional(v.string()),
     status: v.optional(v.string()),
     planId: v.optional(v.string()),
     isDefault: v.optional(v.boolean()),
     enabledModules: v.optional(v.array(v.string())),
     settings: v.optional(v.any()),
+    suspendedAt: v.optional(v.number()),
+    suspendedBy: v.optional(v.string()),
+    suspensionReason: v.optional(v.string()),
+    suspensionNotes: v.optional(v.string()),
+    deletionRequestedAt: v.optional(v.number()),
+    deletionScheduledAt: v.optional(v.number()),
     deletedAt: v.optional(v.number()),
+    deletedBy: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
     .index("by_owner", ["ownerId"])
     .index("by_slug", ["slug"])
     .index("by_status", ["status"])
+    .index("by_status_suspended", ["status", "suspendedAt"])
     .index("by_organizationId", ["organizationId"])
     .index("by_org_and_slug", ["organizationId", "slug"])
-    .index("by_deletedAt", ["deletedAt"]),
+    .index("by_deletedAt", ["deletedAt"])
+    .index("by_phone_normalized", ["phoneNormalized"]),
+
+  workspaceSettings: defineTable({
+    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
+    legalName: v.optional(v.string()),
+    registrationNumber: v.optional(v.string()),
+    taxId: v.optional(v.string()),
+    supportEmail: v.optional(v.string()),
+    supportPhone: v.optional(v.string()),
+    address: v.optional(v.any()),
+    business: v.optional(v.any()),
+    localization: v.optional(v.any()),
+    notifications: v.optional(v.any()),
+    defaultLanguage: v.optional(v.string()),
+    dateFormat: v.optional(v.string()),
+    numberFormat: v.optional(v.string()),
+    weekStartsOn: v.optional(v.string()),
+    taxEnabled: v.optional(v.boolean()),
+    taxDisplayMode: v.optional(v.string()),
+    defaultReceiptFooter: v.optional(v.string()),
+    defaultNotificationMode: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_workspace", ["workspaceId"]),
+
+  workspaceBranding: defineTable({
+    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
+    logoUrl: v.optional(v.string()),
+    logoStorageId: v.optional(v.id("_storage")),
+    faviconUrl: v.optional(v.string()),
+    primaryColor: v.optional(v.string()),
+    secondaryColor: v.optional(v.string()),
+    receiptHeader: v.optional(v.string()),
+    receiptFooter: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_workspace", ["workspaceId"]),
 
   workspaceMemberships: defineTable({
     workspaceId: v.id("workspaces"),
@@ -293,10 +429,14 @@ export default defineSchema({
       v.literal("active"),
       v.literal("coming_soon"),
       v.literal("draft"),
+      v.literal("disabled"),
+      v.literal("available"),
       v.literal("ACTIVE"),
       v.literal("BETA"),
       v.literal("COMING_SOON")
     ),
+    isVisibleToUsers: v.optional(v.boolean()),
+    isActivatable: v.optional(v.boolean()),
     isBeta: v.optional(v.boolean()),
     isFeatured: v.optional(v.boolean()),
     displayOrder: v.optional(v.number()),
@@ -308,7 +448,8 @@ export default defineSchema({
   })
     .index("by_key", ["key"])
     .index("by_status", ["status"])
-    .index("by_order", ["displayOrder"]),
+    .index("by_order", ["displayOrder"])
+    .index("by_visible_status", ["isVisibleToUsers", "status"]),
 
   productNotifyList: defineTable({
     productKey: v.string(),
@@ -369,19 +510,81 @@ export default defineSchema({
     .index("by_key", ["key"])
     .index("by_active", ["isActive"]),
 
+  billingAccounts: defineTable({
+    ownerUserId: v.id("users"),
+    workspaceId: v.optional(v.union(v.id("workspaces"), v.id("organizations"), v.string())),
+    organizationId: v.optional(v.union(v.id("organizations"), v.id("workspaces"), v.string())),
+    billingEmail: v.string(),
+    billingPhone: v.optional(v.string()),
+    provider: v.string(), // "paystack"
+    providerCustomerId: v.optional(v.string()),
+    currency: v.string(),
+    status: v.union(v.literal("active"), v.literal("suspended"), v.literal("closed")),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_workspaceId", ["workspaceId"])
+    .index("by_organizationId", ["organizationId"])
+    .index("by_ownerUserId", ["ownerUserId"])
+    .index("by_status", ["status"]),
+
+  workspaceEntitlements: defineTable({
+    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
+    planId: v.string(),
+    featureKey: v.string(),
+    limitValue: v.optional(v.number()),
+    limitType: v.union(v.literal("fixed"), v.literal("unlimited"), v.literal("boolean")),
+    enabled: v.boolean(),
+    status: v.union(v.literal("active"), v.literal("expired"), v.literal("revoked"), v.literal("pending"), v.literal("restricted")),
+    effectiveFrom: v.number(),
+    effectiveUntil: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_workspace", ["workspaceId"])
+    .index("by_workspace_feature", ["workspaceId", "featureKey"])
+    .index("by_status", ["status"]),
+
+  billingEvents: defineTable({
+    provider: v.string(), // "paystack"
+    providerEventId: v.string(),
+    eventType: v.string(),
+    workspaceId: v.optional(v.union(v.id("workspaces"), v.id("organizations"), v.string())),
+    organizationId: v.optional(v.union(v.id("organizations"), v.id("workspaces"), v.string())),
+    billingAccountId: v.optional(v.id("billingAccounts")),
+    subscriptionId: v.optional(v.id("subscriptions")),
+    status: v.union(v.literal("received"), v.literal("processed"), v.literal("ignored"), v.literal("failed")),
+    payloadMetadata: v.optional(v.any()),
+    processedAt: v.optional(v.number()),
+    errorMessage: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_provider_event_id", ["providerEventId"])
+    .index("by_workspace", ["workspaceId"])
+    .index("by_status", ["status"])
+    .index("by_created", ["createdAt"]),
+
   subscriptions: defineTable({
     organizationId: v.optional(v.id("organizations")),
     workspaceId: v.optional(v.id("workspaces")),
+    billingAccountId: v.optional(v.id("billingAccounts")),
     userId: v.optional(v.id("users")), // Deprecated: subscriptions are strictly per-organization
     planId: v.optional(v.union(v.id("plans"), v.string())),
     planKey: v.string(), // "free_trial", "standard", "premium"
+    selectedPlan: v.optional(v.string()), // "free_trial", "standard", "premium"
+    activePlan: v.optional(v.union(v.string(), v.null())), // "free_trial", "standard", "premium" or null if unpaid
+    checkoutStatus: v.optional(v.string()), // "not_started" | "not_required" | "pending" | "completed" | "failed"
+    paymentStatus: v.optional(v.string()), // "not_required" | "pending" | "success" | "failed"
+    entitlementStatus: v.optional(v.string()), // "inactive" | "active"
     pendingPlanKey: v.optional(v.string()),
     status: v.union(
       v.literal("active"),
       v.literal("trial"),
       v.literal("trialing"),
       v.literal("past_due"),
+      v.literal("grace_period"),
       v.literal("canceled"),
+      v.literal("cancelled"),
       v.literal("suspended"),
       v.literal("expired"),
       v.literal("pending")
@@ -392,13 +595,20 @@ export default defineSchema({
     trialStart: v.optional(v.number()),
     trialEnd: v.optional(v.number()),
     trialEndsAt: v.optional(v.number()),
+    gracePeriodEnd: v.optional(v.number()),
     paymentMethod: v.optional(v.union(v.literal("bank_transfer"), v.literal("paystack"), v.literal("flutterwave"), v.literal("manual"))),
+    paystackCustomerCode: v.optional(v.string()),
+    paystackSubscriptionCode: v.optional(v.string()),
+    paystackPlanCode: v.optional(v.string()),
     paystackSubscriptionId: v.optional(v.string()),
+    lastPaymentReference: v.optional(v.string()),
     lastPaymentDate: v.optional(v.number()),
     nextPaymentDate: v.optional(v.number()),
     amount: v.optional(v.number()),
     currency: v.optional(v.string()),
     cancelAtPeriodEnd: v.optional(v.boolean()),
+    activatedAt: v.optional(v.number()),
+    cancelledAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -410,36 +620,49 @@ export default defineSchema({
     .index("by_status", ["status"]),
 
   invoices: defineTable({
-    workspaceId: v.id("workspaces"),
+    organizationId: v.optional(v.id("organizations")),
+    workspaceId: v.optional(v.id("workspaces")),
     subscriptionId: v.optional(v.id("subscriptions")),
+    paymentId: v.optional(v.id("payments")),
     invoiceNumber: v.string(),
     status: v.union(
       v.literal("draft"),
       v.literal("pending"),
       v.literal("paid"),
       v.literal("overdue"),
-      v.literal("canceled")
+      v.literal("canceled"),
+      v.literal("failed")
     ),
     amount: v.number(),
     currency: v.string(),
-    dueDate: v.number(),
+    dueDate: v.optional(v.number()),
     paidAt: v.optional(v.number()),
+    periodStart: v.optional(v.number()),
+    periodEnd: v.optional(v.number()),
+    issuedAt: v.optional(v.number()),
+    paymentReference: v.optional(v.string()),
+    pdfUrl: v.optional(v.string()),
     paymentMethod: v.optional(
-      v.union(v.literal("bank_transfer"), v.literal("paystack"))
+      v.union(v.literal("bank_transfer"), v.literal("paystack"), v.literal("flutterwave"), v.literal("manual"))
     ),
     paystackPaymentId: v.optional(v.string()),
-    items: v.array(
-      v.object({
-        description: v.string(),
-        quantity: v.number(),
-        unitPrice: v.number(),
-        total: v.number(),
-      })
+    items: v.optional(
+      v.array(
+        v.object({
+          description: v.string(),
+          quantity: v.number(),
+          unitPrice: v.number(),
+          total: v.number(),
+        })
+      )
     ),
     createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
   })
+    .index("by_organizationId", ["organizationId"])
     .index("by_workspace", ["workspaceId"])
-    .index("by_subscription", ["subscriptionId"]),
+    .index("by_subscription", ["subscriptionId"])
+    .index("by_invoiceNumber", ["invoiceNumber"]),
 
   payments: defineTable({
     organizationId: v.optional(v.id("organizations")),
@@ -455,6 +678,7 @@ export default defineSchema({
     paystackPaymentId: v.optional(v.string()),
     paystackAuthorization: v.optional(v.string()),
     reference: v.optional(v.string()),
+    providerEventId: v.optional(v.string()),
     status: v.union(
       v.literal("pending"),
       v.literal("success"),
@@ -482,6 +706,7 @@ export default defineSchema({
     .index("by_subscription", ["subscriptionId"])
     .index("by_invoice", ["invoiceId"])
     .index("by_reference", ["reference"])
+    .index("by_provider_event_id", ["providerEventId"])
     .index("by_status", ["status"]),
 
   usageCounters: defineTable({
@@ -504,7 +729,7 @@ export default defineSchema({
   workspaceProducts: defineTable({
     workspaceId: v.id("workspaces"),
     productKey: v.string(),
-    status: v.string(),
+    status: v.string(), // "activating" | "setup_incomplete" | "active" | "suspended" | "deactivated"
     planId: v.optional(v.string()),
     activationSource: v.optional(v.string()),
     activationStatus: v.optional(v.string()),
@@ -514,6 +739,8 @@ export default defineSchema({
     activatedBy: v.id("users"),
     activatedAt: v.number(),
     suspendedAt: v.optional(v.number()),
+    createdAt: v.optional(v.number()),
+    updatedAt: v.optional(v.number()),
   })
     .index("by_workspace", ["workspaceId"])
     .index("by_workspace_product", ["workspaceId", "productKey"])
@@ -577,6 +804,8 @@ export default defineSchema({
     productKey: v.optional(v.string()),
     name: v.string(),
     code: v.optional(v.string()),
+    description: v.optional(v.string()),
+    logoUrl: v.optional(v.string()),
     isPrimary: v.optional(v.boolean()),
     isActive: v.optional(v.boolean()),
     // Nigerian Structured Address fields
@@ -589,19 +818,31 @@ export default defineSchema({
     blockNumber: v.optional(v.string()),
     area: v.optional(v.string()),
     landmark: v.optional(v.string()),
+    addressLine1: v.optional(v.string()),
+    addressLine2: v.optional(v.string()),
     postalCode: v.optional(v.string()),
     address: v.optional(v.string()), // Formatted / legacy address
     formattedAddress: v.optional(v.string()),
+    timezone: v.optional(v.string()),
+    currency: v.optional(v.string()),
     // Contact & Verification fields
     phone: v.optional(v.string()),
     phoneNormalized: v.optional(v.string()),
     phoneVerified: v.optional(v.boolean()),
     phoneVerifiedAt: v.optional(v.number()),
+    phoneStatus: v.optional(
+      v.union(
+        v.literal("unverified"),
+        v.literal("pending"),
+        v.literal("verified")
+      )
+    ),
     verificationCode: v.optional(v.string()), // hashed OTP for branch phone
     codeExpiresAt: v.optional(v.number()),
     email: v.optional(v.string()),
     managerId: v.optional(v.id("users")),
     status: v.string(),
+    createdBy: v.optional(v.id("users")),
     deletedAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
@@ -615,7 +856,42 @@ export default defineSchema({
     .index("by_workspace_primary", ["workspaceId", "isPrimary"])
     .index("by_workspace_state", ["workspaceId", "state"])
     .index("by_workspace_lga", ["workspaceId", "lga"])
+    .index("by_workspace_code", ["workspaceId", "code"])
     .index("by_phone", ["phoneNormalized"]),
+
+  branchSettings: defineTable({
+    branchId: v.union(v.id("branches"), v.string()),
+    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
+    productKey: v.optional(v.string()),
+    displayName: v.optional(v.string()),
+    openingHours: v.optional(v.any()),
+    operatingHours: v.optional(v.any()),
+    receiptFooter: v.optional(v.string()),
+    negativeStockAllowed: v.optional(v.boolean()),
+    allowNegativeStock: v.optional(v.boolean()),
+    enforceStockCheck: v.optional(v.boolean()),
+    lowStockThreshold: v.optional(v.number()),
+    isPrimary: v.optional(v.boolean()),
+    status: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_branch", ["branchId"])
+    .index("by_workspace", ["workspaceId"])
+    .index("by_workspace_branch", ["workspaceId", "branchId"]),
+
+  applicationSettings: defineTable({
+    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
+    productKey: v.string(),
+    displayName: v.optional(v.string()),
+    enabled: v.boolean(),
+    status: v.optional(v.string()),
+    settings: v.any(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_workspace", ["workspaceId"])
+    .index("by_workspace_product", ["workspaceId", "productKey"]),
 
   appBranchAccess: defineTable({
     workspaceId: v.id("workspaces"),
@@ -630,7 +906,8 @@ export default defineSchema({
     .index("by_workspace_user", ["workspaceId", "userId"])
     .index("by_workspace_product_user", ["workspaceId", "productKey", "userId"])
     .index("by_branch_user", ["branchId", "userId"])
-    .index("by_branch_status", ["branchId", "status"]),
+    .index("by_branch_status", ["branchId", "status"])
+    .index("by_userId", ["userId"]),
 
   emailEvents: defineTable({
     recipient: v.string(),
@@ -647,13 +924,20 @@ export default defineSchema({
     .index("by_status", ["status"]),
 
   workspaceAuditLogs: defineTable({
-    workspaceId: v.id("workspaces"),
-    actorUserId: v.optional(v.id("users")),
+    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
+    actorUserId: v.optional(v.union(v.id("users"), v.string())),
+    action: v.optional(v.string()),
     eventType: v.string(),
-    entityType: v.string(),
+    entityType: v.optional(v.string()),
+    resourceType: v.optional(v.string()),
     entityId: v.optional(v.string()),
-    severity: v.string(),
+    resourceId: v.optional(v.string()),
+    productKey: v.optional(v.string()),
+    branchId: v.optional(v.union(v.id("branches"), v.string())),
+    severity: v.optional(v.string()),
     metadata: v.optional(v.any()),
+    beforeValues: v.optional(v.any()),
+    afterValues: v.optional(v.any()),
     requestId: v.optional(v.string()),
     ipAddress: v.optional(v.string()),
     userAgent: v.optional(v.string()),
@@ -791,6 +1075,9 @@ export default defineSchema({
       v.literal("EXPIRED"),
       v.literal("CANCELLED")
     ),
+    allowedApplications: v.optional(v.array(v.string())),
+    allowedBranches: v.optional(v.array(v.id("branches"))),
+    primaryBranchId: v.optional(v.id("branches")),
     invitedBy: v.id("users"),
     expiresAt: v.number(),
     acceptedAt: v.optional(v.number()),
@@ -809,6 +1096,7 @@ export default defineSchema({
     targetUserId: v.optional(v.string()),
     workspaceId: v.optional(v.string()),
     organizationId: v.optional(v.id("organizations")),
+    targetWorkspaceId: v.optional(v.id("workspaces")),
     productKey: v.optional(v.string()),
     eventType: v.optional(v.string()),
     action: v.string(),
@@ -816,7 +1104,14 @@ export default defineSchema({
     entityId: v.optional(v.string()),
     resource: v.string(),
     severity: v.optional(
-      v.union(v.literal("info"), v.literal("warning"), v.literal("critical"))
+      v.union(
+        v.literal("info"),
+        v.literal("warning"),
+        v.literal("critical"),
+        v.literal("low"),
+        v.literal("medium"),
+        v.literal("high")
+      )
     ),
     ipAddress: v.optional(v.string()),
     userAgent: v.optional(v.string()),
@@ -829,6 +1124,8 @@ export default defineSchema({
     .index("by_organizationId", ["organizationId"])
     .index("by_actorId", ["actorId"])
     .index("by_actorUserId", ["actorUserId"])
+    .index("by_target_user", ["targetUserId"])
+    .index("by_target_workspace", ["targetWorkspaceId"])
     .index("by_eventType", ["eventType"])
     .index("by_timestamp", ["timestamp"])
     .index("by_createdAt", ["createdAt"]),
@@ -946,6 +1243,28 @@ export default defineSchema({
     .index("by_workspaceId", ["workspaceId"])
     .index("by_workspace_and_product", ["workspaceId", "productId"]),
 
+  receiptSettings: defineTable({
+    workspaceId: v.string(),
+    storeName: v.optional(v.string()),
+    tagline: v.optional(v.string()),
+    headerText: v.optional(v.string()),
+    footerText: v.optional(v.string()),
+    returnPolicy: v.optional(v.string()),
+    tin: v.optional(v.string()),
+    vatRate: v.optional(v.number()),
+    enableVat: v.optional(v.boolean()),
+    showCashier: v.optional(v.boolean()),
+    showCustomer: v.optional(v.boolean()),
+    showBarcode: v.optional(v.boolean()),
+    paperWidth: v.optional(v.union(v.literal("58mm"), v.literal("80mm"))),
+    phone: v.optional(v.string()),
+    email: v.optional(v.string()),
+    address: v.optional(v.string()),
+    logoUrl: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_workspaceId", ["workspaceId"]),
+
   userPreferences: defineTable({
     userId: v.id("users"),
     theme: v.optional(v.union(v.literal("dark"), v.literal("light"), v.literal("system"))),
@@ -984,14 +1303,25 @@ export default defineSchema({
       v.literal("PENDING"),
       v.literal("COOLING_OFF"),
       v.literal("CANCELLED"),
-      v.literal("COMPLETED")
+      v.literal("COMPLETED"),
+      v.literal("pending"),
+      v.literal("cooling_off"),
+      v.literal("cancelled"),
+      v.literal("completed")
     ),
     reason: v.optional(v.string()),
+    requestedBy: v.optional(v.string()),
     requestedAt: v.number(),
     scheduledDeletionAt: v.number(),
     cancelledAt: v.optional(v.number()),
     completedAt: v.optional(v.number()),
-  }).index("by_userId", ["userId"]),
+    deletionTokenHash: v.optional(v.string()),
+    adminForceDelete: v.optional(v.boolean()),
+  })
+    .index("by_userId", ["userId"])
+    .index("by_status", ["status"])
+    .index("by_scheduled_deletion", ["scheduledDeletionAt"])
+    .index("by_token_hash", ["deletionTokenHash"]),
 
   dataExportRequests: defineTable({
     userId: v.id("users"),
@@ -1036,6 +1366,8 @@ export default defineSchema({
     passwordHash: v.string(),
     name: v.string(),
     role: v.string(), // 'super_admin'
+    avatar: v.optional(v.string()),
+    avatarUrl: v.optional(v.string()),
     isActive: v.boolean(),
     lastLoginAt: v.optional(v.number()),
     lastLoginIp: v.optional(v.string()),
@@ -1117,13 +1449,15 @@ export default defineSchema({
     .index("by_paid_at", ["paidAt"]),
 
   paymentTransactions: defineTable({
-    workspaceId: v.union(v.id("workspaces"), v.string()),
+    workspaceId: v.optional(v.union(v.id("workspaces"), v.string())),
+    organizationId: v.optional(v.union(v.id("organizations"), v.string())),
     planKey: v.string(), // "standard" | "premium"
     amount: v.number(), // in kobo
     currency: v.string(), // "NGN"
     billingCycle: v.string(), // "monthly" | "annual"
     gateway: v.union(v.literal("paystack"), v.literal("flutterwave")),
     gatewayReference: v.string(), // Paystack reference or Flutterwave tx_ref
+    providerEventId: v.optional(v.string()),
     status: v.union(
       v.literal("pending"),
       v.literal("success"),
@@ -1136,7 +1470,9 @@ export default defineSchema({
     updatedAt: v.number(),
   })
     .index("by_workspace", ["workspaceId"])
+    .index("by_organizationId", ["organizationId"])
     .index("by_gateway_ref", ["gatewayReference"])
+    .index("by_provider_event_id", ["providerEventId"])
     .index("by_status", ["status"]),
 
   locations: defineTable({
@@ -1171,12 +1507,30 @@ export default defineSchema({
     .index("by_user_primary", ["userId", "isPrimary"]),
 
   applications: defineTable({
-    key: v.string(), // "inventory", "pos", "billing", etc.
+    key: v.string(), // "inventory", "task_management", "crm", "gym", "booking", etc.
     name: v.string(),
-    enabled: v.boolean(),
+    description: v.optional(v.string()),
+    icon: v.optional(v.string()),
+    status: v.optional(
+      v.union(
+        v.literal("available"),
+        v.literal("coming_soon"),
+        v.literal("disabled"),
+        v.literal("active"),
+        v.literal("draft")
+      )
+    ),
+    isVisibleToUsers: v.optional(v.boolean()),
+    isActivatable: v.optional(v.boolean()),
+    route: v.optional(v.string()),
+    requiredPlan: v.optional(v.string()),
+    enabled: v.optional(v.boolean()),
     createdAt: v.number(),
     updatedAt: v.number(),
-  }).index("by_key", ["key"]),
+  })
+    .index("by_key", ["key"])
+    .index("by_status", ["status"])
+    .index("by_visible_status", ["isVisibleToUsers", "status"]),
 
   orgApplications: defineTable({
     organizationId: v.id("organizations"),
@@ -1223,7 +1577,184 @@ export default defineSchema({
     .index("by_organizationId", ["organizationId"])
     .index("by_applicationId", ["applicationId"])
     .index("by_org_and_app", ["organizationId", "applicationId"]),
+
+  branchMemberships: defineTable({
+    workspaceId: v.string(),
+    organizationId: v.optional(v.id("organizations")),
+    applicationKey: v.string(), // "inventory", "taskmanagement", etc.
+    branchId: v.string(),
+    userId: v.id("users"),
+    applicationMembershipId: v.optional(v.string()),
+    role: v.string(), // "inventory_owner" | "inventory_manager" | "cashier" | "stock_manager" | "accountant" | "inventory_viewer"
+    roleOverride: v.optional(v.string()),
+    permissions: v.array(v.string()),
+    status: v.union(v.literal("active"), v.literal("suspended"), v.literal("removed")),
+    assignedByUserId: v.id("users"),
+    assignedAt: v.number(),
+    suspendedAt: v.optional(v.number()),
+    suspensionReason: v.optional(v.string()),
+    removedAt: v.optional(v.number()),
+    removalReason: v.optional(v.string()),
+    transferredFromBranchId: v.optional(v.string()),
+    transferredFromRole: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_workspace", ["workspaceId"])
+    .index("by_workspace_user", ["workspaceId", "userId"])
+    .index("by_workspace_branch", ["workspaceId", "branchId"])
+    .index("by_workspace_application", ["workspaceId", "applicationKey"])
+    .index("by_workspace_application_branch", ["workspaceId", "applicationKey", "branchId"])
+    .index("by_user_application", ["userId", "applicationKey"])
+    .index("by_user_branch", ["userId", "branchId"])
+    .index("by_branch_status", ["branchId", "status"])
+    .index("by_user_status", ["userId", "status"])
+    .index("by_status", ["status"]),
+
+  branchTransfers: defineTable({
+    workspaceId: v.string(),
+    organizationId: v.optional(v.id("organizations")),
+    applicationKey: v.string(),
+    userId: v.id("users"),
+    membershipId: v.optional(v.string()),
+    fromBranchId: v.optional(v.string()),
+    toBranchId: v.optional(v.string()),
+    sourceBranchId: v.string(),
+    targetBranchId: v.string(),
+    fromRole: v.optional(v.string()),
+    toRole: v.optional(v.string()),
+    previousRole: v.string(),
+    newRole: v.string(),
+    reason: v.optional(v.string()),
+    transferredBy: v.id("users"),
+    effectiveDate: v.number(),
+    effectiveAt: v.optional(v.number()),
+    message: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_workspace", ["workspaceId"])
+    .index("by_user", ["userId"])
+    .index("by_source_branch", ["sourceBranchId"])
+    .index("by_target_branch", ["targetBranchId"]),
+
+  branchMembershipTransfers: defineTable({
+    workspaceId: v.string(),
+    organizationId: v.optional(v.id("organizations")),
+    applicationKey: v.string(), // "inventory"
+    userId: v.id("users"),
+    membershipId: v.string(),
+    fromBranchId: v.string(),
+    toBranchId: v.string(),
+    fromRole: v.string(),
+    toRole: v.string(),
+    reason: v.optional(v.string()),
+    effectiveAt: v.number(),
+    transferredBy: v.id("users"),
+    createdAt: v.number(),
+  })
+    .index("by_workspace", ["workspaceId"])
+    .index("by_user", ["userId"])
+    .index("by_membership", ["membershipId"])
+    .index("by_created", ["createdAt"])
+    .index("by_from_branch", ["fromBranchId"])
+    .index("by_to_branch", ["toBranchId"]),
+
+  applicationMemberships: defineTable({
+    workspaceId: v.string(),
+    userId: v.id("users"),
+    applicationKey: v.string(), // "inventory", "task_management", etc.
+    role: v.string(), // "inventory_owner" | "inventory_manager" | "cashier" | "stock_manager" | "accountant" | "inventory_viewer"
+    permissions: v.array(v.string()),
+    status: v.union(v.literal("active"), v.literal("suspended"), v.literal("removed")),
+    assignedBy: v.id("users"),
+    assignedAt: v.number(),
+    suspendedAt: v.optional(v.number()),
+    suspensionReason: v.optional(v.string()),
+    removedAt: v.optional(v.number()),
+    removalReason: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_workspace", ["workspaceId"])
+    .index("by_workspace_user", ["workspaceId", "userId"])
+    .index("by_workspace_application", ["workspaceId", "applicationKey"])
+    .index("by_user_application", ["userId", "applicationKey"])
+    .index("by_workspace_application_user", ["workspaceId", "applicationKey", "userId"])
+    .index("by_status", ["status"]),
+
+  applicationInvitations: defineTable({
+    workspaceId: v.string(),
+    applicationKey: v.string(), // "inventory"
+    branchId: v.string(),
+    email: v.string(),
+    emailNormalized: v.string(),
+    inviteeUserId: v.optional(v.id("users")),
+    role: v.string(),
+    permissions: v.array(v.string()),
+    message: v.optional(v.string()),
+    tokenHash: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("accepted"),
+      v.literal("declined"),
+      v.literal("expired"),
+      v.literal("revoked")
+    ),
+    invitedBy: v.id("users"),
+    expiresAt: v.number(),
+    acceptedAt: v.optional(v.number()),
+    declinedAt: v.optional(v.number()),
+    revokedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
+  })
+    .index("by_token_hash", ["tokenHash"])
+    .index("by_workspace", ["workspaceId"])
+    .index("by_workspace_application", ["workspaceId", "applicationKey"])
+    .index("by_workspace_application_branch", ["workspaceId", "applicationKey", "branchId"])
+    .index("by_email_status", ["emailNormalized", "status"])
+    .index("by_invitee_user", ["inviteeUserId"]),
+
+  userAdminSupportNotes: defineTable({
+    userId: v.id("users"),
+    authorId: v.id("platformAdmins"),
+    authorName: v.string(),
+    category: v.union(
+      v.literal("support"),
+      v.literal("billing"),
+      v.literal("security"),
+      v.literal("onboarding"),
+      v.literal("general")
+    ),
+    note: v.string(),
+    visibility: v.literal("admin_only"),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_userId", ["userId"])
+    .index("by_user_and_category", ["userId", "category"]),
+
+  phoneVerificationChallenges: defineTable({
+    userId: v.optional(v.id("users")),
+    workspaceId: v.optional(v.union(v.id("workspaces"), v.id("organizations"), v.string())),
+    organizationId: v.optional(v.union(v.id("organizations"), v.string())),
+    branchId: v.optional(v.union(v.id("branches"), v.string())),
+    phone: v.string(),
+    phoneNormalized: v.string(),
+    purpose: v.string(), // "user_phone_verification" | "user_phone_change" | "phone_recovery_setup" | "sms_mfa_setup" | "workspace_phone_verification" | "branch_phone_verification"
+    codeHash: v.string(),
+    status: v.union(v.literal("pending"), v.literal("verified"), v.literal("expired"), v.literal("cancelled")),
+    attempts: v.number(),
+    maxAttempts: v.number(),
+    expiresAt: v.number(),
+    lastResentAt: v.optional(v.number()),
+    resendCount: v.optional(v.number()),
+    verifiedAt: v.optional(v.number()),
+    createdAt: v.number(),
+  })
+    .index("by_phone_normalized", ["phoneNormalized"])
+    .index("by_user_purpose", ["userId", "purpose", "status"])
+    .index("by_workspace_purpose", ["workspaceId", "purpose", "status"])
+    .index("by_branch_purpose", ["branchId", "purpose", "status"])
+    .index("by_status_expires", ["status", "expiresAt"]),
 });
-
-
-

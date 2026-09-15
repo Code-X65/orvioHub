@@ -1,6 +1,39 @@
 import { dataService } from './dataService.js';
 import { getPlanLimits, PLAN_LIMITS, type PlanTier } from '../config/planLimits.js';
 
+export const MAX_OWNED_ORGANIZATIONS_PER_USER = 3;
+export const FEATURE_KEY_ORG_LIMIT = "organization.max_owned_count";
+
+export interface OrganizationCreationEligibility {
+  allowed: boolean;
+  canCreate?: boolean;
+  currentOwned?: number;
+  currentOwnedOrganizations: number;
+  maximumOwned?: number;
+  maximumOwnedOrganizations: number;
+  remainingOwned?: number;
+  remainingOwnedOrganizations: number;
+  freeTrial?: {
+    used: number;
+    maximum: number;
+    available: boolean;
+    organizationId?: string;
+    organizationName?: string;
+    trialEndsAt?: number;
+  };
+  reasons?: string[];
+  recommendedPlan?: 'standard' | 'free_trial' | 'premium';
+  override?: {
+    active: boolean;
+    grantedBy: string;
+    reason: string;
+    expiresAt: number | null;
+    overrideLimit?: number;
+  };
+  code?: string;
+  message?: string;
+}
+
 export interface EntitlementCheckResult {
   allowed: boolean;
   current: number;
@@ -11,32 +44,66 @@ export interface EntitlementCheckResult {
 
 export class EntitlementService {
   /**
-   * User Story 2.2: Workspace/Organization Creation
-   * Personal accounts are free; billing is per-organization.
-   * Users can create multiple organizations freely; each organization has its own subscription.
+   * Organization / Workspace Creation Eligibility Check (Max 3 owned organizations)
    */
   public async checkWorkspaceCreationEntitlement(userId: string): Promise<EntitlementCheckResult> {
-    const userWorkspaces = await dataService.getUserWorkspaces(userId);
-    const ownedWorkspaces = (userWorkspaces || []).filter(
-      (w: any) => w.isOwner || w.role?.toLowerCase() === 'owner'
-    );
+    const eligibility = await this.getOrganizationCreationEligibility(userId);
+    return {
+      allowed: eligibility.allowed,
+      current: eligibility.currentOwnedOrganizations,
+      limit: eligibility.maximumOwnedOrganizations,
+      planKey: 'free',
+      error: eligibility.allowed
+        ? undefined
+        : `You have reached the maximum of ${eligibility.maximumOwnedOrganizations} organizations you can create.`,
+    };
+  }
 
-    let ownedOrgsCount = 0;
+  public async getOrganizationCreationEligibility(userId: string): Promise<OrganizationCreationEligibility> {
+    try {
+      const res = await dataService.getOrganizationCreationEligibility(userId);
+      if (res) return res;
+    } catch {}
+
+    let ownedCount = 0;
     try {
       const memberships = await dataService.getUserMemberships(userId);
-      ownedOrgsCount = (memberships || []).filter(
-        (m: any) => m.membership?.role === 'OWNER'
+      ownedCount = (memberships || []).filter(
+        (m: any) =>
+          m.membership?.role === 'OWNER' &&
+          m.organization?.status !== 'deleted' &&
+          !m.organization?.deletedAt
       ).length;
     } catch {}
 
-    const count = Math.max(ownedWorkspaces.length, ownedOrgsCount);
-
+    const limit = MAX_OWNED_ORGANIZATIONS_PER_USER;
+    const allowed = ownedCount < limit;
     return {
-      allowed: true,
-      current: count,
-      limit: 999999,
-      planKey: 'free',
+      allowed,
+      currentOwnedOrganizations: ownedCount,
+      maximumOwnedOrganizations: limit,
+      remainingOwnedOrganizations: Math.max(limit - ownedCount, 0),
+      code: allowed ? undefined : 'ORGANIZATION_LIMIT_REACHED',
+      message: allowed
+        ? undefined
+        : `You have reached the maximum of ${limit} organizations you can create.`,
     };
+  }
+
+  public async requireCanCreateOrganization(userId: string): Promise<OrganizationCreationEligibility> {
+    const eligibility = await this.getOrganizationCreationEligibility(userId);
+    if (!eligibility.allowed) {
+      const err: any = new Error(
+        eligibility.message ||
+          `You already own ${eligibility.currentOwnedOrganizations} organizations. You can still join other organizations by invitation.`
+      );
+      err.code = 'ORGANIZATION_LIMIT_REACHED';
+      err.statusCode = 409;
+      err.currentOwnedOrganizations = eligibility.currentOwnedOrganizations;
+      err.maximumOwnedOrganizations = eligibility.maximumOwnedOrganizations;
+      throw err;
+    }
+    return eligibility;
   }
 
   /**
@@ -88,7 +155,7 @@ export class EntitlementService {
         };
       }
       const planName = planKey.charAt(0).toUpperCase() + planKey.slice(1);
-      const nextPlan = planKey === 'free' ? 'Standard' : 'Premium';
+      const nextPlan = (planKey as string) === 'free' ? 'Standard' : 'Premium';
       return {
         allowed: false,
         current: activeCount,
@@ -307,6 +374,123 @@ export class EntitlementService {
   }
 
   /**
+   * Organization Usage Summary & Threshold Warnings (Priority 4)
+   */
+  public async getOrganizationUsageSummary(organizationId: string, userId?: string) {
+    const sub = await dataService.getOrganizationSubscription(organizationId).catch(() => null);
+    let planKey = (sub?.planKey || 'free_trial').toLowerCase() as PlanTier;
+    if (planKey === ('free' as any)) planKey = 'free_trial' as any;
+    const limits = getPlanLimits(planKey === ('free_trial' as any) ? 'free' : planKey);
+
+    // 1. Active Apps Count
+    let appsCount = 0;
+    try {
+      const apps = await dataService.getOrganizationApps(organizationId);
+      appsCount = Array.isArray(apps)
+        ? apps.filter((a: any) => a.isActivated && a.status !== 'inactive' && a.status !== 'suspended').length
+        : 0;
+    } catch {
+      appsCount = 1;
+    }
+
+    // 2. Branches Count
+    let branchesCount = 0;
+    try {
+      const branches = await dataService.listBranches({ organizationId });
+      branchesCount = Array.isArray(branches) ? branches.length : 0;
+    } catch {
+      branchesCount = 1;
+    }
+
+    // 3. Team Members Count
+    let membersCount = 1;
+    try {
+      const members = await dataService.getOrganizationMembers(organizationId, userId || '');
+      membersCount = Array.isArray(members) ? members.length : 1;
+    } catch {
+      membersCount = 1;
+    }
+
+    // 4. Products Count
+    let productsCount = 0;
+    try {
+      const products = await dataService.getInventoryProducts(organizationId);
+      productsCount = Array.isArray(products) ? products.length : 0;
+    } catch {
+      productsCount = 0;
+    }
+
+    // 5. Monthly Transactions Count
+    let transactionsCount = 0;
+    try {
+      const usage = await dataService.getWorkspaceUsage(organizationId);
+      transactionsCount = usage?.counters?.transactionsCount || 0;
+    } catch {
+      transactionsCount = 0;
+    }
+
+    const calcMetric = (current: number, limit: number) => {
+      const percent = limit > 0 ? Math.min(100, Math.round((current / limit) * 100)) : 0;
+      return {
+        current,
+        limit,
+        percent,
+        isApproaching: percent >= 80 && percent < 100,
+        isReached: percent >= 100,
+      };
+    };
+
+    const isTrial = (planKey as string) === 'free_trial' || (planKey as string) === 'free';
+    const maxBranches = limits.maxBranchesPerApp || (isTrial ? 1 : 5);
+    const maxApps = limits.maxAppsPerOrganization || (isTrial ? 1 : 3);
+    const maxMembers = limits.maxMembersPerOrganization || limits.maxMembers || (isTrial ? 2 : 10);
+    const maxProducts = limits.maxProducts || (isTrial ? 500 : 5000);
+
+    const metrics = {
+      apps: calcMetric(appsCount, maxApps),
+      branches: calcMetric(branchesCount, maxBranches),
+      members: calcMetric(membersCount, maxMembers),
+      products: calcMetric(productsCount, maxProducts),
+      transactions: calcMetric(transactionsCount, limits.maxTransactions || 500),
+    };
+
+    const hasApproachingLimits = Object.values(metrics).some((m) => m.isApproaching);
+    const hasExceededLimits = Object.values(metrics).some((m) => m.isReached);
+
+    let warningMessage: string | null = null;
+    if (metrics.branches.isReached) {
+      warningMessage = `Branch limit reached (${metrics.branches.current}/${metrics.branches.limit}). Upgrade your plan to add more branches.`;
+    } else if (metrics.products.isReached) {
+      warningMessage = `Product limit reached (${metrics.products.current}/${metrics.products.limit}). Upgrade your plan to continue adding products.`;
+    } else if (metrics.apps.isReached) {
+      warningMessage = `Application limit reached (${metrics.apps.current}/${metrics.apps.limit}). Upgrade to activate more applications.`;
+    } else if (metrics.members.isReached) {
+      warningMessage = `Team member limit reached (${metrics.members.current}/${metrics.members.limit}). Upgrade to invite more members.`;
+    } else if (metrics.branches.isApproaching) {
+      warningMessage = `You are near your branch limit (${metrics.branches.current}/${metrics.branches.limit}).`;
+    } else if (metrics.products.isApproaching) {
+      warningMessage = `You have used ${metrics.products.percent}% of your product quota (${metrics.products.current}/${metrics.products.limit}).`;
+    }
+
+    return {
+      organizationId,
+      planKey,
+      limits: {
+        maxApps,
+        maxBranches,
+        maxMembers,
+        maxProducts,
+        maxTransactions: limits.maxTransactions || 500,
+      },
+      metrics,
+      hasApproachingLimits,
+      hasExceededLimits,
+      warningMessage,
+      subscription: sub,
+    };
+  }
+
+  /**
    * Branch Creation Limits
    * Free: 1, Standard: 3, Premium: 10 per app
    */
@@ -354,7 +538,7 @@ export class EntitlementService {
         };
       }
       const planName = planKey.charAt(0).toUpperCase() + planKey.slice(1);
-      const nextPlan = planKey === 'free' ? 'Standard' : 'Premium';
+      const nextPlan = (planKey as string) === 'free' ? 'Standard' : 'Premium';
       return {
         allowed: false,
         current: currentCount,

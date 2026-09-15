@@ -413,10 +413,10 @@ export const Subscriptions: React.FC = () => {
                             Record Payment
                           </button>
                           <Link
-                            to={`/organizations/${sub.organizationId || sub.workspaceId}`}
+                            to={`/subscriptions/${sub._id || sub.organizationId || sub.workspaceId}`}
                             className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700 transition"
                           >
-                            Details
+                            Manage
                           </Link>
                         </div>
                       </td>

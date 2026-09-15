@@ -409,13 +409,33 @@ export const getBranchesForOrgApp = query({
           q.eq("organizationId", resolvedOrgId!).eq("applicationId", resolvedAppId!)
         )
         .collect();
-    } else {
+    }
+
+    if (!branches || branches.length === 0) {
       branches = await ctx.db
         .query("branches")
         .withIndex("by_organizationId", (q: any) =>
           q.eq("organizationId", resolvedOrgId!)
         )
         .collect();
+    }
+
+    if (!branches || branches.length === 0) {
+      const orgWorkspaces = await ctx.db
+        .query("workspaces")
+        .withIndex("by_organizationId", (q: any) => q.eq("organizationId", resolvedOrgId!))
+        .collect();
+      for (const w of orgWorkspaces) {
+        const wsBranches = await ctx.db
+          .query("branches")
+          .withIndex("by_workspace", (q: any) => q.eq("workspaceId", w._id))
+          .collect();
+        for (const wb of wsBranches) {
+          if (!branches.some((b: any) => b._id === wb._id)) {
+            branches.push(wb);
+          }
+        }
+      }
     }
 
     const active = branches.filter(
@@ -812,5 +832,706 @@ export const verifyPhone = mutation({
   },
 });
 
+/**
+ * Mutation: Create a branch scoped to (organization, application) (US-BR1)
+ */
+export const createBranchForApplication = mutation({
+  args: {
+    organizationId: v.union(v.id("organizations"), v.id("workspaces"), v.string()),
+    applicationId: v.optional(v.union(v.id("applications"), v.string())),
+    applicationKey: v.optional(v.string()),
+    name: v.string(),
+    code: v.optional(v.string()),
+    address: v.optional(v.string()),
+    phone: v.optional(v.string()),
+    isPrimary: v.optional(v.boolean()),
+    callerUserId: v.optional(v.id("users")),
+    userId: v.optional(v.id("users")),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const effectiveUserId = args.userId || args.callerUserId;
+
+    // 1. Resolve organization & workspace
+    let resolvedOrgId: Id<"organizations"> | undefined = undefined;
+    let resolvedWorkspaceId: Id<"workspaces"> | undefined = undefined;
+
+    const directOrg = ctx.db.normalizeId("organizations", args.organizationId);
+    if (directOrg) {
+      resolvedOrgId = directOrg;
+      const ws = await ctx.db
+        .query("workspaces")
+        .withIndex("by_organizationId", (q: any) => q.eq("organizationId", directOrg))
+        .first();
+      if (ws) resolvedWorkspaceId = ws._id;
+    } else {
+      const wsId = ctx.db.normalizeId("workspaces", args.organizationId);
+      if (wsId) {
+        resolvedWorkspaceId = wsId;
+        const ws = await ctx.db.get(wsId);
+        if (ws?.organizationId) resolvedOrgId = ws.organizationId;
+      }
+    }
+
+    if (!resolvedOrgId) {
+      throw new Error("ORGANIZATION_NOT_FOUND");
+    }
+
+    // 2. Resolve application
+    let resolvedAppId: Id<"applications"> | undefined = undefined;
+    let resolvedAppKey = args.applicationKey || "inventory";
+
+    if (args.applicationId) {
+      const directAppId = ctx.db.normalizeId("applications", args.applicationId);
+      if (directAppId) {
+        resolvedAppId = directAppId;
+        const app = await ctx.db.get(directAppId);
+        if (app?.key) resolvedAppKey = app.key;
+      }
+    }
+
+    if (!resolvedAppId) {
+      const app = await ctx.db
+        .query("applications")
+        .withIndex("by_key", (q: any) => q.eq("key", resolvedAppKey))
+        .first();
+      if (app) {
+        resolvedAppId = app._id;
+      } else {
+        resolvedAppId = await ctx.db.insert("applications", {
+          key: resolvedAppKey,
+          name: resolvedAppKey.charAt(0).toUpperCase() + resolvedAppKey.slice(1),
+          enabled: true,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    }
+
+    // 3. Validate user membership if userId provided
+    if (effectiveUserId) {
+      const membership = await ctx.db
+        .query("organizationMemberships")
+        .withIndex("by_org_and_user", (q: any) =>
+          q.eq("organizationId", resolvedOrgId!).eq("userId", effectiveUserId)
+        )
+        .first();
+
+      if (!membership || membership.status !== "ACTIVE") {
+        throw new Error("ORGANIZATION_ACCESS_DENIED");
+      }
+    }
+
+    // 4. Validate organization has active subscription
+    const orgSub = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_organizationId", (q: any) => q.eq("organizationId", resolvedOrgId!))
+      .first();
+
+    if (!orgSub || (orgSub.status !== "active" && orgSub.status !== "trial" && orgSub.status !== "trialing")) {
+      throw new Error("An active organization subscription is required before creating branches.");
+    }
+
+    // 5. Ensure application is activated for organization
+    const orgApp = await ctx.db
+      .query("orgApplications")
+      .withIndex("by_org_and_app", (q: any) =>
+        q.eq("organizationId", resolvedOrgId!).eq("applicationId", resolvedAppId!)
+      )
+      .first();
+
+    const isAppActive =
+      !!orgApp &&
+      orgApp.enabled !== false &&
+      (orgApp.status === "active" || orgApp.status === "trial" || orgApp.status === "trialing");
+
+    if (!isAppActive) {
+      throw new Error("APPLICATION_NOT_ACTIVATED");
+    }
+
+    // 6. Enforce plan limits (Free Trial orgs: max 1 branch per app)
+    const currentPlanKey = (orgSub.planKey || "free_trial").toLowerCase();
+    const isFreeTrialOrg = currentPlanKey === "free_trial" || currentPlanKey === "free";
+
+    const existingBranches = await ctx.db
+      .query("branches")
+      .withIndex("by_org_and_app", (q: any) =>
+        q.eq("organizationId", resolvedOrgId!).eq("applicationId", resolvedAppId!)
+      )
+      .collect();
+
+    const activeBranches = existingBranches.filter(
+      (b: any) => b.isActive !== false && b.status !== "archived" && b.status !== "deleted"
+    );
+
+    if (isFreeTrialOrg && activeBranches.length >= 1) {
+      throw new Error(
+        "Free Trial organizations can only have 1 branch per application. Upgrade to Standard to add more branches."
+      );
+    }
+
+    // 7. Manage isPrimary flag
+    let isPrimary = args.isPrimary ?? false;
+    if (activeBranches.length === 0) {
+      isPrimary = true;
+    }
+
+    if (isPrimary) {
+      for (const branch of activeBranches) {
+        if (branch.isPrimary) {
+          await ctx.db.patch(branch._id, { isPrimary: false, updatedAt: now });
+        }
+      }
+    }
+
+    // 8. Insert new branch
+    const branchId = await ctx.db.insert("branches", {
+      organizationId: resolvedOrgId,
+      applicationId: resolvedAppId,
+      workspaceId: resolvedWorkspaceId,
+      productKey: resolvedAppKey,
+      name: args.name.trim(),
+      code: args.code?.trim(),
+      address: args.address?.trim(),
+      formattedAddress: args.address?.trim(),
+      phone: args.phone?.trim(),
+      isPrimary,
+      isActive: true,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // 9. Audit log
+    try {
+      if (resolvedWorkspaceId) {
+        await ctx.db.insert("workspaceAuditLogs", {
+          workspaceId: resolvedWorkspaceId,
+          actorUserId: effectiveUserId,
+          eventType: "workspace.branch_created",
+          entityType: "branch",
+          entityId: branchId,
+          severity: "info",
+          metadata: {
+            organizationId: resolvedOrgId,
+            applicationId: resolvedAppId,
+            branchName: args.name,
+            isPrimary,
+          },
+          createdAt: now,
+        });
+      }
+
+      await ctx.db.insert("auditLogs", {
+        actorUserId: effectiveUserId as any,
+        organizationId: resolvedOrgId,
+        action: "workspace.branch_created",
+        eventType: "workspace.branch_created",
+        resource: "branch",
+        entityType: "branch",
+        entityId: branchId,
+        severity: "info",
+        metadata: {
+          name: args.name,
+          code: args.code,
+          isPrimary,
+          applicationKey: resolvedAppKey,
+        },
+        timestamp: now,
+        createdAt: now,
+      });
+    } catch {}
+
+    // 10. In-app notification
+    try {
+      if (effectiveUserId) {
+        await ctx.db.insert("notifications", {
+          userId: effectiveUserId,
+          type: "branch_created",
+          title: "Branch Created",
+          body: `New branch added: ${args.name}`,
+          status: "UNREAD",
+          severity: "INFO",
+          channel: "IN_APP",
+          data: {
+            organizationId: resolvedOrgId,
+            branchId,
+          },
+          createdAt: now,
+        });
+      }
+    } catch {}
+
+    const newBranch = await ctx.db.get(branchId);
+    return {
+      success: true,
+      branchId,
+      branch: newBranch,
+    };
+  },
+});
+
+/**
+ * Mutation: Deactivate / soft-delete branch (US-BR2)
+ */
+export const deactivateBranch = mutation({
+  args: {
+    branchId: v.id("branches"),
+    callerUserId: v.optional(v.id("users")),
+    userId: v.optional(v.id("users")),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const effectiveUserId = args.userId || args.callerUserId;
+
+    const branch = await ctx.db.get(args.branchId);
+    if (!branch) {
+      throw new Error("BRANCH_NOT_FOUND");
+    }
+
+    if (effectiveUserId && branch.organizationId) {
+      const membership = await ctx.db
+        .query("organizationMemberships")
+        .withIndex("by_org_and_user", (q: any) =>
+          q.eq("organizationId", branch.organizationId!).eq("userId", effectiveUserId)
+        )
+        .first();
+
+      if (!membership || membership.status !== "ACTIVE") {
+        throw new Error("ORGANIZATION_ACCESS_DENIED");
+      }
+    }
+
+    await ctx.db.patch(args.branchId, {
+      isActive: false,
+      status: "inactive",
+      deletedAt: now,
+      updatedAt: now,
+    });
+
+    // If this was primary, promote another active branch to primary if available
+    if (branch.isPrimary && branch.organizationId) {
+      const siblingQuery = branch.applicationId
+        ? ctx.db
+            .query("branches")
+            .withIndex("by_org_and_app", (q: any) =>
+              q.eq("organizationId", branch.organizationId!).eq("applicationId", branch.applicationId!)
+            )
+        : ctx.db
+            .query("branches")
+            .withIndex("by_organizationId", (q: any) =>
+              q.eq("organizationId", branch.organizationId!)
+            );
+
+      const siblings = await siblingQuery.collect();
+      const activeSibling = siblings.find(
+        (b: any) => b._id !== args.branchId && b.isActive !== false && b.status !== "archived" && b.status !== "deleted" && b.status !== "inactive"
+      );
+
+      if (activeSibling) {
+        await ctx.db.patch(activeSibling._id, {
+          isPrimary: true,
+          updatedAt: now,
+        });
+      }
+    }
+
+    // Audit log
+    try {
+      if (branch.workspaceId) {
+        await ctx.db.insert("workspaceAuditLogs", {
+          workspaceId: branch.workspaceId,
+          actorUserId: effectiveUserId,
+          eventType: "workspace.branch_deactivated",
+          entityType: "branch",
+          entityId: args.branchId,
+          severity: "info",
+          metadata: { branchName: branch.name },
+          createdAt: now,
+        });
+      }
+
+      if (branch.organizationId) {
+        await ctx.db.insert("auditLogs", {
+          actorUserId: effectiveUserId as any,
+          organizationId: branch.organizationId,
+          action: "workspace.branch_deactivated",
+          eventType: "workspace.branch_deactivated",
+          resource: "branch",
+          entityType: "branch",
+          entityId: args.branchId,
+          severity: "info",
+          metadata: { branchName: branch.name },
+          timestamp: now,
+          createdAt: now,
+        });
+      }
+    } catch {}
+
+    // Notification
+    try {
+      if (effectiveUserId) {
+        await ctx.db.insert("notifications", {
+          userId: effectiveUserId,
+          type: "branch_deactivated",
+          title: "Branch Deactivated",
+          body: `Branch deactivated: ${branch.name}`,
+          status: "UNREAD",
+          severity: "INFO",
+          channel: "IN_APP",
+          data: { branchId: args.branchId },
+          createdAt: now,
+        });
+      }
+    } catch {}
+
+    return {
+      success: true,
+      branchId: args.branchId,
+    };
+  },
+});
+
+/**
+ * Query: Get full branch details with its operational settings
+ */
+export const getBranchSettings = query({
+  args: {
+    branchId: v.union(v.id("branches"), v.string()),
+  },
+  handler: async (ctx, args) => {
+    let branch: any = null;
+    try {
+      branch = await ctx.db.get(args.branchId as any);
+    } catch {}
+    if (!branch) return null;
+
+    const settings = await ctx.db
+      .query("branchSettings")
+      .withIndex("by_branch", (q) => q.eq("branchId", branch._id))
+      .first();
+
+    const defaultHours = {
+      monday: { open: "08:00", close: "18:00", closed: false },
+      tuesday: { open: "08:00", close: "18:00", closed: false },
+      wednesday: { open: "08:00", close: "18:00", closed: false },
+      thursday: { open: "08:00", close: "18:00", closed: false },
+      friday: { open: "08:00", close: "18:00", closed: false },
+      saturday: { open: "09:00", close: "17:00", closed: false },
+      sunday: { open: "10:00", close: "16:00", closed: true },
+    };
+
+    return {
+      branchId: branch._id,
+      workspaceId: branch.workspaceId,
+      organizationId: branch.organizationId,
+      name: branch.name,
+      code: branch.code || "",
+      description: branch.description || "",
+      logoUrl: branch.logoUrl || "",
+      isPrimary: Boolean(branch.isPrimary),
+      status: branch.status || "active",
+      isActive: branch.isActive ?? true,
+      // Contact
+      phone: branch.phone || "",
+      email: branch.email || "",
+      managerId: branch.managerId,
+      // Address
+      country: branch.country || "Nigeria",
+      state: branch.state || "",
+      stateCode: branch.stateCode || "",
+      lga: branch.lga || "",
+      city: branch.city || "",
+      street: branch.street || "",
+      blockNumber: branch.blockNumber || "",
+      area: branch.area || "",
+      landmark: branch.landmark || "",
+      postalCode: branch.postalCode || "",
+      formattedAddress: branch.formattedAddress || branch.address || "",
+      // Operational settings
+      openingHours: settings?.openingHours || defaultHours,
+      receiptFooter: settings?.receiptFooter || "",
+      negativeStockAllowed: settings?.negativeStockAllowed ?? false,
+      lowStockThreshold: settings?.lowStockThreshold ?? 10,
+      createdAt: branch.createdAt,
+      updatedAt: branch.updatedAt,
+    };
+  },
+});
+
+/**
+ * Mutation: Update branch operational settings
+ */
+export const updateBranchSettings = mutation({
+  args: {
+    branchId: v.union(v.id("branches"), v.string()),
+    openingHours: v.optional(v.any()),
+    receiptFooter: v.optional(v.string()),
+    negativeStockAllowed: v.optional(v.boolean()),
+    lowStockThreshold: v.optional(v.number()),
+    callerUserId: v.optional(v.union(v.id("users"), v.string())),
+  },
+  handler: async (ctx, args) => {
+    let branch: any = null;
+    try {
+      branch = await ctx.db.get(args.branchId as any);
+    } catch {}
+    if (!branch) throw new Error("Branch not found");
+
+    const now = Date.now();
+
+    const existing = await ctx.db
+      .query("branchSettings")
+      .withIndex("by_branch", (q) => q.eq("branchId", branch._id))
+      .first();
+
+    const payload = {
+      branchId: branch._id,
+      workspaceId: branch.workspaceId || (branch.organizationId as any),
+      openingHours: args.openingHours !== undefined ? args.openingHours : existing?.openingHours,
+      receiptFooter: args.receiptFooter !== undefined ? args.receiptFooter : existing?.receiptFooter,
+      negativeStockAllowed: args.negativeStockAllowed !== undefined ? args.negativeStockAllowed : existing?.negativeStockAllowed,
+      lowStockThreshold: args.lowStockThreshold !== undefined ? args.lowStockThreshold : existing?.lowStockThreshold,
+      updatedAt: now,
+    };
+
+    if (existing) {
+      await ctx.db.patch(existing._id, payload);
+    } else {
+      await ctx.db.insert("branchSettings", {
+        ...payload,
+        createdAt: now,
+      });
+    }
+
+    if (args.callerUserId && branch.workspaceId) {
+      await ctx.db.insert("workspaceAuditLogs", {
+        workspaceId: branch.workspaceId,
+        branchId: branch._id,
+        actorUserId: args.callerUserId as any,
+        action: "branch.operational_updated",
+        eventType: "branch.operational_updated",
+        resourceType: "branch_settings",
+        resourceId: branch._id,
+        afterValues: payload,
+        createdAt: now,
+      });
+    }
+
+    return { success: true };
+  },
+});
+
+/**
+ * Mutation: Set a branch as primary branch
+ */
+export const setPrimaryBranch = mutation({
+  args: {
+    branchId: v.union(v.id("branches"), v.string()),
+    callerUserId: v.optional(v.union(v.id("users"), v.string())),
+  },
+  handler: async (ctx, args) => {
+    let branch: any = null;
+    try {
+      branch = await ctx.db.get(args.branchId as any);
+    } catch {}
+    if (!branch) throw new Error("Branch not found");
+
+    const now = Date.now();
+
+    // Query all sibling branches
+    let siblings: any[] = [];
+    if (branch.workspaceId) {
+      siblings = await ctx.db
+        .query("branches")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", branch.workspaceId!))
+        .collect();
+    } else if (branch.organizationId) {
+      siblings = await ctx.db
+        .query("branches")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", branch.organizationId!))
+        .collect();
+    }
+
+    // Unset existing primary branches
+    for (const b of siblings) {
+      if (b.isPrimary && b._id !== branch._id) {
+        await ctx.db.patch(b._id, { isPrimary: false, updatedAt: now });
+      }
+    }
+
+    // Set target branch as primary
+    await ctx.db.patch(branch._id, { isPrimary: true, updatedAt: now });
+
+    if (args.callerUserId && branch.workspaceId) {
+      await ctx.db.insert("workspaceAuditLogs", {
+        workspaceId: branch.workspaceId,
+        branchId: branch._id,
+        actorUserId: args.callerUserId as any,
+        action: "branch.set_primary",
+        eventType: "branch.set_primary",
+        resourceType: "branch",
+        resourceId: branch._id,
+        createdAt: now,
+      });
+    }
+
+    return { success: true };
+  },
+});
+
+/**
+ * Mutation: Suspend a branch
+ */
+export const suspendBranch = mutation({
+  args: {
+    branchId: v.union(v.id("branches"), v.string()),
+    callerUserId: v.optional(v.union(v.id("users"), v.string())),
+  },
+  handler: async (ctx, args) => {
+    let branch: any = null;
+    try {
+      branch = await ctx.db.get(args.branchId as any);
+    } catch {}
+    if (!branch) throw new Error("Branch not found");
+
+    const now = Date.now();
+    await ctx.db.patch(branch._id, {
+      status: "suspended",
+      isActive: false,
+      updatedAt: now,
+    });
+
+    if (args.callerUserId && branch.workspaceId) {
+      await ctx.db.insert("workspaceAuditLogs", {
+        workspaceId: branch.workspaceId,
+        branchId: branch._id,
+        actorUserId: args.callerUserId as any,
+        action: "branch.suspended",
+        eventType: "branch.suspended",
+        resourceType: "branch",
+        resourceId: branch._id,
+        createdAt: now,
+      });
+    }
+
+    return { success: true };
+  },
+});
+
+/**
+ * Mutation: Restore a suspended branch
+ */
+export const restoreBranch = mutation({
+  args: {
+    branchId: v.union(v.id("branches"), v.string()),
+    callerUserId: v.optional(v.union(v.id("users"), v.string())),
+  },
+  handler: async (ctx, args) => {
+    let branch: any = null;
+    try {
+      branch = await ctx.db.get(args.branchId as any);
+    } catch {}
+    if (!branch) throw new Error("Branch not found");
+
+    const now = Date.now();
+    await ctx.db.patch(branch._id, {
+      status: "active",
+      isActive: true,
+      updatedAt: now,
+    });
+
+    if (args.callerUserId && branch.workspaceId) {
+      await ctx.db.insert("workspaceAuditLogs", {
+        workspaceId: branch.workspaceId,
+        branchId: branch._id,
+        actorUserId: args.callerUserId as any,
+        action: "branch.restored",
+        eventType: "branch.restored",
+        resourceType: "branch",
+        resourceId: branch._id,
+        createdAt: now,
+      });
+    }
+
+    return { success: true };
+  },
+});
+
+/**
+ * Mutation: Archive branch (preserves historical data, verifies at least one branch remains)
+ */
+export const archiveBranch = mutation({
+  args: {
+    branchId: v.union(v.id("branches"), v.string()),
+    callerUserId: v.optional(v.union(v.id("users"), v.string())),
+  },
+  handler: async (ctx, args) => {
+    let branch: any = null;
+    try {
+      branch = await ctx.db.get(args.branchId as any);
+    } catch {}
+    if (!branch) throw new Error("Branch not found");
+
+    const now = Date.now();
+
+    // Check sibling active branches
+    let siblings: any[] = [];
+    if (branch.workspaceId) {
+      siblings = await ctx.db
+        .query("branches")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", branch.workspaceId!))
+        .collect();
+    } else if (branch.organizationId) {
+      siblings = await ctx.db
+        .query("branches")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", branch.organizationId!))
+        .collect();
+    }
+
+    const activeSiblings = siblings.filter(
+      (b) => b._id !== branch._id && b.status !== "archived" && b.status !== "deleted"
+    );
+
+    if (activeSiblings.length === 0) {
+      throw new Error("Cannot archive the only active branch. Organizations must maintain at least one active branch.");
+    }
+
+    // If primary, transfer primary status to the first available active sibling
+    if (branch.isPrimary && activeSiblings[0]) {
+      await ctx.db.patch(activeSiblings[0]._id, {
+        isPrimary: true,
+        updatedAt: now,
+      });
+    }
+
+    await ctx.db.patch(branch._id, {
+      status: "archived",
+      isActive: false,
+      isPrimary: false,
+      deletedAt: now,
+      updatedAt: now,
+    });
+
+    if (args.callerUserId && branch.workspaceId) {
+      await ctx.db.insert("workspaceAuditLogs", {
+        workspaceId: branch.workspaceId,
+        branchId: branch._id,
+        actorUserId: args.callerUserId as any,
+        action: "branch.archived",
+        eventType: "branch.archived",
+        resourceType: "branch",
+        resourceId: branch._id,
+        createdAt: now,
+      });
+    }
+
+    return { success: true };
+  },
+});
+
+export const getBranchesForApplication = getBranchesForOrgApp;
 export const update = updateBranch;
 export const create = createBranch;
+
+

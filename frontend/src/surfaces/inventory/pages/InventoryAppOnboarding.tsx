@@ -12,8 +12,7 @@ import {
   ArrowLeft,
   Check,
   CheckCircle2,
-  Layers,
-  Store,
+  ShieldCheck,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -50,7 +49,7 @@ const PRIORITY_FEATURES_OPTIONS = [
   { id: 'other', label: 'Other Core Feature', desc: 'Custom tools tailored for our workflow' },
 ];
 
-// Question 5: Team Comfort Level
+// Question 4: Team Comfort Level
 const TEAM_COMFORT_OPTIONS = [
   { id: 'very', label: 'Very comfortable', desc: 'Tech-savvy team that learns software very quickly' },
   { id: 'somewhat', label: 'Somewhat comfortable', desc: 'Regular smartphone users who prefer clean, guided steps' },
@@ -68,12 +67,11 @@ export const InventoryAppOnboarding: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
 
-  // Questionnaire States
-  const [currentStep, setCurrentStep] = useState<number>(1); // 1 to 5
+  // Questionnaire States (4 Questions)
+  const [currentStep, setCurrentStep] = useState<number>(1); // 1 to 4
   const [previousTools, setPreviousTools] = useState<string[]>([]);
   const [painPoints, setPainPoints] = useState<string[]>([]);
   const [priorityFeatures, setPriorityFeatures] = useState<string[]>([]);
-  const [needsMultiBranch, setNeedsMultiBranch] = useState<boolean | null>(null);
   const [teamComfortLevel, setTeamComfortLevel] = useState<string>('somewhat');
 
   const activeOrgId = orgParam || currentWorkspace?.id || localStorage.getItem('orvio_active_workspace_id') || workspaces[0]?.workspace?.id;
@@ -95,7 +93,7 @@ export const InventoryAppOnboarding: React.FC = () => {
             await selectWorkspace(resolvedOrg).catch(() => {});
           }
 
-          // Verify that application is activated for this organization (US-A2)
+          // Verify that application is activated for this organization
           const appStatus = await api
             .get<{ success: boolean; data?: { active: boolean } }>(
               `/organizations/${resolvedOrg}/applications/inventory/status`
@@ -113,13 +111,7 @@ export const InventoryAppOnboarding: React.FC = () => {
             .catch(() => null);
 
           if (statusRes?.completed) {
-            // If already completed, check branch preferences or forward
-            const isMulti = statusRes.responses?.needsMultiBranch;
-            if (isMulti) {
-              navigate(`/onboard/branch-multi?org=${resolvedOrg}`, { replace: true });
-            } else {
-              navigate(`/onboard/branch-single?org=${resolvedOrg}`, { replace: true });
-            }
+            navigate(`/onboard/branch-single?org=${resolvedOrg}`, { replace: true });
             return;
           }
         }
@@ -154,10 +146,28 @@ export const InventoryAppOnboarding: React.FC = () => {
   };
 
   const handleNext = () => {
-    if (currentStep < 5) {
+    // Validate current step before advancing
+    if (currentStep === 1 && previousTools.length === 0) {
+      toast.error('Please select at least one method you used previously to continue.');
+      return;
+    }
+    if (currentStep === 2 && painPoints.length === 0) {
+      toast.error('Please select at least one pain point to continue.');
+      return;
+    }
+    if (currentStep === 3 && priorityFeatures.length === 0) {
+      toast.error('Please select at least one priority feature to continue.');
+      return;
+    }
+    if (currentStep === 4 && !teamComfortLevel) {
+      toast.error('Please select your team comfort level.');
+      return;
+    }
+
+    if (currentStep < 4) {
       setCurrentStep(currentStep + 1);
     } else {
-      handleSubmit(false);
+      handleSubmit();
     }
   };
 
@@ -167,7 +177,7 @@ export const InventoryAppOnboarding: React.FC = () => {
     }
   };
 
-  const handleSubmit = async (skipAll: boolean = false) => {
+  const handleSubmit = async () => {
     if (!activeOrgId) {
       toast.error('No organization selected.');
       return;
@@ -175,28 +185,17 @@ export const InventoryAppOnboarding: React.FC = () => {
 
     setIsLoading(true);
     try {
-      const finalNeedsMulti = skipAll ? false : needsMultiBranch ?? false;
-
       const payload = {
-        previousTools: skipAll ? [] : previousTools,
-        painPoints: skipAll ? [] : painPoints,
-        priorityFeatures: skipAll ? [] : priorityFeatures,
-        needsMultiBranch: finalNeedsMulti,
-        teamComfortLevel: skipAll ? 'somewhat' : teamComfortLevel,
+        previousTools,
+        painPoints,
+        priorityFeatures,
+        teamComfortLevel,
       };
 
       await api.post(`/organizations/${activeOrgId}/inventory-onboarding`, payload);
 
-      toast.success('Inventory preferences saved!');
-
-      // Route according to US-3:
-      // If single location -> US-4A /onboard/branch-single
-      // If multiple branches -> US-4B /onboard/branch-multi
-      if (finalNeedsMulti) {
-        navigate(`/onboard/branch-multi?org=${activeOrgId}`);
-      } else {
-        navigate(`/onboard/branch-single?org=${activeOrgId}`);
-      }
+      toast.success('Inventory configuration saved!');
+      navigate(`/onboard/branch-single?org=${activeOrgId}`);
     } catch (err: any) {
       toast.error(err?.message || 'Failed to save Inventory preferences.');
     } finally {
@@ -225,20 +224,18 @@ export const InventoryAppOnboarding: React.FC = () => {
             <div className="text-xs font-bold text-white flex items-center gap-1.5">
               <span>{activeOrgName}</span>
               <span className="text-slate-500">•</span>
-              <span className="text-[#c79dbd]">Inventory App Onboarding</span>
+              <span className="text-[#c79dbd]">Inventory App Setup</span>
             </div>
-            <p className="text-[10px] text-slate-400">Help us tailor Inventory for your business</p>
+            <p className="text-[10px] text-slate-400">Mandatory configuration to tailor POS & Stock tracking</p>
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => handleSubmit(true)}
-          disabled={isLoading}
-          className="text-xs text-slate-400 hover:text-white transition-colors cursor-pointer px-3 py-1.5 rounded-lg hover:bg-white/5"
-        >
-          Skip for now
-        </button>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] font-bold px-2.5 py-1 rounded-full bg-[#714b67]/20 border border-[#714b67]/30 text-[#c79dbd] flex items-center gap-1.5">
+            <ShieldCheck className="w-3.5 h-3.5 text-[#FDB02F]" />
+            <span>Required Setup</span>
+          </span>
+        </div>
       </header>
 
       {/* Main Questionnaire Container */}
@@ -248,32 +245,30 @@ export const InventoryAppOnboarding: React.FC = () => {
           <div className="flex items-center justify-between">
             <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#714b67]/20 border border-[#714b67]/30 text-[#c79dbd] text-[11px] font-bold">
               <Sparkles className="w-3 h-3 text-[#FDB02F]" />
-              <span>Question {currentStep} of 5</span>
+              <span>Question {currentStep} of 4</span>
             </div>
-            <span className="text-xs font-medium text-slate-400">Step {currentStep} / 5</span>
+            <span className="text-xs font-medium text-slate-400">Step {currentStep} / 4</span>
           </div>
 
           <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">
             {currentStep === 1 && 'How were you tracking inventory and sales before Orviohub?'}
             {currentStep === 2 && 'What is your biggest pain point with your current setup?'}
             {currentStep === 3 && 'Which features are most important to you right now?'}
-            {currentStep === 4 && 'Do you need to track multiple branches or locations?'}
-            {currentStep === 5 && 'How comfortable is your team with apps and software?'}
+            {currentStep === 4 && 'How comfortable is your team with apps and software?'}
           </h1>
 
           <p className="text-xs text-slate-400">
             {currentStep === 1 && 'Select all that apply to help us migrate or import your previous system.'}
             {currentStep === 2 && 'Choose the issues you would most like Orviohub to solve.'}
             {currentStep === 3 && 'Select up to 3 priority features to customize your shortcuts.'}
-            {currentStep === 4 && 'This determines whether we configure a single primary branch or guide you through branch setup.'}
-            {currentStep === 5 && 'We adjust interface density and helper tips based on your team’s comfort level.'}
+            {currentStep === 4 && 'We adjust interface density and helper tips based on your team’s comfort level.'}
           </p>
 
           {/* Progress bar */}
           <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
             <div
               className="bg-[#c79dbd] h-full rounded-full transition-all duration-300"
-              style={{ width: `${(currentStep / 5) * 100}%` }}
+              style={{ width: `${(currentStep / 4) * 100}%` }}
             />
           </div>
         </div>
@@ -392,95 +387,8 @@ export const InventoryAppOnboarding: React.FC = () => {
           </div>
         )}
 
-        {/* QUESTION 4: Multi-Branch / Location Need */}
+        {/* QUESTION 4: Team Comfort Level */}
         {currentStep === 4 && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* Option A: Single Location */}
-            <div
-              onClick={() => setNeedsMultiBranch(false)}
-              className={cn(
-                'p-6 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between space-y-4',
-                needsMultiBranch === false
-                  ? 'bg-gradient-to-br from-[#291325] via-[#140b12] to-black border-[#714b67] shadow-xl shadow-[#714b67]/25 ring-1 ring-[#714b67]'
-                  : 'bg-[#120b10] border-white/10 hover:border-white/25 hover:bg-white/[0.02]'
-              )}
-            >
-              <div className="space-y-3">
-                <div className="w-12 h-12 rounded-xl bg-[#714b67]/25 border border-[#714b67]/40 flex items-center justify-center text-white font-bold">
-                  <Store className="w-6 h-6" />
-                </div>
-                <div className="space-y-1.5">
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-base font-bold text-white">One Primary Location</h3>
-                    <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-full font-bold">
-                      Free Trial & Standard
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                    Single retail shop, store, or warehouse. We will auto-create your "Main Store" so you can start POS checkouts and stock tracking immediately.
-                  </p>
-                </div>
-              </div>
-              <div className="pt-2 flex items-center justify-between text-xs font-semibold">
-                <span className={needsMultiBranch === false ? 'text-white' : 'text-slate-500'}>
-                  1 Branch (Main Store)
-                </span>
-                <div
-                  className={cn(
-                    'w-5 h-5 rounded-full border flex items-center justify-center transition-colors',
-                    needsMultiBranch === false ? 'bg-[#714b67] border-[#714b67] text-white' : 'border-white/20'
-                  )}
-                >
-                  {needsMultiBranch === false && <Check className="w-3 h-3" />}
-                </div>
-              </div>
-            </div>
-
-            {/* Option B: Multiple Branches */}
-            <div
-              onClick={() => setNeedsMultiBranch(true)}
-              className={cn(
-                'p-6 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between space-y-4',
-                needsMultiBranch === true
-                  ? 'bg-gradient-to-br from-[#291325] via-[#140b12] to-black border-[#714b67] shadow-xl shadow-[#714b67]/25 ring-1 ring-[#714b67]'
-                  : 'bg-[#120b10] border-white/10 hover:border-white/25 hover:bg-white/[0.02]'
-              )}
-            >
-              <div className="space-y-3">
-                <div className="w-12 h-12 rounded-xl bg-[#714b67]/25 border border-[#714b67]/40 flex items-center justify-center text-white font-bold">
-                  <Layers className="w-6 h-6" />
-                </div>
-                <div className="space-y-1.5">
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-base font-bold text-white">Multiple Branches</h3>
-                    <span className="text-[10px] bg-purple-500/15 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full font-bold">
-                      Standard Plan
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                    Two or more locations (up to 3 branches on Standard Plan). Configure individual stock tracking, separate POS registers, and manager assignments per location.
-                  </p>
-                </div>
-              </div>
-              <div className="pt-2 flex items-center justify-between text-xs font-semibold">
-                <span className={needsMultiBranch === true ? 'text-white' : 'text-slate-500'}>
-                  Up to 3 Branches (Standard)
-                </span>
-                <div
-                  className={cn(
-                    'w-5 h-5 rounded-full border flex items-center justify-center transition-colors',
-                    needsMultiBranch === true ? 'bg-[#714b67] border-[#714b67] text-white' : 'border-white/20'
-                  )}
-                >
-                  {needsMultiBranch === true && <Check className="w-3 h-3" />}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* QUESTION 5: Team Comfort Level */}
-        {currentStep === 5 && (
           <div className="space-y-3">
             {TEAM_COMFORT_OPTIONS.map((opt) => {
               const selected = teamComfortLevel === opt.id;
@@ -495,14 +403,14 @@ export const InventoryAppOnboarding: React.FC = () => {
                       : 'bg-[#120b10] border-white/10 hover:border-white/25 hover:bg-white/[0.02]'
                   )}
                 >
-                  <div className="space-y-1">
+                  <div className="space-y-0.5">
                     <p className="text-xs font-bold text-white">{opt.label}</p>
                     <p className="text-[11px] text-slate-400 leading-relaxed">{opt.desc}</p>
                   </div>
                   <div
                     className={cn(
                       'w-5 h-5 rounded-full border flex items-center justify-center shrink-0 transition-colors',
-                      selected ? 'bg-[#714b67] border-[#714b67] text-white' : 'border-white/20 bg-black/40'
+                      selected ? 'bg-[#714b67] border-[#714b67] text-white' : 'border-white/20'
                     )}
                   >
                     {selected && <Check className="w-3 h-3" />}
@@ -513,58 +421,46 @@ export const InventoryAppOnboarding: React.FC = () => {
           </div>
         )}
 
-        {/* Navigation & Submission Controls */}
-        <div className="flex items-center justify-between pt-6 border-t border-white/10">
-          <div>
-            {currentStep > 1 && (
-              <Button
-                type="button"
-                variant="outline"
-                onClick={handleBack}
-                disabled={isLoading}
-                className="border-white/10 bg-white/5 hover:bg-white/10 text-slate-300 text-xs px-4"
-              >
-                <ArrowLeft className="w-3.5 h-3.5 mr-1.5" />
-                <span>Back</span>
-              </Button>
+        {/* Navigation Buttons */}
+        <div className="pt-6 border-t border-white/10 flex items-center justify-between">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={currentStep === 1 || isLoading}
+            onClick={handleBack}
+            className="border-white/10 hover:bg-white/5 text-xs text-slate-300 disabled:opacity-30 cursor-pointer"
+          >
+            <ArrowLeft className="w-3.5 h-3.5 mr-1.5" />
+            <span>Back</span>
+          </Button>
+
+          <Button
+            type="button"
+            onClick={handleNext}
+            disabled={isLoading}
+            className="px-6 rounded-xl bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/25 transition cursor-pointer flex items-center gap-2"
+          >
+            {isLoading ? (
+              <>
+                <Spinner size="sm" className="text-white" />
+                <span>Saving Setup...</span>
+              </>
+            ) : currentStep < 4 ? (
+              <>
+                <span>Next Question</span>
+                <ArrowRight className="w-4 h-4" />
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                <span>Complete Setup & Proceed</span>
+              </>
             )}
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={handleNext}
-              className="text-xs text-slate-400 hover:text-white transition-colors cursor-pointer px-2"
-            >
-              Skip this question
-            </button>
-
-            <Button
-              type="button"
-              onClick={handleNext}
-              disabled={isLoading || (currentStep === 4 && needsMultiBranch === null)}
-              className="bg-[#714b67] hover:bg-[#86597a] text-white font-bold text-xs px-6 py-2.5 shadow-lg shadow-[#714b67]/30 cursor-pointer"
-            >
-              {isLoading ? (
-                <>
-                  <Spinner className="w-4 h-4 mr-2" />
-                  <span>Saving...</span>
-                </>
-              ) : currentStep < 5 ? (
-                <>
-                  <span>Next</span>
-                  <ArrowRight className="w-3.5 h-3.5 ml-1.5" />
-                </>
-              ) : (
-                <>
-                  <span>Complete Onboarding</span>
-                  <CheckCircle2 className="w-3.5 h-3.5 ml-1.5" />
-                </>
-              )}
-            </Button>
-          </div>
+          </Button>
         </div>
       </main>
     </div>
   );
 };
+
+export default InventoryAppOnboarding;

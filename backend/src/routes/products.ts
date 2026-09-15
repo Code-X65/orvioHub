@@ -180,15 +180,25 @@ export const productsRoutes: FastifyPluginAsync = async (fastify) => {
       };
       const body = (request.body as { planId?: string }) || {};
 
+      if (productKey.toLowerCase() !== 'inventory') {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: 'APPLICATION_NOT_AVAILABLE',
+            message: 'This application is not available yet.',
+          },
+        });
+      }
+
       try {
         const product: any = await dataService.getProductByKey(productKey);
         const s = (product?.status || '').toLowerCase();
-        if (s !== 'active') {
+        if (s !== 'active' && s !== 'available') {
           return reply.status(400).send({
             success: false,
             error: {
-              code: 'PRODUCT_NOT_ACTIVE',
-              message: 'This product is not yet available for activation.',
+              code: 'APPLICATION_NOT_AVAILABLE',
+              message: 'This application is not available for activation.',
             },
           });
         }
@@ -290,6 +300,15 @@ export const productsRoutes: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       const { productKey } = request.params as { productKey: string };
+      if (productKey.toLowerCase() !== 'inventory') {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: 'APPLICATION_NOT_AVAILABLE',
+            message: 'This application is not available yet.',
+          },
+        });
+      }
       try {
         const product = await dataService.getProductByKey(productKey);
         return reply.send({
@@ -300,8 +319,8 @@ export const productsRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.status(404).send({
           success: false,
           error: {
-            code: ERROR_CODES.NOT_FOUND,
-            message: err.message || 'Product not found.',
+            code: 'APPLICATION_NOT_AVAILABLE',
+            message: err.message || 'This application is not available yet.',
           },
         });
       }

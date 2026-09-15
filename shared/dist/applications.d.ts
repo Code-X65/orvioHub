@@ -1,4 +1,4 @@
-export type ApplicationKey = "marketing" | "accounts" | "home" | "launcher" | "inventory" | "billing" | "taskmanagement";
+export type ApplicationKey = "marketing" | "accounts" | "home" | "launcher" | "inventory" | "pos" | "booking" | "gym" | "billing" | "taskmanagement";
 export type ApplicationDefinition = {
     key: ApplicationKey;
     name: string;

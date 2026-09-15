@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   Package,
+  Building2,
   Loader2,
   RefreshCw,
   Plus,
@@ -431,13 +433,23 @@ export const Products: React.FC = () => {
                   </div>
 
                   <div className="flex items-center justify-between pt-2 border-t border-slate-800/40">
-                    <button
-                      onClick={() => handleOpenWaitlist(p)}
-                      className="text-xs text-slate-400 hover:text-amber-300 flex items-center gap-1.5 transition"
-                    >
-                      <Bell className="w-3.5 h-3.5 text-amber-400" />
-                      <span>Waitlist</span>
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <Link
+                        to={`/applications/${p.key}`}
+                        className="text-xs text-brand-400 hover:text-brand-300 flex items-center gap-1 font-semibold transition"
+                      >
+                        <Building2 className="w-3.5 h-3.5" />
+                        <span>Tenants ({p.activationCount ?? 0})</span>
+                      </Link>
+
+                      <button
+                        onClick={() => handleOpenWaitlist(p)}
+                        className="text-xs text-slate-400 hover:text-amber-300 flex items-center gap-1 transition"
+                      >
+                        <Bell className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Waitlist</span>
+                      </button>
+                    </div>
 
                     <div className="flex items-center gap-2">
                       <button

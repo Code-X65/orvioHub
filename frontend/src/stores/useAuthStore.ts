@@ -132,6 +132,8 @@ interface AuthState {
   setOnboardingStatus: (status: OnboardingState) => void;
 }
 
+let inFlightRefreshPromise: Promise<void> | null = null;
+
 const initialToken = typeof window !== 'undefined' ? localStorage.getItem('orvio_auth_token') : null;
 const initialUser = getStoredUser();
 
@@ -166,7 +168,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       refreshToken = data.refreshToken;
     }
 
-    const memberships = ('memberships' in data && data.memberships) ? data.memberships : get().memberships;
+    const memberships = data.memberships || [];
     const storedActiveOrgId = localStorage.getItem('orvio_active_org_id');
     const validActiveOrgId = memberships.some((m) => m.organization.id === storedActiveOrgId)
       ? storedActiveOrgId
@@ -393,67 +395,77 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   refreshSession: async () => {
-    extractHandoffTokensFromUrl();
-    const token = localStorage.getItem('orvio_auth_token');
-    const refreshToken = localStorage.getItem('orvio_refresh_token');
-
-    try {
-      const meData = await api.get<MeResponse>('/auth/me');
-      get().setAuthData(meData, true);
-    } catch (err: any) {
-      // /auth/me failed — try a silent token refresh before giving up.
-      // This handles cross-subdomain visits where localStorage is empty but the
-      // orvio_refresh_token cookie is still valid (e.g. landing on marketing
-      // surface after 15+ min with no localStorage token on that origin).
-      const storedRefresh = refreshToken || null;
-      if (storedRefresh || (!token && !refreshToken)) {
-        try {
-          const refreshRes = await fetch(`${(await import('../lib/api')).API_ORIGIN}/api/v1/auth/refresh`, {
-            method: 'POST',
-            credentials: 'include', // sends orvio_refresh_token cookie
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ refreshToken: storedRefresh || '' }),
-          });
-          if (refreshRes.ok) {
-            const json = await refreshRes.json();
-            if (json.success && json.data?.token) {
-              localStorage.setItem('orvio_auth_token', json.data.token);
-              if (json.data.refreshToken) {
-                localStorage.setItem('orvio_refresh_token', json.data.refreshToken);
-              }
-              // Now re-fetch /auth/me with the new token
-              const meData = await api.get<MeResponse>('/auth/me');
-              get().setAuthData(meData, true);
-              return;
-            }
-          }
-        } catch {
-          // Silent refresh also failed — fall through to unauthenticated state
-        }
-      }
-
-      // Silent refresh and /auth/me both failed — session is invalidated/logged out.
-      // Purge all stale local tokens on this subdomain
-      localStorage.removeItem('orvio_auth_token');
-      localStorage.removeItem('orvio_refresh_token');
-      localStorage.removeItem('orvio_active_org_id');
-      localStorage.removeItem('orvio_active_workspace_id');
-      saveStoredUser(null);
-      try {
-        useWorkspaceStore.getState().clearWorkspace();
-      } catch {
-        // Safe fallback
-      }
-      set({
-        isInitialized: true,
-        isAuthenticated: false,
-        user: null,
-        token: null,
-        memberships: [],
-        activeOrganizationId: null,
-        onboardingStatus: null,
-      });
+    if (inFlightRefreshPromise) {
+      return inFlightRefreshPromise;
     }
+
+    inFlightRefreshPromise = (async () => {
+      extractHandoffTokensFromUrl();
+      const token = localStorage.getItem('orvio_auth_token');
+      const refreshToken = localStorage.getItem('orvio_refresh_token');
+
+      try {
+        const meData = await api.get<MeResponse>('/auth/me');
+        get().setAuthData(meData, true);
+      } catch (err: any) {
+        // /auth/me failed — try a silent token refresh before giving up.
+        // This handles cross-subdomain visits where localStorage is empty but the
+        // orvio_refresh_token cookie is still valid (e.g. landing on marketing
+        // surface after 15+ min with no localStorage token on that origin).
+        const storedRefresh = refreshToken || null;
+        if (storedRefresh || (!token && !refreshToken)) {
+          try {
+            const refreshRes = await fetch(`${(await import('../lib/api')).API_ORIGIN}/api/v1/auth/refresh`, {
+              method: 'POST',
+              credentials: 'include', // sends orvio_refresh_token cookie
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ refreshToken: storedRefresh || '' }),
+            });
+            if (refreshRes.ok) {
+              const json = await refreshRes.json();
+              if (json.success && json.data?.token) {
+                localStorage.setItem('orvio_auth_token', json.data.token);
+                if (json.data.refreshToken) {
+                  localStorage.setItem('orvio_refresh_token', json.data.refreshToken);
+                }
+                // Now re-fetch /auth/me with the new token
+                const meData = await api.get<MeResponse>('/auth/me');
+                get().setAuthData(meData, true);
+                return;
+              }
+            }
+          } catch {
+            // Silent refresh also failed — fall through to unauthenticated state
+          }
+        }
+
+        // Silent refresh and /auth/me both failed — session is invalidated/logged out.
+        // Purge all stale local tokens on this subdomain
+        localStorage.removeItem('orvio_auth_token');
+        localStorage.removeItem('orvio_refresh_token');
+        localStorage.removeItem('orvio_active_org_id');
+        localStorage.removeItem('orvio_active_workspace_id');
+        saveStoredUser(null);
+        try {
+          useWorkspaceStore.getState().clearWorkspace();
+        } catch {
+          // Safe fallback
+        }
+        set({
+          isInitialized: true,
+          isAuthenticated: false,
+          user: null,
+          token: null,
+          memberships: [],
+          activeOrganizationId: null,
+          onboardingStatus: null,
+        });
+      } finally {
+        inFlightRefreshPromise = null;
+      }
+    })();
+
+    return inFlightRefreshPromise;
   },
 
   setOnboardingStatus: (status) => {

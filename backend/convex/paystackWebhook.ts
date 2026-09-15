@@ -1,41 +1,86 @@
 import { mutation, MutationCtx } from "./_generated/server.js";
 import { v } from "convex/values";
+import { resolveOrganization } from "./applications.js";
 
 export const handleWebhook = mutation({
   args: {
     event: v.string(),
     data: v.any(),
+    providerEventId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const { event, data } = args;
+    const eventId = args.providerEventId || String(data?.id || data?.reference || `evt_${Date.now()}`);
 
-    switch (event) {
-      case "charge.success":
-        await handlePaymentSuccess(ctx, data);
-        break;
+    // 1. Webhook Deduplication: Check if providerEventId already exists
+    if (eventId) {
+      const existingEvent = await ctx.db
+        .query("billingEvents")
+        .withIndex("by_provider_event_id", (q) => q.eq("providerEventId", eventId))
+        .first();
 
-      case "subscription.create":
-        await handleSubscriptionCreate(ctx, data);
-        break;
-
-      case "invoice.payment_success":
-        await handleInvoicePayment(ctx, data);
-        break;
-
-      case "subscription.disable":
-        await handleSubscriptionCancel(ctx, data);
-        break;
-
-      default:
-        console.log("Unhandled Paystack event:", event);
+      if (existingEvent) {
+        await ctx.db.insert("auditLogs", {
+          action: "billing.webhook_duplicate",
+          resource: `webhook:${eventId}`,
+          severity: "info",
+          metadata: { eventId, eventType: event },
+          timestamp: Date.now(),
+        });
+        return { status: "already_processed", eventId };
+      }
     }
 
-    return { status: "processed" };
+    // Insert billing event
+    const billingEventId = await ctx.db.insert("billingEvents", {
+      provider: "paystack",
+      providerEventId: eventId,
+      eventType: event,
+      status: "received",
+      payloadMetadata: data,
+      createdAt: Date.now(),
+    });
+
+    try {
+      switch (event) {
+        case "charge.success":
+          await handlePaymentSuccess(ctx, data, eventId);
+          break;
+
+        case "subscription.create":
+          await handleSubscriptionCreate(ctx, data, eventId);
+          break;
+
+        case "invoice.payment_success":
+          await handleInvoicePayment(ctx, data, eventId);
+          break;
+
+        case "subscription.disable":
+          await handleSubscriptionCancel(ctx, data, eventId);
+          break;
+
+        default:
+          console.log("Unhandled Paystack event:", event);
+      }
+
+      await ctx.db.patch(billingEventId, {
+        status: "processed",
+        processedAt: Date.now(),
+      });
+    } catch (err: any) {
+      await ctx.db.patch(billingEventId, {
+        status: "failed",
+        errorMessage: err?.message || String(err),
+      });
+      throw err;
+    }
+
+    return { status: "processed", eventId };
   },
 });
 
-async function handlePaymentSuccess(ctx: MutationCtx, data: any) {
-  const { reference, amount, paid_at, authorization, metadata } = data;
+async function handlePaymentSuccess(ctx: MutationCtx, data: any, eventId?: string) {
+  const { reference, amount, paid_at, authorization, metadata, customer } = data;
   const paidAmountNaira = (amount || 0) / 100;
   const paidTime = paid_at ? new Date(paid_at).getTime() : Date.now();
 
@@ -47,9 +92,110 @@ async function handlePaymentSuccess(ctx: MutationCtx, data: any) {
         .first()
     : null;
 
-  let workspaceId = payment?.workspaceId;
-  if (!workspaceId && metadata?.workspaceId) {
-    workspaceId = metadata.workspaceId as any;
+  let rawTargetId = payment?.organizationId || payment?.workspaceId || metadata?.organizationId || metadata?.workspaceId;
+  let orgId = null;
+  let workspaceId = null;
+
+  if (rawTargetId) {
+    const resolved = await resolveOrganization(ctx, String(rawTargetId));
+    orgId = resolved.orgId;
+    workspaceId = resolved.workspaceId;
+  }
+
+  // Resolve subscription
+  let subscription: any = null;
+  if (payment?.subscriptionId) {
+    subscription = await ctx.db.get(payment.subscriptionId);
+  } else if (orgId) {
+    subscription = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_organizationId", (q) => q.eq("organizationId", orgId!))
+      .first();
+  } else if (workspaceId) {
+    subscription = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId!))
+      .first();
+  }
+
+  const interval = subscription?.billingInterval || (paidAmountNaira >= 50000 ? "annual" : "monthly");
+  const periodDays = interval === "annual" ? 365 : 30;
+  const periodEnd = paidTime + periodDays * 86_400_000;
+
+  if (subscription) {
+    await ctx.db.patch(subscription._id, {
+      planKey: "standard",
+      selectedPlan: "standard",
+      activePlan: "standard",
+      status: "active",
+      checkoutStatus: "completed",
+      paymentStatus: "success",
+      entitlementStatus: "active",
+      billingInterval: interval,
+      lastPaymentDate: paidTime,
+      nextPaymentDate: periodEnd,
+      currentPeriodStart: paidTime,
+      currentPeriodEnd: periodEnd,
+      lastPaymentReference: reference,
+      trialStart: undefined,
+      trialEnd: undefined,
+      trialEndsAt: undefined,
+      activatedAt: paidTime,
+      paystackCustomerCode: customer?.customer_code || subscription.paystackCustomerCode,
+      paystackSubscriptionCode: data.subscription_code || subscription.paystackSubscriptionCode,
+      paystackPlanCode: data.plan?.plan_code || subscription.paystackPlanCode,
+      updatedAt: Date.now(),
+    });
+
+    if (subscription.workspaceId) {
+      await ctx.db.patch(subscription.workspaceId, {
+        planId: "standard",
+        status: "active",
+        updatedAt: Date.now(),
+      });
+
+      // Update workspace entitlements for standard plan
+      const existingEntitlements = await ctx.db
+        .query("workspaceEntitlements")
+        .withIndex("by_workspace", (q: any) => q.eq("workspaceId", subscription.workspaceId))
+        .collect();
+
+      const standardLimits: Record<string, number | undefined> = {
+        branches: 3,
+        members: 10,
+        products: 5000,
+        monthly_transactions: 5000,
+        inventory: undefined,
+      };
+
+      for (const [key, limit] of Object.entries(standardLimits)) {
+        const existing = existingEntitlements.find((e: any) => e.featureKey === key);
+        if (existing) {
+          await ctx.db.patch(existing._id, {
+            planId: "standard",
+            limitValue: limit,
+            enabled: true,
+            status: "active",
+            effectiveUntil: periodEnd,
+            updatedAt: Date.now(),
+          });
+        } else {
+          await ctx.db.insert("workspaceEntitlements", {
+            workspaceId: subscription.workspaceId,
+            planId: "standard",
+            featureKey: key,
+            limitValue: limit,
+            limitType: key === "inventory" ? "boolean" : "fixed",
+            enabled: true,
+            status: "active",
+            effectiveFrom: paidTime,
+            effectiveUntil: periodEnd,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          });
+        }
+      }
+    }
   }
 
   if (payment) {
@@ -57,6 +203,7 @@ async function handlePaymentSuccess(ctx: MutationCtx, data: any) {
       status: "completed",
       paystackPaymentId: String(data.id || ""),
       paystackAuthorization: authorization?.authorization_code,
+      providerEventId: eventId,
       completedAt: paidTime,
     });
 
@@ -71,128 +218,103 @@ async function handlePaymentSuccess(ctx: MutationCtx, data: any) {
         });
       }
     }
+  } else {
+    // Record payment & invoice
+    const invoiceNumber = `INV-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+    const invoiceId = await ctx.db.insert("invoices", {
+      organizationId: orgId || undefined,
+      workspaceId: workspaceId || undefined,
+      subscriptionId: subscription?._id,
+      invoiceNumber,
+      status: "paid",
+      amount: paidAmountNaira,
+      currency: "NGN",
+      dueDate: paidTime,
+      paidAt: paidTime,
+      paymentMethod: "paystack",
+      paystackPaymentId: String(data.id || ""),
+      paymentReference: reference,
+      items: [
+        {
+          description: `Orviohub Standard Plan (${interval === "annual" ? "Annual" : "Monthly"})`,
+          quantity: 1,
+          unitPrice: paidAmountNaira,
+          total: paidAmountNaira,
+        },
+      ],
+      createdAt: Date.now(),
+    });
 
-    if (payment.subscriptionId) {
-      const subscription: any = await ctx.db.get(payment.subscriptionId);
-      if (subscription) {
-        const interval = subscription.billingInterval || "monthly";
-        const periodDays = interval === "annual" ? 365 : 30;
-        await ctx.db.patch(subscription._id, {
-          planKey: "standard",
-          status: "active",
-          lastPaymentDate: paidTime,
-          nextPaymentDate: paidTime + periodDays * 86_400_000,
-          currentPeriodStart: paidTime,
-          currentPeriodEnd: paidTime + periodDays * 86_400_000,
-          updatedAt: Date.now(),
-        });
+    await ctx.db.insert("payments", {
+      organizationId: orgId || undefined,
+      workspaceId: workspaceId || undefined,
+      invoiceId,
+      subscriptionId: subscription?._id,
+      amount: paidAmountNaira,
+      currency: "NGN",
+      paymentMethod: "paystack",
+      reference,
+      provider: "paystack",
+      providerReference: reference,
+      providerEventId: eventId,
+      paystackPaymentId: String(data.id || ""),
+      paystackAuthorization: authorization?.authorization_code,
+      status: "completed",
+      createdAt: Date.now(),
+      completedAt: paidTime,
+    });
+  }
 
-        if (subscription.workspaceId) {
-          await ctx.db.patch(subscription.workspaceId, {
-            planId: "standard",
-            updatedAt: Date.now(),
-          });
-        }
-      }
-    }
-  } else if (workspaceId) {
-    // If no existing payment record, find subscription by workspace
-    const subscription = await ctx.db
-      .query("subscriptions")
-      .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId!))
-      .first();
-
-    if (subscription) {
-      const interval = subscription.billingInterval || "monthly";
-      const periodDays = interval === "annual" ? 365 : 30;
-
-      // Create invoice
-      const invoiceNumber = `INV-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
-      const invoiceId = await ctx.db.insert("invoices", {
-        workspaceId,
-        subscriptionId: subscription._id,
-        invoiceNumber,
-        status: "paid",
-        amount: paidAmountNaira,
-        currency: "NGN",
-        dueDate: paidTime,
-        paidAt: paidTime,
-        paymentMethod: "paystack",
-        paystackPaymentId: String(data.id || ""),
-        items: [
-          {
-            description: `Orviohub Standard Subscription (${interval === "annual" ? "Annual" : "Monthly"})`,
-            quantity: 1,
-            unitPrice: paidAmountNaira,
-            total: paidAmountNaira,
-          },
-        ],
-        createdAt: Date.now(),
-      });
-
-      // Record payment
-      await ctx.db.insert("payments", {
-        workspaceId,
-        invoiceId,
-        subscriptionId: subscription._id,
-        amount: paidAmountNaira,
-        currency: "NGN",
-        paymentMethod: "paystack",
+  // Update audit log
+  if (orgId) {
+    await ctx.db.insert("auditLogs", {
+      organizationId: orgId,
+      action: "billing.webhook_received",
+      resource: `webhook:${eventId || reference}`,
+      severity: "info",
+      metadata: {
+        event: "charge.success",
         reference,
-        paystackPaymentId: String(data.id || ""),
-        paystackAuthorization: authorization?.authorization_code,
-        status: "completed",
-        createdAt: Date.now(),
-        completedAt: paidTime,
-      });
-
-      // Upgrade subscription to standard active
-      await ctx.db.patch(subscription._id, {
-        planKey: "standard",
-        status: "active",
-        lastPaymentDate: paidTime,
-        nextPaymentDate: paidTime + periodDays * 86_400_000,
-        currentPeriodStart: paidTime,
-        currentPeriodEnd: paidTime + periodDays * 86_400_000,
-        trialEnd: undefined,
-        updatedAt: Date.now(),
-      });
-
-      await ctx.db.patch(workspaceId, {
-        planId: "standard",
-        updatedAt: Date.now(),
-      });
-    }
+        amount: paidAmountNaira,
+      },
+      timestamp: Date.now(),
+      createdAt: Date.now(),
+    });
   }
 }
 
-async function handleSubscriptionCreate(ctx: MutationCtx, data: any) {
+async function handleSubscriptionCreate(ctx: MutationCtx, data: any, eventId?: string) {
   const { subscription_code, customer, plan } = data;
   const email = customer?.email?.toLowerCase()?.trim();
   if (!email) return;
 
-  // Find user by email
   const user = await ctx.db
     .query("users")
     .withIndex("by_email", (q) => q.eq("email", email))
     .first();
 
   if (user) {
-    const wsMembership = await ctx.db
-      .query("workspaceMemberships")
-      .withIndex("by_user", (q) => q.eq("userId", user._id))
+    const orgMembership = await ctx.db
+      .query("organizationMemberships")
+      .withIndex("by_userId", (q) => q.eq("userId", user._id))
+      .filter((q) => q.eq(q.field("role"), "OWNER"))
       .first();
 
-    if (wsMembership) {
+    if (orgMembership) {
       const subscription = await ctx.db
         .query("subscriptions")
-        .withIndex("by_workspace", (q) => q.eq("workspaceId", wsMembership.workspaceId))
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", orgMembership.organizationId))
         .first();
 
       if (subscription) {
         await ctx.db.patch(subscription._id, {
           paystackSubscriptionId: subscription_code,
+          paystackSubscriptionCode: subscription_code,
+          paystackCustomerCode: customer.customer_code,
+          paystackPlanCode: plan?.plan_code,
           planKey: "standard",
+          selectedPlan: "standard",
+          activePlan: "standard",
           status: "active",
           updatedAt: Date.now(),
         });
@@ -201,7 +323,7 @@ async function handleSubscriptionCreate(ctx: MutationCtx, data: any) {
   }
 }
 
-async function handleInvoicePayment(ctx: MutationCtx, data: any) {
+async function handleInvoicePayment(ctx: MutationCtx, data: any, eventId?: string) {
   const { subscription_code, paid, amount, paid_at } = data;
   if (!paid) return;
 
@@ -209,7 +331,9 @@ async function handleInvoicePayment(ctx: MutationCtx, data: any) {
   const paidTime = paid_at ? new Date(paid_at).getTime() : Date.now();
 
   const allSubs = await ctx.db.query("subscriptions").collect();
-  const subscription = allSubs.find((s) => s.paystackSubscriptionId === subscription_code);
+  const subscription = allSubs.find(
+    (s) => s.paystackSubscriptionId === subscription_code || s.paystackSubscriptionCode === subscription_code
+  );
 
   if (subscription) {
     const interval = subscription.billingInterval || "monthly";
@@ -217,6 +341,7 @@ async function handleInvoicePayment(ctx: MutationCtx, data: any) {
 
     await ctx.db.patch(subscription._id, {
       status: "active",
+      activePlan: "standard",
       lastPaymentDate: paidTime,
       nextPaymentDate: paidTime + periodDays * 86_400_000,
       currentPeriodStart: paidTime,
@@ -226,14 +351,19 @@ async function handleInvoicePayment(ctx: MutationCtx, data: any) {
   }
 }
 
-async function handleSubscriptionCancel(ctx: MutationCtx, data: any) {
+async function handleSubscriptionCancel(ctx: MutationCtx, data: any, eventId?: string) {
   const { subscription_code } = data;
   const allSubs = await ctx.db.query("subscriptions").collect();
-  const subscription = allSubs.find((s) => s.paystackSubscriptionId === subscription_code);
+  const subscription = allSubs.find(
+    (s) => s.paystackSubscriptionId === subscription_code || s.paystackSubscriptionCode === subscription_code
+  );
 
   if (subscription) {
     await ctx.db.patch(subscription._id, {
       status: "canceled",
+      activePlan: null,
+      entitlementStatus: "inactive",
+      cancelledAt: Date.now(),
       updatedAt: Date.now(),
     });
   }

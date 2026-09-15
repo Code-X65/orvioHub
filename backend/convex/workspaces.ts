@@ -200,32 +200,53 @@ export const createWorkspace = mutation({
 
 export const getWorkspaceContext = query({
   args: {
-    workspaceId: v.id("workspaces"),
+    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
     userId: v.id("users"),
   },
   handler: async (ctx, args) => {
-    const ws = await ctx.db.get(args.workspaceId);
+    let ws: any = null;
+    const wsId = ctx.db.normalizeId("workspaces", args.workspaceId);
+    if (wsId) {
+      ws = await ctx.db.get(wsId);
+    }
+    if (!ws) {
+      const orgId = ctx.db.normalizeId("organizations", args.workspaceId);
+      if (orgId) {
+        ws = await ctx.db
+          .query("workspaces")
+          .withIndex("by_organizationId", (q) => q.eq("organizationId", orgId))
+          .first();
+      }
+    }
+
     if (!ws || ws.deletedAt || (ws.status || "").toLowerCase() === "deleted") return null;
+    const targetWsId = ws._id;
 
     let membership = await ctx.db
       .query("workspaceMemberships")
       .withIndex("by_workspace_user", (q) =>
-        q.eq("workspaceId", args.workspaceId).eq("userId", args.userId)
+        q.eq("workspaceId", targetWsId).eq("userId", args.userId)
       )
       .first();
 
     // Fallback: check workspace owner or organization membership
     let orgMembership: any = null;
-    if (!membership && ws.organizationId) {
+    let orgOwner = false;
+    if (ws.organizationId) {
       orgMembership = await ctx.db
         .query("organizationMemberships")
         .withIndex("by_org_and_user", (q: any) =>
           q.eq("organizationId", ws.organizationId).eq("userId", args.userId)
         )
         .first();
+
+      const org: any = await ctx.db.get(ws.organizationId);
+      if (org && org.ownerId === args.userId) {
+        orgOwner = true;
+      }
     }
 
-    const isOwner = ws.ownerId === args.userId || orgMembership?.role === "OWNER";
+    const isOwner = ws.ownerId === args.userId || orgMembership?.role === "OWNER" || orgOwner;
     const isAdmin = isOwner || orgMembership?.role === "ADMIN";
 
     if (!membership && !isOwner && !isAdmin) {
@@ -234,12 +255,12 @@ export const getWorkspaceContext = query({
 
     let products = await ctx.db
       .query("workspaceProducts")
-      .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", targetWsId))
       .collect();
 
     if (!products || products.length === 0) {
       const mods = ws.enabledModules || ["inventory"];
-      products = mods.map((mod) => ({
+      products = mods.map((mod: string) => ({
         productKey: mod,
         status: "active",
         planId: "free",
@@ -249,7 +270,7 @@ export const getWorkspaceContext = query({
     const productMemberships = await ctx.db
       .query("productMemberships")
       .withIndex("by_workspace_user", (q) =>
-        q.eq("workspaceId", args.workspaceId).eq("userId", args.userId)
+        q.eq("workspaceId", targetWsId).eq("userId", args.userId)
       )
       .collect();
 
@@ -284,16 +305,50 @@ export const getWorkspaceContext = query({
     // Resolve name: fallback to organization name if workspace name is placeholder
     let wsName = ws.name || "Workspace";
     if ((wsName === "Main Workspace" || !wsName) && ws.organizationId) {
-      const org = await ctx.db.get(ws.organizationId);
+      const org: any = await ctx.db.get(ws.organizationId);
       if (org?.name) wsName = org.name;
     }
+
+    // Resolve subscription
+    let sub: any = null;
+    if (ws.organizationId) {
+      sub = await ctx.db
+        .query("subscriptions")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", ws.organizationId))
+        .first();
+    }
+    if (!sub) {
+      sub = await ctx.db
+        .query("subscriptions")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", targetWsId))
+        .first();
+    }
+
+    const authoritativePlanKey = (
+      (sub?.status === "active" ? (sub?.activePlan || sub?.selectedPlan || sub?.planKey) : null) ||
+      sub?.activePlan ||
+      sub?.planKey ||
+      ws.planId ||
+      "free_trial"
+    );
+    const rawPlanKey = authoritativePlanKey === "free" ? "free_trial" : authoritativePlanKey;
+    const planKey = rawPlanKey.toLowerCase();
+    const planName = planKey === "standard" ? "Standard Plan" : planKey === "premium" ? "Premium Plan" : "Free Trial Plan";
+    const subscriptionStatus = sub?.status || "trialing";
 
     return {
       workspace: {
         id: ws._id,
+        workspaceId: ws._id,
+        organizationId: ws.organizationId || null,
         name: wsName,
         slug: ws.slug || "",
         type: ws.type || "business",
+        planId: planKey,
+        planKey,
+        planName,
+        subscriptionStatus,
+        subscription: sub,
         currency: ws.currency || "NGN",
         country: ws.country,
         state: ws.state,
@@ -320,13 +375,28 @@ export const getWorkspaceContext = query({
 
 export const selectWorkspace = mutation({
   args: {
-    workspaceId: v.id("workspaces"),
+    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
     userId: v.id("users"),
     productKey: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const ws = await ctx.db.get(args.workspaceId);
+    let ws: any = null;
+    const wsId = ctx.db.normalizeId("workspaces", args.workspaceId);
+    if (wsId) {
+      ws = await ctx.db.get(wsId);
+    }
+    if (!ws) {
+      const orgId = ctx.db.normalizeId("organizations", args.workspaceId);
+      if (orgId) {
+        ws = await ctx.db
+          .query("workspaces")
+          .withIndex("by_organizationId", (q) => q.eq("organizationId", orgId))
+          .first();
+      }
+    }
+
     if (!ws) throw new Error("WORKSPACE_NOT_FOUND");
+    const targetWsId = ws._id;
 
     const status = (ws.status || "active").toLowerCase();
     if (status === "archived" || status === "deleted" || status === "suspended") {
@@ -336,23 +406,32 @@ export const selectWorkspace = mutation({
     let membership = await ctx.db
       .query("workspaceMemberships")
       .withIndex("by_workspace_user", (q) =>
-        q.eq("workspaceId", args.workspaceId).eq("userId", args.userId)
+        q.eq("workspaceId", targetWsId).eq("userId", args.userId)
       )
       .first();
 
     // Fallback: check workspace owner or organization membership
-    if (!membership && ws.organizationId) {
-      const orgMembership = await ctx.db
+    let orgOwner = false;
+    let orgMembership: any = null;
+    if (ws.organizationId) {
+      orgMembership = await ctx.db
         .query("organizationMemberships")
         .withIndex("by_org_and_user", (q: any) =>
           q.eq("organizationId", ws.organizationId).eq("userId", args.userId)
         )
         .first();
 
-      if (orgMembership && orgMembership.status === "ACTIVE") {
-        const memRole = orgMembership.role === "OWNER" ? "owner" : orgMembership.role === "ADMIN" ? "admin" : "member";
+      const org: any = await ctx.db.get(ws.organizationId);
+      if (org && org.ownerId === args.userId) {
+        orgOwner = true;
+      }
+    }
+
+    if (!membership && (orgMembership || orgOwner)) {
+      if ((orgMembership && orgMembership.status === "ACTIVE") || orgOwner) {
+        const memRole = (orgMembership?.role === "OWNER" || orgOwner) ? "owner" : orgMembership?.role === "ADMIN" ? "admin" : "member";
         const memId = await ctx.db.insert("workspaceMemberships", {
-          workspaceId: args.workspaceId,
+          workspaceId: targetWsId,
           userId: args.userId,
           status: "active",
           defaultRole: memRole,
@@ -367,7 +446,7 @@ export const selectWorkspace = mutation({
 
     if (!membership && ws.ownerId === args.userId) {
       const memId = await ctx.db.insert("workspaceMemberships", {
-        workspaceId: args.workspaceId,
+        workspaceId: targetWsId,
         userId: args.userId,
         status: "active",
         defaultRole: "owner",
@@ -389,7 +468,7 @@ export const selectWorkspace = mutation({
       let product = await ctx.db
         .query("workspaceProducts")
         .withIndex("by_workspace_product", (q) =>
-          q.eq("workspaceId", args.workspaceId).eq("productKey", args.productKey!)
+          q.eq("workspaceId", targetWsId).eq("productKey", args.productKey!)
         )
         .first();
 
@@ -397,7 +476,7 @@ export const selectWorkspace = mutation({
         // Auto-provision product entitlement for inventory
         if (args.productKey === "inventory") {
           const prodId = await ctx.db.insert("workspaceProducts", {
-            workspaceId: args.workspaceId,
+            workspaceId: targetWsId,
             productKey: "inventory",
             status: "active",
             planId: "free",
@@ -417,18 +496,18 @@ export const selectWorkspace = mutation({
 
     // Update user's last selected workspace and product context
     await ctx.db.patch(args.userId, {
-      lastSelectedWorkspaceId: args.workspaceId,
+      lastSelectedWorkspaceId: `${targetWsId}`,
       ...(args.productKey ? { lastSelectedProduct: args.productKey } : {}),
       updatedAt: Date.now(),
     });
 
     // Log workspace_selected audit event
     await ctx.db.insert("workspaceAuditLogs", {
-      workspaceId: args.workspaceId,
+      workspaceId: targetWsId,
       actorUserId: args.userId,
       eventType: "workspace.workspace_selected",
       entityType: "workspace",
-      entityId: args.workspaceId,
+      entityId: targetWsId,
       severity: "info",
       metadata: { productKey: args.productKey },
       createdAt: Date.now(),
@@ -437,12 +516,12 @@ export const selectWorkspace = mutation({
     // Resolve complete context
     let products = await ctx.db
       .query("workspaceProducts")
-      .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", targetWsId))
       .collect();
 
     if (!products || products.length === 0) {
       const mods = ws.enabledModules || ["inventory"];
-      products = mods.map((mod) => ({
+      products = mods.map((mod: string) => ({
         productKey: mod,
         status: "active",
         planId: "free",
@@ -452,7 +531,7 @@ export const selectWorkspace = mutation({
     const productMemberships = await ctx.db
       .query("productMemberships")
       .withIndex("by_workspace_user", (q) =>
-        q.eq("workspaceId", args.workspaceId).eq("userId", args.userId)
+        q.eq("workspaceId", targetWsId).eq("userId", args.userId)
       )
       .collect();
 
@@ -482,7 +561,7 @@ export const selectWorkspace = mutation({
 
     let wsName = ws.name || "Workspace";
     if ((wsName === "Main Workspace" || !wsName) && ws.organizationId) {
-      const org = await ctx.db.get(ws.organizationId);
+      const org: any = await ctx.db.get(ws.organizationId);
       if (org?.name) wsName = org.name;
     }
 
@@ -667,12 +746,55 @@ export const getUserWorkspaces = query({
         role = "admin";
       }
 
+      // Resolve subscription
+      let sub: any = null;
+      if (ws.organizationId) {
+        sub = await ctx.db
+          .query("subscriptions")
+          .withIndex("by_organizationId", (q) => q.eq("organizationId", ws.organizationId))
+          .first();
+      }
+      if (!sub) {
+        sub = await ctx.db
+          .query("subscriptions")
+          .withIndex("by_workspace", (q) => q.eq("workspaceId", ws._id))
+          .first();
+      }
+
+      let org: any = null;
+      if (ws.organizationId) {
+        org = await ctx.db.get(ws.organizationId as any);
+      }
+
+      const authoritativePlanKey = (
+        (sub?.status === "active" ? (sub?.activePlan || sub?.selectedPlan || sub?.planKey) : null) ||
+        sub?.activePlan ||
+        sub?.selectedPlan ||
+        sub?.planKey ||
+        org?.planKey ||
+        org?.planId ||
+        ws.planKey ||
+        ws.planId ||
+        "free_trial"
+      );
+      const rawPlanKey = authoritativePlanKey === "free" ? "free_trial" : authoritativePlanKey;
+      const planKey = rawPlanKey.toLowerCase();
+      const planName = planKey === "standard" ? "Standard Plan" : planKey === "premium" ? "Premium Plan" : "Free 30-Day Plan";
+      const subscriptionStatus = sub?.status || "trialing";
+
       results.push({
         workspace: {
           id: ws._id,
+          workspaceId: ws._id,
+          organizationId: ws.organizationId || null,
           name: wsName || "Workspace",
           slug: wsSlug || "",
           type: ws.type || "business",
+          planId: planKey,
+          planKey,
+          planName,
+          subscriptionStatus,
+          subscription: sub,
           currency: ws.currency || "NGN",
           country: ws.country,
           timezone: ws.timezone,
@@ -685,7 +807,7 @@ export const getUserWorkspaces = query({
         enabledProducts: (products || []).map((p) => ({
           productKey: p.productKey || "",
           status: p.status || "active",
-          planId: p.planId,
+          planId: p.planId || planKey,
         })),
       });
     }
@@ -694,14 +816,25 @@ export const getUserWorkspaces = query({
 });
 
 export const getWorkspaceById = query({
-  args: { workspaceId: v.union(v.id("workspaces"), v.string()) },
+  args: { workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()) },
   handler: async (ctx, args) => {
     if (!args.workspaceId || args.workspaceId === "undefined" || args.workspaceId === "null") {
       return null;
     }
     const wsId = ctx.db.normalizeId("workspaces", args.workspaceId);
-    if (!wsId) return null;
-    return await ctx.db.get(wsId);
+    if (wsId) {
+      const ws = await ctx.db.get(wsId);
+      if (ws) return ws;
+    }
+    const orgId = ctx.db.normalizeId("organizations", args.workspaceId);
+    if (orgId) {
+      const ws = await ctx.db
+        .query("workspaces")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", orgId))
+        .first();
+      if (ws) return ws;
+    }
+    return null;
   },
 });
 

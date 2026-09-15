@@ -3,7 +3,7 @@ import { Link, useNavigate, useLocation, useSearchParams, useParams } from 'reac
 import { api } from '@/lib/api';
 import { AuthResponse } from '@/lib/types';
 import { useAuthStore } from '@/stores/useAuthStore';
-import { getPostVerificationUrl, isValidReturnUrl } from '@/lib/domain';
+import { isValidReturnUrl } from '@/lib/domain';
 import { AuthLayout } from './AuthLayout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -13,7 +13,6 @@ import {
   Mail,
   CheckCircle2,
   XCircle,
-  ArrowRight,
   ExternalLink,
   RefreshCw,
   Edit3,
@@ -44,7 +43,6 @@ export const VerifyEmail: React.FC = () => {
   const [isResending, setIsResending] = useState(false);
   const [isVerifyingCode, setIsVerifyingCode] = useState(false);
   const [cooldown, setCooldown] = useState(0);
-  const [redirectUrl, setRedirectUrl] = useState<string>('');
   const [showHelp, setShowHelp] = useState(false);
   const verifyingRef = useRef(false);
 
@@ -53,8 +51,6 @@ export const VerifyEmail: React.FC = () => {
   const digitInputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   useEffect(() => {
-    // If active verification is in progress or has succeeded, let executeVerification
-    // handle the smooth countdown and direct transition to home onboarding.
     if (verificationState === 'LOADING' || verificationState === 'SUCCESS') {
       return;
     }
@@ -69,8 +65,7 @@ export const VerifyEmail: React.FC = () => {
         }
         return;
       }
-      window.location.href = getPostVerificationUrl();
-      return;
+      navigate('/onboard/personal', { replace: true });
     }
   }, [user?.emailVerified, searchParams, navigate, verificationState]);
 
@@ -108,18 +103,19 @@ export const VerifyEmail: React.FC = () => {
       const returnTo = searchParams.get('redirect') || searchParams.get('return_to') || searchParams.get('returnTo');
       if (returnTo && isValidReturnUrl(returnTo)) {
         setTimeout(() => {
-          window.location.href = returnTo;
-        }, 1200);
+          if (returnTo.startsWith('/')) {
+            navigate(returnTo, { replace: true });
+          } else {
+            window.location.href = returnTo;
+          }
+        }, 600);
         return;
       }
 
-      // In Zoho-style architecture: Redirect to home onboarding
-      const targetUrl = getPostVerificationUrl();
-      setRedirectUrl(targetUrl);
-
+      // Smooth direct navigation to personal onboarding
       setTimeout(() => {
-        window.location.href = targetUrl;
-      }, 1500);
+        navigate('/onboard/personal', { replace: true });
+      }, 600);
     } catch (error: any) {
       setVerificationState('ERROR');
       setErrorMessage(error.message || 'Failed to verify email. The code or token may be expired.');
@@ -214,21 +210,16 @@ export const VerifyEmail: React.FC = () => {
   if (verificationState === 'SUCCESS') {
     return (
       <AuthLayout>
-        <div className="flex flex-col items-center justify-center text-center space-y-4 py-6 animate-in fade-in duration-200">
-          <div className="w-14 h-14 rounded-xs bg-emerald-950/80 border border-emerald-500/30 flex items-center justify-center mb-1">
+        <div className="flex flex-col items-center justify-center text-center space-y-4 py-8 animate-in fade-in duration-200">
+          <div className="w-14 h-14 rounded-xs bg-emerald-950/80 border border-emerald-500/30 flex items-center justify-center mb-1 shadow-lg shadow-emerald-950/30">
             <CheckCircle2 className="w-7 h-7 text-emerald-400" />
           </div>
           <h2 className="text-2xl font-bold text-white">Email Verified!</h2>
-          <p className="text-xs text-slate-300">Your account is active. Taking you to organization setup...</p>
-          <Button
-            onClick={() => {
-              window.location.href = redirectUrl || getPostVerificationUrl();
-            }}
-            className="w-full h-11 bg-[#714b67] hover:bg-[#86597a] text-white rounded-xs text-xs font-semibold cursor-pointer"
-          >
-            <span>Continue to Setup Organization</span>
-            <ArrowRight className="w-4 h-4 ml-1.5" />
-          </Button>
+          <p className="text-xs text-slate-300">Your account has been verified successfully.</p>
+          <div className="pt-2 flex items-center gap-2 text-xs text-slate-400">
+            <Spinner size="sm" className="text-[#714b67]" />
+            <span>Redirecting you now...</span>
+          </div>
         </div>
       </AuthLayout>
     );

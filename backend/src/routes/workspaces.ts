@@ -276,6 +276,7 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
           success: true,
           message: 'Workspace selected successfully.',
           data: context,
+          ...context,
         });
       } catch (err: any) {
         if (err.message?.includes('WORKSPACE_ACCESS_DENIED')) {
@@ -408,6 +409,8 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
         data: {
           workspace: {
             id: workspace._id || workspace.id,
+            workspaceId: workspace._id || workspace.id,
+            organizationId: workspace.organizationId || null,
             name: workspace.name,
             slug: workspace.slug,
             type: workspace.type,
@@ -1196,7 +1199,7 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      await dataService.verifyBranchPhone(branchId);
+      await dataService.verifyBranchPhone(branchId, workspaceId, request.user.id, body.otp.trim());
 
       return reply.send({
         success: true,

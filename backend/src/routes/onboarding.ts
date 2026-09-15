@@ -41,6 +41,57 @@ export const onboardingRoutes: FastifyPluginAsync = async (fastify) => {
     }
   );
 
+  // POST /api/v1/onboarding/personal/progress (Save draft step & answers for continuity & superadmin tracking)
+  fastify.post(
+    '/personal/progress',
+    {
+      schema: {
+        tags: ['Onboarding'],
+        summary: 'Save personal onboarding step progress and draft answers',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['currentStep'],
+          properties: {
+            currentStep: { type: 'number' },
+            useCases: { type: 'array', items: { type: 'string' } },
+            use_cases: { type: 'array', items: { type: 'string' } },
+            acquisitionSource: { type: 'string' },
+            acquisition_source: { type: 'string' },
+            acquisitionSourceOther: { type: 'string' },
+            acquisition_source_other: { type: 'string' },
+            role: { type: 'string' },
+            managesBusiness: { type: 'boolean' },
+            manages_business: { type: 'boolean' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = request.body as any;
+      const currentStep = Number(body.currentStep) || 1;
+      const useCases = body.useCases || body.use_cases;
+      const acquisitionSource = body.acquisitionSource || body.acquisition_source;
+      const acquisitionSourceOther = body.acquisitionSourceOther || body.acquisition_source_other;
+      const role = body.role;
+      const managesBusiness = body.managesBusiness !== undefined ? body.managesBusiness : body.manages_business;
+
+      const result = await dataService.savePersonalOnboardingProgress(request.user.id, {
+        currentStep,
+        useCases: useCases ? (Array.isArray(useCases) ? useCases : [String(useCases)]) : undefined,
+        acquisitionSource: acquisitionSource ? String(acquisitionSource) : undefined,
+        acquisitionSourceOther: acquisitionSourceOther ? String(acquisitionSourceOther).trim() : undefined,
+        role: role ? String(role) : undefined,
+        managesBusiness: managesBusiness !== undefined ? Boolean(managesBusiness) : undefined,
+      });
+
+      return reply.send({
+        success: true,
+        data: result,
+      });
+    }
+  );
+
   // POST /api/v1/onboarding/personal (Submit personal onboarding answers)
   fastify.post(
     '/personal',
@@ -56,6 +107,8 @@ export const onboardingRoutes: FastifyPluginAsync = async (fastify) => {
             use_cases: { type: 'array', items: { type: 'string' } },
             acquisitionSource: { type: 'string' },
             acquisition_source: { type: 'string' },
+            acquisitionSourceOther: { type: 'string' },
+            acquisition_source_other: { type: 'string' },
             role: { type: 'string' },
             managesBusiness: { type: 'boolean' },
             manages_business: { type: 'boolean' },
@@ -67,12 +120,14 @@ export const onboardingRoutes: FastifyPluginAsync = async (fastify) => {
       const body = request.body as any;
       const useCases = body.useCases || body.use_cases || ['exploring'];
       const acquisitionSource = body.acquisitionSource || body.acquisition_source || 'direct';
+      const acquisitionSourceOther = body.acquisitionSourceOther || body.acquisition_source_other;
       const role = body.role;
       const managesBusiness = body.managesBusiness !== undefined ? body.managesBusiness : body.manages_business;
 
       const result = await dataService.savePersonalOnboarding(request.user.id, {
         useCases: Array.isArray(useCases) ? useCases : [String(useCases)],
         acquisitionSource: String(acquisitionSource),
+        acquisitionSourceOther: acquisitionSourceOther ? String(acquisitionSourceOther).trim() : undefined,
         role: role ? String(role) : undefined,
         managesBusiness: managesBusiness !== undefined ? Boolean(managesBusiness) : undefined,
       });
@@ -585,6 +640,7 @@ export const onboardingRoutes: FastifyPluginAsync = async (fastify) => {
         security: [{ bearerAuth: [] }],
         body: {
           type: 'object',
+          nullable: true,
           properties: {
             finalData: { type: 'object' },
             flowId: { type: 'string' },

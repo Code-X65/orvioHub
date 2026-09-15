@@ -6,6 +6,7 @@ import { CheckCircle2, XCircle, Loader2, ArrowRight, ShieldCheck } from 'lucide-
 import { useHost } from '@/host/useHost';
 import { getApiUrl } from '@orviohub/shared';
 import { useAuthStore } from '@/stores/useAuthStore';
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 
 export const BillingCallbackPage: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -56,9 +57,15 @@ export const BillingCallbackPage: React.FC = () => {
 
         if (res.ok && data.success) {
           setStatus('success');
-          if (data.data?.planKey) {
-            setPlanKey(data.data.planKey);
-          }
+          const verifiedPlan = data.data?.planKey || data.planKey || 'standard';
+          setPlanKey(verifiedPlan);
+
+          // Force refresh workspace store cache with updated subscription
+          try {
+            const { invalidateCache, fetchWorkspaces } = useWorkspaceStore.getState();
+            invalidateCache();
+            await fetchWorkspaces(undefined, undefined, true).catch(() => {});
+          } catch {}
         } else {
           setStatus('failed');
           setErrorMessage(data.error?.message || 'Unable to verify payment status with payment gateway.');

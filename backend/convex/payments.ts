@@ -13,6 +13,36 @@ export const getByWorkspace = query({
   },
 });
 
+export const getByOrganization = query({
+  args: { organizationId: v.id("organizations") },
+  handler: async (ctx, args) => {
+    let payments = await ctx.db
+      .query("payments")
+      .withIndex("by_organizationId", (q) => q.eq("organizationId", args.organizationId))
+      .collect();
+
+    if (payments.length === 0) {
+      // Fallback: search by workspaces belonging to the organization
+      const workspaces = await ctx.db
+        .query("workspaces")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", args.organizationId))
+        .collect();
+
+      for (const ws of workspaces) {
+        const wsPayments = await ctx.db
+          .query("payments")
+          .withIndex("by_workspace", (q) => q.eq("workspaceId", ws._id))
+          .collect();
+        payments.push(...wsPayments);
+      }
+    }
+
+    return payments.sort((a, b) => (b.completedAt || b.createdAt) - (a.completedAt || a.createdAt));
+  },
+});
+
+export const getPaymentsForOrg = getByOrganization;
+
 export const getPending = query({
   args: {
     paymentMethod: v.optional(v.union(v.literal("bank_transfer"), v.literal("paystack"))),

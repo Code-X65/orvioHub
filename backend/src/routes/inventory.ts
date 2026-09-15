@@ -213,6 +213,131 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
     }
   );
 
+  // POST /api/v1/inventory/products/import-csv (Bulk Product Catalog Importer)
+  fastify.post(
+    '/products/import-csv',
+    {
+      schema: {
+        tags: ['Inventory'],
+        summary: 'Bulk import products from CSV/Excel data with plan limit check',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['items'],
+          properties: {
+            items: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['sku', 'name', 'costPrice', 'sellingPrice'],
+                properties: {
+                  sku: { type: 'string' },
+                  name: { type: 'string' },
+                  category: { type: 'string' },
+                  description: { type: 'string' },
+                  costPrice: { type: 'number' },
+                  sellingPrice: { type: 'number' },
+                  stockQuantity: { type: 'number' },
+                  minStockLevel: { type: 'number' },
+                  unit: { type: 'string' },
+                  imageUrl: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = (request.body as { items: any[] }) || { items: [] };
+      if (!Array.isArray(body.items) || body.items.length === 0) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: 'No product rows provided for import.',
+          },
+        });
+      }
+
+      // Check plan limits
+      const entitlement = await entitlementService.checkProductCreationEntitlement(
+        request.workspace!.id,
+        body.items.length
+      );
+      if (!entitlement.allowed) {
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.PLAN_LIMIT_REACHED,
+            message: entitlement.error,
+            current: entitlement.current,
+            limit: entitlement.limit,
+            planKey: entitlement.planKey,
+          },
+        });
+      }
+
+      const createdIds: string[] = [];
+      const errors: { row: number; sku: string; error: string }[] = [];
+
+      for (let i = 0; i < body.items.length; i++) {
+        const item = body.items[i];
+        try {
+          const parsed = createProductSchema.safeParse(item);
+          if (!parsed.success) {
+            errors.push({
+              row: i + 1,
+              sku: item.sku || `Row ${i + 1}`,
+              error: 'Missing or invalid fields: ' + Object.keys(parsed.error.format()).join(', '),
+            });
+            continue;
+          }
+
+          const productId = await dataService.createInventoryProduct({
+            workspaceId: request.workspace!.id,
+            ...parsed.data,
+            actorUserId: request.user.id,
+          });
+          createdIds.push(productId as string);
+        } catch (err: any) {
+          errors.push({
+            row: i + 1,
+            sku: item.sku || `Row ${i + 1}`,
+            error: err.message || 'Failed to create item',
+          });
+        }
+      }
+
+      await dataService.logAudit({
+        actorUserId: request.user.id,
+        workspaceId: request.workspace!.id,
+        productKey: 'inventory',
+        eventType: 'inventory.products_imported',
+        resource: 'inventoryProducts',
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+        metadata: {
+          totalRows: body.items.length,
+          importedCount: createdIds.length,
+          errorCount: errors.length,
+        },
+      });
+
+      return reply.status(200).send({
+        success: true,
+        data: {
+          importedCount: createdIds.length,
+          errorCount: errors.length,
+          errors,
+          productIds: createdIds,
+        },
+        message: `Successfully imported ${createdIds.length} of ${body.items.length} products.`,
+      });
+    }
+  );
+
+
   // POST /api/v1/inventory/sales (Process Sale / Guided First Sale POS)
   fastify.post(
     '/sales',

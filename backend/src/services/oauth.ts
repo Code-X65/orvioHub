@@ -4,7 +4,7 @@ import { env } from '../config/env.js';
 import { ERROR_CODES } from '../config/constants.js';
 
 export interface VerifiedSocialProfile {
-  provider: 'google' | 'facebook' | 'apple';
+  provider: 'google' | 'facebook';
   providerUserId: string;
   email: string;
   emailVerified: boolean;
@@ -14,7 +14,7 @@ export interface VerifiedSocialProfile {
 
 interface OAuthStateRecord {
   state: string;
-  provider: 'google' | 'facebook' | 'apple';
+  provider: 'google' | 'facebook';
   createdAt: number;
   expiresAt: number;
   returnTo?: string;
@@ -41,7 +41,7 @@ export class OAuthService {
 
   // --- State Management ---
   public generateState(
-    provider: 'google' | 'facebook' | 'apple',
+    provider: 'google' | 'facebook',
     returnTo?: string,
     product?: string
   ): string {
@@ -70,7 +70,7 @@ export class OAuthService {
 
   public validateAndConsumeState(
     state: string,
-    expectedProvider: 'google' | 'facebook' | 'apple'
+    expectedProvider: 'google' | 'facebook'
   ): OAuthStateRecord {
     if (!state) {
       const err: any = new Error('OAuth state parameter is missing.');
@@ -151,7 +151,7 @@ export class OAuthService {
       return {
         provider: 'google',
         providerUserId: `google_uid_${prefix}`,
-        email: `${prefix}@orviohub.com`,
+        email: `${prefix}@example.com`,
         emailVerified: true,
         name: `${prefix.charAt(0).toUpperCase() + prefix.slice(1)} (Google)`,
         picture: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80',
@@ -243,7 +243,7 @@ export class OAuthService {
       return {
         provider: 'facebook',
         providerUserId: `fb_uid_${prefix}`,
-        email: `${prefix}@orviohub.com`,
+        email: `${prefix}@example.com`,
         emailVerified: true,
         name: `${prefix.charAt(0).toUpperCase() + prefix.slice(1)} (Facebook)`,
       };
@@ -315,65 +315,7 @@ export class OAuthService {
     err.code = ERROR_CODES.OAUTH_NOT_CONFIGURED;
     throw err;
   }
-
-  // --- Apple OAuth ---
-  public getAppleAuthUrl(state: string): string {
-    const redirectUri =
-      env.APPLE_REDIRECT_URI || 'http://localhost:3000/api/v1/auth/apple/callback';
-    const clientId = env.APPLE_CLIENT_ID;
-
-    if (!clientId && env.NODE_ENV !== 'production') {
-      const mockCode = `mock_apple_code_apple_user`;
-      return `/api/v1/auth/apple/callback?code=${mockCode}&state=${state}`;
-    }
-
-    const params = new URLSearchParams({
-      client_id: clientId || 'com.orviohub.web',
-      redirect_uri: redirectUri,
-      response_type: 'code id_token',
-      scope: 'name email',
-      response_mode: 'form_post',
-      state,
-    });
-
-    return `https://appleid.apple.com/auth/authorize?${params.toString()}`;
-  }
-
-  public async exchangeAppleCode(code: string): Promise<VerifiedSocialProfile> {
-    if (!code) {
-      const err: any = new Error('Authorization code is missing.');
-      err.code = ERROR_CODES.OAUTH_CODE_INVALID;
-      throw err;
-    }
-
-    // Mock handler for testing / local development sandbox
-    if (code.startsWith('mock_apple_code_')) {
-      const parts = code.replace('mock_apple_code_', '').split('_');
-      const prefix = parts[0] || 'apple.tester';
-      return {
-        provider: 'apple',
-        providerUserId: `apple_uid_${prefix}`,
-        email: `${prefix}@privaterelay.appleid.com`,
-        emailVerified: true,
-        name: `${prefix.charAt(0).toUpperCase() + prefix.slice(1)} (Apple)`,
-      };
-    }
-
-    // When Apple live keys are configured
-    if (env.APPLE_CLIENT_ID && env.APPLE_TEAM_ID && env.APPLE_KEY_ID && env.APPLE_PRIVATE_KEY) {
-      return {
-        provider: 'apple',
-        providerUserId: `apple_live_${Date.now()}`,
-        email: 'user@privaterelay.appleid.com',
-        emailVerified: true,
-        name: 'Apple User',
-      };
-    }
-
-    const err: any = new Error('Apple OAuth credentials not configured on server.');
-    err.code = ERROR_CODES.OAUTH_NOT_CONFIGURED;
-    throw err;
-  }
 }
 
 export const oauthService = new OAuthService();
+

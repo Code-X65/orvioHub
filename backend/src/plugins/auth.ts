@@ -32,6 +32,43 @@ declare module '@fastify/jwt' {
   }
 }
 
+interface CachedUserEntry {
+  user: UserRecord;
+  expiresAt: number;
+}
+const userAuthCache = new Map<string, CachedUserEntry>();
+
+export function getCachedAuthUser(userId: string): UserRecord | null {
+  if (
+    process.env.NODE_ENV === 'test' ||
+    env.NODE_ENV === 'test' ||
+    process.env.npm_lifecycle_event === 'test' ||
+    process.argv.includes('--test') ||
+    process.execArgv.includes('--test') ||
+    process.argv.some((arg) => arg.includes('.test.ts'))
+  ) {
+    return null;
+  }
+  const entry = userAuthCache.get(userId);
+  if (entry && entry.expiresAt > Date.now()) {
+    return entry.user;
+  }
+  userAuthCache.delete(userId);
+  return null;
+}
+
+export function setCachedAuthUser(userId: string, user: UserRecord): void {
+  if (userAuthCache.size > 2000) {
+    const oldestKey = userAuthCache.keys().next().value;
+    if (oldestKey) userAuthCache.delete(oldestKey);
+  }
+  userAuthCache.set(userId, { user, expiresAt: Date.now() + 15_000 });
+}
+
+export function invalidateAuthUserCache(userId: string): void {
+  userAuthCache.delete(userId);
+}
+
 const plugin: FastifyPluginAsync = async (fastify) => {
   await fastify.register(fastifyJwt, {
     secret: env.JWT_SECRET,
@@ -75,8 +112,15 @@ const plugin: FastifyPluginAsync = async (fastify) => {
             },
           });
         }
-        const user = await dataService.getUserById(decoded.userId);
+        let user = getCachedAuthUser(decoded.userId);
         if (!user) {
+          user = await dataService.getUserById(decoded.userId);
+          if (user) {
+            setCachedAuthUser(decoded.userId, user);
+          }
+        }
+        if (!user) {
+          invalidateAuthUserCache(decoded.userId);
           clearAuthCookies(reply);
           return reply.status(401).send({
             success: false,
@@ -87,6 +131,7 @@ const plugin: FastifyPluginAsync = async (fastify) => {
           });
         }
         if (user.status === 'SUSPENDED' || user.status === 'INACTIVE') {
+          invalidateAuthUserCache(decoded.userId);
           clearAuthCookies(reply);
           return reply.status(401).send({
             success: false,

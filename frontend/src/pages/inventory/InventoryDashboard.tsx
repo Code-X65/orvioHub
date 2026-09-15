@@ -3,7 +3,6 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { useBranchStore } from '@/stores/useBranchStore';
-import { WorkspaceSwitcher } from '@/components/workspace/WorkspaceSwitcher';
 import { BranchSwitcher } from '@/components/workspace/BranchSwitcher';
 import { BranchCreationModal } from '@/components/workspace/BranchCreationModal';
 import { BranchEditModal } from '@/components/workspace/BranchEditModal';
@@ -13,6 +12,9 @@ import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
 import { InventoryIcon } from '@/components/icons/InventoryIcon';
 import { getLoginUrl } from '@orviohub/shared';
+import { getCrossSubdomainUrl } from '@/lib/domain';
+import { UsageLimitBanner } from '@/components/billing/UsageLimitBanner';
+import { useOrganizationEntitlements } from '@/hooks/useOrganizationEntitlements';
 import { toast } from 'sonner';
 import {
   LayoutGrid,
@@ -26,13 +28,16 @@ import {
   Warehouse,
   Plus,
   Search,
-  Barcode,
   ArrowUpRight,
+  ArrowLeft,
   XCircle,
   SlidersHorizontal,
   X,
   History,
+  Users,
 } from 'lucide-react';
+
+import { BranchTeamManagement } from './BranchTeamManagement';
 import { cn } from '@/lib/utils';
 
 // Core Inventory Types
@@ -234,12 +239,23 @@ export const InventoryDashboard: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const branchParam = searchParams.get('branchId') || searchParams.get('branch');
+  const orgParam = searchParams.get('org');
 
   const { logout, user } = useAuthStore();
-  const { currentWorkspace, workspaces, fetchWorkspaces } = useWorkspaceStore();
-  const { activeBranch, branches, setActiveBranch } = useBranchStore();
+  const { currentWorkspace, currentRole, workspaces, fetchWorkspaces } = useWorkspaceStore();
+  const { activeBranch, branches, setActiveBranch, loadBranches } = useBranchStore();
+  const { summary: entSummary } = useOrganizationEntitlements(currentWorkspace?.id);
 
+  const isOwner = (currentRole || (currentWorkspace as any)?.role || '').toLowerCase() === 'owner';
   const [isVerifyingOrg, setIsVerifyingOrg] = useState(true);
+
+  // Load branches for current organization (supports orgParam, currentWorkspace, or cross-subdomain fallback)
+  useEffect(() => {
+    const targetOrgId = orgParam || currentWorkspace?.id || (typeof window !== 'undefined' ? localStorage.getItem('orvio_active_workspace_id') : null);
+    if (targetOrgId) {
+      loadBranches(targetOrgId, 'inventory').catch(() => []);
+    }
+  }, [orgParam, currentWorkspace?.id, loadBranches]);
 
   // Guard: Verify user belongs to an organization before allowing access to Inventory
   useEffect(() => {
@@ -273,7 +289,7 @@ export const InventoryDashboard: React.FC = () => {
     };
   }, [fetchWorkspaces, navigate]);
 
-  // Sync ?branchId= or ?branch= URL parameter to activeBranch, or auto-select primary branch
+  // Sync ?branchId= or ?branch= URL parameter to activeBranch, or auto-select primary/first branch
   useEffect(() => {
     if (branches.length > 0) {
       if (branchParam) {
@@ -379,6 +395,10 @@ export const InventoryDashboard: React.FC = () => {
   // Handle Add Product Submit
   const handleAddProduct = (e: React.FormEvent) => {
     e.preventDefault();
+    if (entSummary?.metrics?.products?.isReached) {
+      toast.error(`Product catalog limit reached (${entSummary.metrics.products.limit} products). Please upgrade your plan.`);
+      return;
+    }
     if (!newProdName.trim() || !newProdSellingPrice) {
       toast.error('Product name and selling price are required');
       return;
@@ -500,6 +520,7 @@ export const InventoryDashboard: React.FC = () => {
     { key: 'low_stock', label: 'Low Stock Alerts', icon: AlertTriangle, badge: lowStockCount, badgeColor: 'bg-rose-500/20 text-rose-300 border-rose-500/30' },
     { key: 'movements', label: 'Stock Movements', icon: History },
     { key: 'warehouses', label: 'Branches & Locations', icon: Warehouse, badge: branches.length },
+    { key: 'team', label: 'Branch Staff & Roles', icon: Users },
     { key: 'pos', label: 'Point of Sale (POS)', icon: Receipt },
     { key: 'reports', label: 'Reports & Valuation', icon: FileBarChart },
   ];
@@ -524,16 +545,24 @@ export const InventoryDashboard: React.FC = () => {
       <aside className="w-64 bg-[#0d090d] border-r border-white/10 flex flex-col justify-between shrink-0 select-none z-30">
         
         {/* Brand & App Title Header */}
-        <div className="p-3.5 border-b border-white/10 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
+        <div className="p-3.5 border-b border-white/10 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
             <div className="w-8 h-8 rounded-xs bg-[#190f17] border border-white/10 flex items-center justify-center shadow-sm shrink-0">
               <InventoryIcon className="w-6 h-6" />
             </div>
             <div className="min-w-0">
-              <span className="font-bold text-white text-xs tracking-tight block">Inventory Hub</span>
+              <span className="font-bold text-white text-xs tracking-tight block truncate">Inventory Hub</span>
               <span className="text-[10px] text-slate-500 font-mono block truncate">Workspace Suite</span>
             </div>
           </div>
+
+          <a
+            href={getCrossSubdomainUrl('home', `/dashboard${currentWorkspace?.id ? `?org=${currentWorkspace.id}` : ''}`)}
+            className="p-1.5 rounded-xs border border-white/10 bg-white/5 hover:bg-white/10 hover:border-white/20 text-slate-400 hover:text-white transition-all shrink-0 flex items-center justify-center cursor-pointer"
+            title="Back to Workspace Hub"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+          </a>
         </div>
 
         {/* Navigation Links */}
@@ -588,6 +617,14 @@ export const InventoryDashboard: React.FC = () => {
           </div>
 
           <a
+            href={getCrossSubdomainUrl('home', `/dashboard${currentWorkspace?.id ? `?org=${currentWorkspace.id}` : ''}`)}
+            className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xs text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-white/5 transition-colors cursor-pointer"
+          >
+            <ArrowLeft className="w-4 h-4 text-slate-400" />
+            <span>Back to Workspace</span>
+          </a>
+
+          <a
             href="/settings"
             className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xs text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-white/5 transition-colors cursor-pointer"
           >
@@ -596,7 +633,7 @@ export const InventoryDashboard: React.FC = () => {
           </a>
 
           <a
-            href="/inventory/dashboard"
+            href={getCrossSubdomainUrl('home', `/applications${currentWorkspace?.id ? `?org=${currentWorkspace.id}` : ''}`)}
             className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xs text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-white/5 transition-colors cursor-pointer"
           >
             <LayoutGrid className="w-4 h-4 text-slate-400" />
@@ -619,12 +656,21 @@ export const InventoryDashboard: React.FC = () => {
             <div className="space-y-1">
               <div className="flex items-center justify-between text-slate-400">
                 <span>Catalogue Products</span>
-                <span className="font-semibold text-slate-200">{products.length} / 500</span>
+                <span className="font-semibold text-slate-200">
+                  {products.length} / {entSummary?.metrics?.products?.limit ?? 500}
+                </span>
               </div>
               <div className="w-full bg-white/10 h-1 rounded-full overflow-hidden">
                 <div
-                  className="bg-[#c79dbd] h-full rounded-full transition-all"
-                  style={{ width: `${Math.min(100, (products.length / 500) * 100)}%` }}
+                  className={cn(
+                    "h-full rounded-full transition-all",
+                    entSummary?.metrics?.products?.isReached
+                      ? "bg-rose-500"
+                      : entSummary?.metrics?.products?.isApproaching
+                      ? "bg-amber-400"
+                      : "bg-[#c79dbd]"
+                  )}
+                  style={{ width: `${Math.min(100, (products.length / (entSummary?.metrics?.products?.limit || 500)) * 100)}%` }}
                 />
               </div>
             </div>
@@ -649,8 +695,21 @@ export const InventoryDashboard: React.FC = () => {
               href="/profile/personal"
               className="flex items-center gap-2.5 min-w-0 flex-1 hover:opacity-80 transition-opacity cursor-pointer"
             >
-              <div className="w-8 h-8 rounded-xs bg-[#714b67] text-white text-xs font-bold flex items-center justify-center border border-white/10 shrink-0">
-                {user?.name ? user.name.charAt(0).toUpperCase() : <UserIcon className="w-3.5 h-3.5" />}
+              <div className="w-8 h-8 rounded-xs bg-[#714b67] text-white text-xs font-bold flex items-center justify-center border border-white/10 shrink-0 overflow-hidden shadow-sm">
+                {user?.avatarUrl || user?.avatar ? (
+                  <img
+                    src={user.avatarUrl || user.avatar}
+                    alt={user.name || 'User'}
+                    className="w-full h-full object-cover"
+                    onError={(e) => {
+                      (e.target as HTMLElement).style.display = 'none';
+                    }}
+                  />
+                ) : user?.name ? (
+                  user.name.charAt(0).toUpperCase()
+                ) : (
+                  <UserIcon className="w-3.5 h-3.5" />
+                )}
               </div>
               <div className="min-w-0">
                 <p className="text-xs font-semibold text-white truncate leading-tight">
@@ -682,11 +741,25 @@ export const InventoryDashboard: React.FC = () => {
         
         {/* Top Navbar */}
         <header className="h-14 bg-[#0d090d] border-b border-white/10 px-4 sm:px-6 flex items-center justify-between gap-3 shrink-0 z-20">
-          {/* Header Context Bar: Org - App - Branch (US-4) */}
+          {/* Header Context Bar: Back to Workspace + Org - App - Branch (US-4) */}
           <div className="flex items-center gap-2 min-w-0">
+            <a
+              href={getCrossSubdomainUrl('home', `/dashboard${currentWorkspace?.id ? `?org=${currentWorkspace.id}` : ''}`)}
+              className="h-8 px-2.5 rounded-lg border border-white/10 bg-black/40 hover:bg-white/10 hover:border-white/20 text-slate-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition-all shadow-sm shrink-0 cursor-pointer"
+              title="Return to Workspace Hub"
+            >
+              <ArrowLeft className="w-3.5 h-3.5 text-slate-400" />
+              <span className="hidden sm:inline font-medium">Workspace</span>
+            </a>
+
             <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0 bg-black/50 border border-white/10 px-3 py-1.5 rounded-lg shadow-sm">
               <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider hidden sm:inline">Org:</span>
-              <WorkspaceSwitcher productKey="inventory" />
+              <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-white/5 border border-white/10 text-xs font-semibold text-white">
+                <span className="w-4 h-4 rounded bg-[#714b67] text-white text-[9px] font-bold flex items-center justify-center shrink-0">
+                  {currentWorkspace?.name ? currentWorkspace.name.charAt(0).toUpperCase() : 'O'}
+                </span>
+                <span className="truncate max-w-[120px] sm:max-w-[180px]">{currentWorkspace?.name || 'Organization'}</span>
+              </div>
               <span className="text-slate-600 font-bold hidden sm:inline">-</span>
               <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider hidden sm:inline">App:</span>
               <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-[#714b67]/30 text-[#f0d8e8] border border-[#714b67]/40">
@@ -733,213 +806,216 @@ export const InventoryDashboard: React.FC = () => {
         {/* Scrollable Workstation Body */}
         <main className="flex-1 overflow-y-auto p-6 space-y-6">
           
-          {/* Welcome Banner (US-5) */}
-          <div className="p-4 sm:p-5 rounded-xl bg-gradient-to-r from-[#1d101b] via-[#120b10] to-[#080608] border border-[#714b67]/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-lg">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <h1 className="text-lg sm:text-xl font-bold text-white tracking-tight">
-                  Welcome to Inventory for {currentWorkspace?.name || 'your business'}
-                </h1>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#714b67]/30 text-[#f0d8e8] border border-[#714b67]/40">
-                  Inventory App
-                </span>
-              </div>
-              <p className="text-xs text-slate-400 flex items-center gap-2">
-                <span>Current branch:</span>
-                <span className="text-white font-semibold flex items-center gap-1 bg-white/5 px-2 py-0.5 rounded border border-white/10">
-                  <Warehouse className="w-3 h-3 text-[#FDB02F]" />
-                  {activeBranch?.name || branches[0]?.name || 'Main Branch'}
-                </span>
-                {branches.length > 1 && (
-                  <span className="text-[11px] text-slate-500">
-                    ({branches.length} locations configured)
-                  </span>
-                )}
-              </p>
-            </div>
+          {/* Entitlement Quota Alert Banner - Only for store owner */}
+          {isOwner && entSummary?.warningMessage && (
+            <UsageLimitBanner
+              warningMessage={entSummary.warningMessage}
+              isReached={Boolean(entSummary.hasExceededLimits)}
+              onUpgradeClick={() => {
+                window.location.href = getCrossSubdomainUrl('home', '/billing');
+              }}
+              planKey={entSummary.planKey}
+            />
+          )}
 
-            <div className="flex items-center gap-2 shrink-0">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setIsAddProductOpen(true)}
-                className="h-8 border-white/10 bg-white/5 hover:bg-white/10 text-slate-200 text-xs gap-1.5"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Add Product</span>
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => setActiveNav('pos')}
-                className="h-8 bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-semibold gap-1.5 shadow-sm"
-              >
-                <Receipt className="w-3.5 h-3.5" />
-                <span>Record Sale</span>
-              </Button>
-            </div>
-          </div>
-
-          {/* Top KPI Metrics Row */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-            {/* Card 1: Total SKUs */}
-            <div className="p-4 rounded-xs bg-[#0e0a0d] border border-white/10 shadow-lg space-y-2">
-              <div className="flex items-center justify-between text-xs text-slate-400">
-                <span className="font-medium">Catalog SKUs</span>
-                <Package className="w-4 h-4 text-[#f0d8e8]" />
-              </div>
-              <div className="text-2xl font-bold text-white tracking-tight">
-                {totalProducts} <span className="text-xs font-normal text-slate-400">Products</span>
-              </div>
-              <div className="text-[11px] text-emerald-400 flex items-center gap-1 font-medium">
-                <ArrowUpRight className="w-3 h-3" />
-                <span>Synchronized with catalog</span>
-              </div>
-            </div>
-
-            {/* Card 2: Stock Valuation */}
-            <div className="p-4 rounded-xs bg-[#0e0a0d] border border-white/10 shadow-lg space-y-2">
-              <div className="flex items-center justify-between text-xs text-slate-400">
-                <span className="font-medium">Total Stock Valuation</span>
-                <span className="text-xs font-bold text-[#f0d8e8]">₦ NGN</span>
-              </div>
-              <div className="text-2xl font-bold text-white tracking-tight">
-                ₦{totalStockValuation.toLocaleString()}
-              </div>
-              <div className="text-[11px] text-slate-400 font-medium">
-                Retail potential across on-hand units
-              </div>
-            </div>
-
-            {/* Card 3: Low Stock Alerts */}
-            <div className="p-4 rounded-xs bg-[#0e0a0d] border border-white/10 shadow-lg space-y-2">
-              <div className="flex items-center justify-between text-xs text-slate-400">
-                <span className="font-medium">Low Stock Warnings</span>
-                <AlertTriangle className="w-4 h-4 text-amber-400" />
-              </div>
-              <div className="text-2xl font-bold text-amber-400 tracking-tight">
-                {lowStockCount} <span className="text-xs font-normal text-slate-400">Items</span>
-              </div>
-              <div className="text-[11px] text-amber-400/90 font-medium">
-                {lowStockCount > 0 ? 'Below minimum reorder point' : 'All items well stocked'}
-              </div>
-            </div>
-
-            {/* Card 4: Out of Stock */}
-            <div className="p-4 rounded-xs bg-[#0e0a0d] border border-white/10 shadow-lg space-y-2">
-              <div className="flex items-center justify-between text-xs text-slate-400">
-                <span className="font-medium">Out of Stock</span>
-                <XCircle className="w-4 h-4 text-rose-400" />
-              </div>
-              <div className="text-2xl font-bold text-rose-400 tracking-tight">
-                {outOfStockCount} <span className="text-xs font-normal text-slate-400">Items</span>
-              </div>
-              <div className="text-[11px] text-rose-400/90 font-medium">
-                {outOfStockCount > 0 ? 'Requires immediate PO replenishment' : 'No stockouts recorded'}
-              </div>
-            </div>
-          </div>
-
-          {/* MAIN INVENTORY CATALOG & TELEMETRY SECTION */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            
-            {/* LEFT 2 COLS: INVENTORY CATALOG TABLE */}
-            <div className="lg:col-span-2 space-y-3.5">
-              
-              {/* Table Filter Controls */}
-              <div className="p-3.5 rounded-xs bg-[#0e0a0d] border border-white/10 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-                {/* Search Bar */}
-                <div className="relative flex-1">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
-                  <Input
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search product name, SKU, or scan barcode..."
-                    className="h-8 pl-8.5 bg-[#080608] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs focus:ring-1 focus:ring-[#714b67]"
-                  />
-                  {searchQuery && (
-                    <button
-                      type="button"
-                      onClick={() => setSearchQuery('')}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  )}
+          {activeNav === 'team' ? (
+            <BranchTeamManagement />
+          ) : (
+            <>
+              {/* Welcome Banner (US-5) */}
+              <div className="p-4 sm:p-5 rounded-xl bg-gradient-to-r from-[#1d101b] via-[#120b10] to-[#080608] border border-[#714b67]/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-lg">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <h1 className="text-lg sm:text-xl font-bold text-white tracking-tight">
+                      Welcome to Inventory for {currentWorkspace?.name || 'your business'}
+                    </h1>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#714b67]/30 text-[#f0d8e8] border border-[#714b67]/40">
+                      Inventory App
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 flex items-center gap-2">
+                    <span>Current branch:</span>
+                    <span className="text-white font-semibold flex items-center gap-1 bg-white/5 px-2 py-0.5 rounded border border-white/10">
+                      <Warehouse className="w-3 h-3 text-[#FDB02F]" />
+                      {activeBranch?.name || branches[0]?.name || 'Main Branch'}
+                    </span>
+                    {branches.length > 1 && (
+                      <span className="text-[11px] text-slate-500">
+                        ({branches.length} locations configured)
+                      </span>
+                    )}
+                  </p>
                 </div>
 
-                {/* Filters */}
-                <div className="flex items-center gap-2">
-                  <select
-                    value={selectedCategory}
-                    onChange={(e) => setSelectedCategory(e.target.value)}
-                    className="h-8 px-2 bg-[#080608] border border-white/10 text-white rounded-xs text-xs focus:ring-1 focus:ring-[#714b67] cursor-pointer"
+                <div className="flex items-center gap-2 shrink-0">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setIsAddProductOpen(true)}
+                    className="h-8 border-white/10 bg-white/5 hover:bg-white/10 text-slate-200 text-xs gap-1.5"
                   >
-                    {CATEGORIES.map((cat) => (
-                      <option key={cat} value={cat} className="bg-[#0e0a0d] text-white">
-                        {cat}
-                      </option>
-                    ))}
-                  </select>
-
-                  <select
-                    value={statusFilter}
-                    onChange={(e) => setStatusFilter(e.target.value as any)}
-                    className="h-8 px-2 bg-[#080608] border border-white/10 text-white rounded-xs text-xs focus:ring-1 focus:ring-[#714b67] cursor-pointer"
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add Product</span>
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => setActiveNav('pos')}
+                    className="h-8 bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-semibold gap-1.5 shadow-sm"
                   >
-                    <option value="all" className="bg-[#0e0a0d] text-white">All Status</option>
-                    <option value="in_stock" className="bg-[#0e0a0d] text-white">In Stock</option>
-                    <option value="low_stock" className="bg-[#0e0a0d] text-white">Low Stock</option>
-                    <option value="out_of_stock" className="bg-[#0e0a0d] text-white">Out of Stock</option>
-                  </select>
+                    <Receipt className="w-3.5 h-3.5" />
+                    <span>Record Sale</span>
+                  </Button>
                 </div>
               </div>
 
-              {/* Products Table */}
-              <div className="rounded-xs bg-[#0e0a0d] border border-white/10 overflow-hidden shadow-xl">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-white/5 border-b border-white/10 text-slate-400 font-semibold uppercase tracking-wider text-[10px]">
-                      <tr>
-                        <th className="py-3 px-4">Product & SKU</th>
-                        <th className="py-3 px-3">Category</th>
-                        <th className="py-3 px-3">Stock On Hand</th>
-                        <th className="py-3 px-3">Selling Price</th>
-                        <th className="py-3 px-3">Status</th>
-                        <th className="py-3 px-3 text-right">Quick Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/5 text-slate-200">
-                      {filteredProducts.length === 0 ? (
+              {/* Top KPI Metrics Row */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+                {/* Card 1: Total SKUs */}
+                <div className="p-4 rounded-xs bg-[#0e0a0d] border border-white/10 shadow-lg space-y-2">
+                  <div className="flex items-center justify-between text-xs text-slate-400">
+                    <span className="font-medium">Catalog SKUs</span>
+                    <Package className="w-4 h-4 text-[#f0d8e8]" />
+                  </div>
+                  <div className="text-2xl font-bold text-white tracking-tight">
+                    {totalProducts} <span className="text-xs font-normal text-slate-400">Products</span>
+                  </div>
+                  <div className="text-[11px] text-emerald-400 flex items-center gap-1 font-medium">
+                    <ArrowUpRight className="w-3 h-3" />
+                    <span>Synchronized with catalog</span>
+                  </div>
+                </div>
+
+                {/* Card 2: Stock Valuation */}
+                <div className="p-4 rounded-xs bg-[#0e0a0d] border border-white/10 shadow-lg space-y-2">
+                  <div className="flex items-center justify-between text-xs text-slate-400">
+                    <span className="font-medium">Total Stock Valuation</span>
+                    <span className="text-xs font-bold text-[#f0d8e8]">₦ NGN</span>
+                  </div>
+                  <div className="text-2xl font-bold text-white tracking-tight">
+                    ₦{totalStockValuation.toLocaleString()}
+                  </div>
+                  <div className="text-[11px] text-slate-400 font-medium">
+                    Retail potential across on-hand units
+                  </div>
+                </div>
+
+                {/* Card 3: Low Stock Alerts */}
+                <div className="p-4 rounded-xs bg-[#0e0a0d] border border-white/10 shadow-lg space-y-2">
+                  <div className="flex items-center justify-between text-xs text-slate-400">
+                    <span className="font-medium">Low Stock Warnings</span>
+                    <AlertTriangle className="w-4 h-4 text-amber-400" />
+                  </div>
+                  <div className="text-2xl font-bold text-amber-400 tracking-tight">
+                    {lowStockCount} <span className="text-xs font-normal text-slate-400">Items</span>
+                  </div>
+                  <div className="text-[11px] text-amber-400/90 font-medium">
+                    {lowStockCount > 0 ? 'Below minimum reorder point' : 'All items well stocked'}
+                  </div>
+                </div>
+
+                {/* Card 4: Out of Stock */}
+                <div className="p-4 rounded-xs bg-[#0e0a0d] border border-white/10 shadow-lg space-y-2">
+                  <div className="flex items-center justify-between text-xs text-slate-400">
+                    <span className="font-medium">Out of Stock</span>
+                    <XCircle className="w-4 h-4 text-rose-400" />
+                  </div>
+                  <div className="text-2xl font-bold text-rose-400 tracking-tight">
+                    {outOfStockCount} <span className="text-xs font-normal text-slate-400">Items</span>
+                  </div>
+                  <div className="text-[11px] text-rose-400/90 font-medium">
+                    {outOfStockCount > 0 ? 'Reorder needed immediately' : 'Inventory optimal'}
+                  </div>
+                </div>
+              </div>
+
+              {/* MAIN INVENTORY CATALOG & TELEMETRY SECTION */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                
+                {/* LEFT 2 COLS: INVENTORY CATALOG TABLE */}
+                <div className="lg:col-span-2 space-y-3.5">
+                  
+                  {/* Table Filter Controls */}
+                  <div className="p-3.5 rounded-xs bg-[#0e0a0d] border border-white/10 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                    {/* Search Bar */}
+                    <div className="relative flex-1">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+                      <Input
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Search product name, SKU, or scan barcode..."
+                        className="h-8 pl-8.5 bg-[#080608] border-white/10 text-white placeholder:text-slate-600 rounded-xs text-xs focus:ring-1 focus:ring-[#714b67]"
+                      />
+                      {searchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setSearchQuery('')}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Filters */}
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={selectedCategory}
+                        onChange={(e) => setSelectedCategory(e.target.value)}
+                        className="h-8 px-2 bg-[#080608] border border-white/10 text-white rounded-xs text-xs focus:ring-1 focus:ring-[#714b67] cursor-pointer"
+                      >
+                        {CATEGORIES.map((cat) => (
+                          <option key={cat} value={cat} className="bg-[#0e0a0d] text-white">
+                            {cat}
+                          </option>
+                        ))}
+                      </select>
+
+                      <select
+                        value={statusFilter}
+                        onChange={(e) => setStatusFilter(e.target.value as any)}
+                        className="h-8 px-2 bg-[#080608] border border-white/10 text-white rounded-xs text-xs focus:ring-1 focus:ring-[#714b67] cursor-pointer"
+                      >
+                        <option value="all" className="bg-[#0e0a0d] text-white">All Status</option>
+                        <option value="in_stock" className="bg-[#0e0a0d] text-white">In Stock</option>
+                        <option value="low_stock" className="bg-[#0e0a0d] text-white">Low Stock</option>
+                        <option value="out_of_stock" className="bg-[#0e0a0d] text-white">Out of Stock</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Products Table */}
+                  <div className="rounded-xs bg-[#0e0a0d] border border-white/10 overflow-hidden shadow-xl">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-[#120c11] text-slate-400 font-semibold border-b border-white/10 uppercase tracking-wider text-[10px]">
                         <tr>
-                          <td colSpan={6} className="py-12 text-center text-slate-500">
-                            No inventory items matched your search criteria.
-                          </td>
+                          <th className="py-2.5 px-3.5">Product & SKU</th>
+                          <th className="py-2.5 px-3.5">Category</th>
+                          <th className="py-2.5 px-3.5">Stock Level</th>
+                          <th className="py-2.5 px-3.5">Price (NGN)</th>
+                          <th className="py-2.5 px-3.5">Status</th>
+                          <th className="py-2.5 px-3.5 text-right">Action</th>
                         </tr>
-                      ) : (
-                        filteredProducts.map((prod) => (
-                          <tr
-                            key={prod.id}
-                            className="hover:bg-white/[0.02] transition-colors group"
-                          >
-                            {/* Product & SKU */}
-                            <td className="py-3 px-4 min-w-[200px]">
-                              <div className="font-semibold text-white group-hover:text-[#f0d8e8] transition-colors">
-                                {prod.name}
-                              </div>
-                              <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-400 font-mono">
-                                <span>{prod.sku}</span>
-                                <span>•</span>
-                                <span className="flex items-center gap-1 text-slate-500">
-                                  <Barcode className="w-3 h-3" />
-                                  {prod.barcode}
-                                </span>
-                              </div>
+                      </thead>
+                      <tbody className="divide-y divide-white/5">
+                        {filteredProducts.length === 0 ? (
+                          <tr>
+                            <td colSpan={6} className="py-8 text-center text-slate-500">
+                              No products found.
                             </td>
+                          </tr>
+                        ) : (
+                          filteredProducts.map((prod) => (
+                            <tr key={prod.id} className="hover:bg-white/[0.02] transition">
+                              {/* Product & SKU */}
+                              <td className="py-3 px-3">
+                                <div className="font-semibold text-white">{prod.name}</div>
+                                <div className="text-[11px] text-slate-400 font-mono">{prod.sku}</div>
+                              </td>
+                              {/* Category */}
+                              <td className="py-3 px-3 text-slate-400 text-[11px]">
+                                {prod.category}
+                              </td>
 
-                            {/* Category */}
-                            <td className="py-3 px-3 text-slate-400 text-[11px]">
-                              {prod.category}
-                            </td>
 
                             {/* Stock on Hand */}
                             <td className="py-3 px-3">
@@ -996,9 +1072,9 @@ export const InventoryDashboard: React.FC = () => {
                   </table>
                 </div>
               </div>
-            </div>
 
             {/* RIGHT 1 COL: TELEMETRY ACTIVITY & QUICK ACTIONS */}
+
             <div className="space-y-4">
               
               {/* Branch Quick Switch Card */}
@@ -1073,8 +1149,11 @@ export const InventoryDashboard: React.FC = () => {
 
             </div>
           </div>
+            </>
+          )}
         </main>
       </div>
+
 
       {/* 3. MODAL: ADD NEW PRODUCT */}
       {isAddProductOpen && (

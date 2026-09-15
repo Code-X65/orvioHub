@@ -26,18 +26,18 @@ const queryClient = new QueryClient({
 const root = createRoot(document.getElementById("root")!);
 
 try {
-  const host = resolveHost(window.location.host, window.location.pathname);
+  const initialHost = resolveHost(window.location.host, window.location.pathname);
 
   root.render(
     <StrictMode>
-      <HostProvider value={host}>
-        <QueryClientProvider client={queryClient}>
-          <BrowserRouter>
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          <HostProvider initialValue={initialHost}>
             <App />
             <Toaster />
-          </BrowserRouter>
-        </QueryClientProvider>
-      </HostProvider>
+          </HostProvider>
+        </BrowserRouter>
+      </QueryClientProvider>
     </StrictMode>
   );
 } catch (error) {
