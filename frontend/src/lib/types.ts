@@ -49,6 +49,8 @@ export interface User {
   twoFactorEnabled?: boolean;
   planKey?: 'free_trial' | 'standard' | 'premium' | string;
   subscriptionStatus?: string;
+  status?: string;
+  phoneVerified?: boolean;
   personalOnboardingCompleted?: boolean;
 }
 

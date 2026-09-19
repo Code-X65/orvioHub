@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useAuthStore } from '@/stores/useAuthStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { useBranchStore, type Branch } from '@/stores/useBranchStore';
 import { BranchEditModal } from './BranchEditModal';
@@ -12,6 +13,7 @@ import {
   Plus,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { api } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 interface BranchSwitcherProps {
@@ -27,6 +29,7 @@ export const BranchSwitcher: React.FC<BranchSwitcherProps> = ({
   onBranchChange,
   className = '',
 }) => {
+  const { user } = useAuthStore();
   const { currentWorkspace } = useWorkspaceStore();
   const { branches, activeBranch, setActiveBranch, loadBranches, isLoading } = useBranchStore();
   const [isOpen, setIsOpen] = useState(false);
@@ -61,9 +64,21 @@ export const BranchSwitcher: React.FC<BranchSwitcherProps> = ({
   }, []);
 
   const handleSelect = (branch: Branch) => {
+    const prevBranchId = activeBranch?._id || activeBranch?.id;
+    const newBranchId = branch._id || branch.id;
     setActiveBranch(branch);
     setIsOpen(false);
     if (onBranchChange) onBranchChange(branch);
+
+    if (currentWorkspace?.id && newBranchId && prevBranchId !== newBranchId) {
+      api.post('/inventory/log-branch-switched', {
+        workspaceId: currentWorkspace.id,
+        previousBranchId: prevBranchId,
+        newBranchId,
+        actorUserId: user?.id || undefined,
+      }).catch(() => {});
+    }
+
     toast.success(`Active branch: ${branch.name}`);
   };
 
@@ -128,28 +143,52 @@ export const BranchSwitcher: React.FC<BranchSwitcherProps> = ({
               ) : (
                 filteredBranches.map((branch) => {
                   const isSelected = (activeBranch?.id || activeBranch?._id) === (branch.id || branch._id);
+                  const isSuspended = branch.status === 'suspended';
+                  const isArchived = branch.status === 'archived';
+
                   return (
                     <div
                       key={branch.id || branch._id}
                       className={cn(
                         'flex items-center justify-between px-3 py-2 text-xs transition-colors hover:bg-white/5 group',
-                        isSelected && 'bg-[#714b67]/20'
+                        isSelected && 'bg-[#714b67]/20',
+                        (isSuspended || isArchived) && 'opacity-60'
                       )}
                     >
                       <button
                         type="button"
-                        onClick={() => handleSelect(branch)}
+                        onClick={() => {
+                          if (isSuspended) {
+                            toast.error('Suspended branch cannot be selected as operational context.');
+                            return;
+                          }
+                          if (isArchived) {
+                            toast.error('Archived branch cannot be selected as operational context.');
+                            return;
+                          }
+                          handleSelect(branch);
+                        }}
                         className="flex items-center gap-2.5 min-w-0 flex-1 text-left cursor-pointer"
                       >
                         <Warehouse className={cn('w-4 h-4 shrink-0', isSelected ? 'text-[#f0d8e8]' : 'text-slate-500')} />
                         <div className="min-w-0">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <span className={cn('font-semibold truncate text-xs', isSelected ? 'text-[#f0d8e8]' : 'text-white')}>
                               {branch.name}
                             </span>
                             {branch.isPrimary && (
                               <span className="px-1.5 py-0.2 rounded-xs text-[8px] font-bold bg-[#714b67]/30 text-[#f0d8e8] border border-[#714b67]/40">
                                 Primary
+                              </span>
+                            )}
+                            {isSuspended && (
+                              <span className="px-1.5 py-0.2 rounded-xs text-[8px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                                Suspended
+                              </span>
+                            )}
+                            {isArchived && (
+                              <span className="px-1.5 py-0.2 rounded-xs text-[8px] font-bold bg-red-500/20 text-red-400 border border-red-500/30">
+                                Archived
                               </span>
                             )}
                           </div>

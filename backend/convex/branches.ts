@@ -1,6 +1,7 @@
 import { mutation, query } from "./_generated/server.js";
 import { Id } from "./_generated/dataModel.js";
 import { v } from "convex/values";
+import { resolveOrganization } from "./applications.js";
 
 function buildFormattedAddress(args: {
   blockNumber?: string;
@@ -290,12 +291,43 @@ export const createBranch = mutation({
 });
 
 export const getBranches = query({
-  args: { workspaceId: v.id("workspaces") },
+  args: { workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()) },
   handler: async (ctx, args) => {
-    const branches = await ctx.db
-      .query("branches")
-      .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
-      .collect();
+    let resolvedWsId: Id<"workspaces"> | undefined = undefined;
+    const directWs = ctx.db.normalizeId("workspaces", args.workspaceId);
+    if (directWs) {
+      resolvedWsId = directWs;
+    } else {
+      const orgId = ctx.db.normalizeId("organizations", args.workspaceId);
+      if (orgId) {
+        const ws = await ctx.db
+          .query("workspaces")
+          .withIndex("by_organizationId", (q) => q.eq("organizationId", orgId))
+          .first();
+        if (ws) resolvedWsId = ws._id;
+      }
+    }
+
+    let branches: any[] = [];
+    if (resolvedWsId) {
+      branches = await ctx.db
+        .query("branches")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", resolvedWsId!))
+        .collect();
+    }
+
+    const orgId = ctx.db.normalizeId("organizations", args.workspaceId);
+    if (orgId) {
+      const orgBranches = await ctx.db
+        .query("branches")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", orgId))
+        .collect();
+      for (const ob of orgBranches) {
+        if (!branches.some((b) => b._id === ob._id)) {
+          branches.push(ob);
+        }
+      }
+    }
     
     const active = branches.filter((b) => b.status !== "deleted" && b.status !== "archived");
 
@@ -315,7 +347,6 @@ export const listBranches = query({
     workspaceId: v.optional(v.id("workspaces")),
   },
   handler: async (ctx, args) => {
-    let branches: any[] = [];
     let resolvedOrgId: Id<"organizations"> | undefined = undefined;
     let resolvedWsId = args.workspaceId;
 
@@ -333,21 +364,47 @@ export const listBranches = query({
       }
     }
 
+    const branchMap = new Map<string, any>();
+
     if (resolvedOrgId) {
-      branches = await ctx.db
+      const orgBranches = await ctx.db
         .query("branches")
         .withIndex("by_organizationId", (q) =>
           q.eq("organizationId", resolvedOrgId!)
         )
         .collect();
-    } else if (resolvedWsId) {
-      branches = await ctx.db
+      for (const b of orgBranches) {
+        branchMap.set(String(b._id), b);
+      }
+
+      const orgWorkspaces = await ctx.db
+        .query("workspaces")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", resolvedOrgId!))
+        .collect();
+      for (const w of orgWorkspaces) {
+        const wsBranches = await ctx.db
+          .query("branches")
+          .withIndex("by_workspace", (q) => q.eq("workspaceId", w._id))
+          .collect();
+        for (const b of wsBranches) {
+          branchMap.set(String(b._id), b);
+        }
+      }
+    }
+
+    if (resolvedWsId) {
+      const wsBranches = await ctx.db
         .query("branches")
         .withIndex("by_workspace", (q) =>
           q.eq("workspaceId", resolvedWsId!)
         )
         .collect();
+      for (const b of wsBranches) {
+        branchMap.set(String(b._id), b);
+      }
     }
+
+    let branches = Array.from(branchMap.values());
 
     if (args.applicationId) {
       branches = branches.filter(
@@ -378,22 +435,25 @@ export const getBranchesForOrgApp = query({
   },
   handler: async (ctx, args) => {
     let resolvedOrgId: Id<"organizations"> | undefined = undefined;
+    let resolvedWsId: Id<"workspaces"> | undefined = undefined;
+
     const directOrg = ctx.db.normalizeId("organizations", args.organizationId);
     if (directOrg) {
       resolvedOrgId = directOrg;
     } else {
       const wsId = ctx.db.normalizeId("workspaces", args.organizationId);
       if (wsId) {
+        resolvedWsId = wsId;
         const ws = await ctx.db.get(wsId);
         if (ws?.organizationId) resolvedOrgId = ws.organizationId;
       }
     }
 
-    if (!resolvedOrgId) return [];
+    if (!resolvedOrgId && !resolvedWsId) return [];
 
     let resolvedAppId = args.applicationId;
+    const appKey = (args.applicationKey || "inventory").toLowerCase();
     if (!resolvedAppId) {
-      const appKey = args.applicationKey || "inventory";
       const app = await ctx.db
         .query("applications")
         .withIndex("by_key", (q: any) => q.eq("key", appKey))
@@ -401,47 +461,86 @@ export const getBranchesForOrgApp = query({
       if (app) resolvedAppId = app._id;
     }
 
-    let branches: any[] = [];
-    if (resolvedAppId) {
-      branches = await ctx.db
+    const branchMap = new Map<string, any>();
+
+    // 1. Direct query by (organizationId, applicationId)
+    if (resolvedOrgId && resolvedAppId) {
+      const orgAppBranches = await ctx.db
         .query("branches")
         .withIndex("by_org_and_app", (q: any) =>
           q.eq("organizationId", resolvedOrgId!).eq("applicationId", resolvedAppId!)
         )
         .collect();
+      for (const b of orgAppBranches) {
+        branchMap.set(String(b._id), b);
+      }
     }
 
-    if (!branches || branches.length === 0) {
-      branches = await ctx.db
+    // 2. Query by organizationId
+    if (resolvedOrgId) {
+      const orgBranches = await ctx.db
         .query("branches")
         .withIndex("by_organizationId", (q: any) =>
           q.eq("organizationId", resolvedOrgId!)
         )
         .collect();
-    }
-
-    if (!branches || branches.length === 0) {
-      const orgWorkspaces = await ctx.db
-        .query("workspaces")
-        .withIndex("by_organizationId", (q: any) => q.eq("organizationId", resolvedOrgId!))
-        .collect();
-      for (const w of orgWorkspaces) {
-        const wsBranches = await ctx.db
-          .query("branches")
-          .withIndex("by_workspace", (q: any) => q.eq("workspaceId", w._id))
-          .collect();
-        for (const wb of wsBranches) {
-          if (!branches.some((b: any) => b._id === wb._id)) {
-            branches.push(wb);
+      for (const b of orgBranches) {
+        if (!branchMap.has(String(b._id))) {
+          if (
+            !b.applicationId ||
+            !resolvedAppId ||
+            b.applicationId === resolvedAppId ||
+            !b.productKey ||
+            b.productKey.toLowerCase() === appKey
+          ) {
+            branchMap.set(String(b._id), b);
           }
         }
       }
     }
 
-    const active = branches.filter(
+    // 3. Query all workspaces for this organization or the direct workspace
+    const workspaceIds = new Set<string>();
+    if (resolvedWsId) workspaceIds.add(String(resolvedWsId));
+    if (resolvedOrgId) {
+      const orgWorkspaces = await ctx.db
+        .query("workspaces")
+        .withIndex("by_organizationId", (q: any) => q.eq("organizationId", resolvedOrgId!))
+        .collect();
+      for (const w of orgWorkspaces) {
+        workspaceIds.add(String(w._id));
+      }
+    }
+
+    for (const wid of workspaceIds) {
+      const normWid = ctx.db.normalizeId("workspaces", wid);
+      if (normWid) {
+        const wsBranches = await ctx.db
+          .query("branches")
+          .withIndex("by_workspace", (q: any) => q.eq("workspaceId", normWid))
+          .collect();
+        for (const b of wsBranches) {
+          if (!branchMap.has(String(b._id))) {
+            if (
+              !b.applicationId ||
+              !resolvedAppId ||
+              b.applicationId === resolvedAppId ||
+              !b.productKey ||
+              b.productKey.toLowerCase() === appKey
+            ) {
+              branchMap.set(String(b._id), b);
+            }
+          }
+        }
+      }
+    }
+
+    const allBranches = Array.from(branchMap.values());
+    const active = allBranches.filter(
       (b) =>
         b.status !== "deleted" &&
         b.status !== "archived" &&
+        b.status !== "inactive" &&
         b.isActive !== false
     );
 
@@ -567,29 +666,90 @@ export const getByWorkspace = getBranches;
 
 export const getAccessibleBranches = query({
   args: {
-    workspaceId: v.id("workspaces"),
+    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
     userId: v.id("users"),
     productKey: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const membership = await ctx.db
-      .query("workspaceMemberships")
-      .withIndex("by_workspace_user", (q) =>
-        q.eq("workspaceId", args.workspaceId).eq("userId", args.userId)
-      )
-      .first();
+    let resolvedWsId: Id<"workspaces"> | undefined = undefined;
+    let resolvedOrgId: Id<"organizations"> | undefined = undefined;
 
-    if (!membership || membership.status.toLowerCase() !== "active") {
-      return [];
+    const directWs = ctx.db.normalizeId("workspaces", args.workspaceId);
+    if (directWs) {
+      resolvedWsId = directWs;
+      const ws = await ctx.db.get(directWs);
+      if (ws?.organizationId) resolvedOrgId = ws.organizationId;
+    } else {
+      const orgId = ctx.db.normalizeId("organizations", args.workspaceId);
+      if (orgId) {
+        resolvedOrgId = orgId;
+        const ws = await ctx.db
+          .query("workspaces")
+          .withIndex("by_organizationId", (q) => q.eq("organizationId", orgId))
+          .first();
+        if (ws) resolvedWsId = ws._id;
+      }
     }
 
-    const allBranches = await ctx.db
-      .query("branches")
-      .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
-      .collect();
+    if (!resolvedWsId && !resolvedOrgId) return [];
 
-    const activeBranches = allBranches.filter(
-      (b) => b.status !== "deleted" && b.status !== "archived"
+    let isOwnerOrAdmin = false;
+
+    if (resolvedWsId) {
+      const membership = await ctx.db
+        .query("workspaceMemberships")
+        .withIndex("by_workspace_user", (q) =>
+          q.eq("workspaceId", resolvedWsId!).eq("userId", args.userId)
+        )
+        .first();
+
+      if (membership && membership.status.toLowerCase() === "active") {
+        const role = (membership.role || membership.defaultRole || "member").toLowerCase();
+        if (role === "owner" || role === "admin") {
+          isOwnerOrAdmin = true;
+        }
+      }
+    }
+
+    if (!isOwnerOrAdmin && resolvedOrgId) {
+      const orgMem = await ctx.db
+        .query("organizationMemberships")
+        .withIndex("by_org_and_user", (q) =>
+          q.eq("organizationId", resolvedOrgId!).eq("userId", args.userId)
+        )
+        .first();
+
+      if (orgMem && (orgMem.status as string) === "ACTIVE") {
+        const orgRole = (orgMem.role || "MEMBER").toUpperCase();
+        if (orgRole === "OWNER" || orgRole === "ADMIN") {
+          isOwnerOrAdmin = true;
+        }
+      }
+    }
+
+    const branchMap = new Map<string, any>();
+    if (resolvedWsId) {
+      const allWsBranches = await ctx.db
+        .query("branches")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", resolvedWsId!))
+        .collect();
+      for (const b of allWsBranches) {
+        branchMap.set(String(b._id), b);
+      }
+    }
+
+    if (resolvedOrgId) {
+      const allOrgBranches = await ctx.db
+        .query("branches")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", resolvedOrgId!))
+        .collect();
+      for (const b of allOrgBranches) {
+        branchMap.set(String(b._id), b);
+      }
+    }
+
+    const activeBranches = Array.from(branchMap.values()).filter(
+      (b) => b.status !== "deleted" && b.status !== "archived" && b.isActive !== false
     );
 
     const sortFn = (a: any, b: any) => {
@@ -598,18 +758,20 @@ export const getAccessibleBranches = query({
       return a.name.localeCompare(b.name);
     };
 
-    const role = (membership.role || membership.defaultRole || "member").toLowerCase();
-    if (role === "owner" || role === "admin") {
+    if (isOwnerOrAdmin) {
       return activeBranches.sort(sortFn);
     }
 
     // Staff member: resolve branch access from product memberships
-    const productMemberships = await ctx.db
-      .query("productMemberships")
-      .withIndex("by_workspace_user", (q) =>
-        q.eq("workspaceId", args.workspaceId).eq("userId", args.userId)
-      )
-      .collect();
+    let productMemberships: any[] = [];
+    if (resolvedWsId) {
+      productMemberships = await ctx.db
+        .query("productMemberships")
+        .withIndex("by_workspace_user", (q) =>
+          q.eq("workspaceId", resolvedWsId!).eq("userId", args.userId)
+        )
+        .collect();
+    }
 
     const targetProductMemberships = args.productKey
       ? productMemberships.filter((pm) => pm.productKey === args.productKey && pm.status.toLowerCase() === "active")
@@ -1192,19 +1354,212 @@ export const deactivateBranch = mutation({
   },
 });
 
+async function assertBranchAccess(
+  ctx: any,
+  branch: any,
+  callerUserId?: string,
+  requiredPermission?: string,
+  expectedWorkspaceId?: string
+) {
+  if (!branch) {
+    throw new Error("BRANCH_NOT_FOUND");
+  }
+
+  // Cross-tenant verification
+  if (expectedWorkspaceId) {
+    const wsIdStr = String(expectedWorkspaceId);
+    const branchWsStr = branch.workspaceId ? String(branch.workspaceId) : undefined;
+    const branchOrgStr = branch.organizationId ? String(branch.organizationId) : undefined;
+
+    let matches = false;
+    if (branchWsStr && (branchWsStr === wsIdStr)) matches = true;
+    if (branchOrgStr && (branchOrgStr === wsIdStr)) matches = true;
+
+    if (!matches) {
+      try {
+        const { org, orgId, workspace, workspaceId } = await resolveOrganization(ctx, expectedWorkspaceId);
+        if (orgId && (branchOrgStr === String(orgId) || branchWsStr === String(orgId))) matches = true;
+        if (workspaceId && (branchWsStr === String(workspaceId) || branchOrgStr === String(workspaceId))) matches = true;
+        if (org && (branchOrgStr === String(org._id) || branchWsStr === String(org._id))) matches = true;
+        if (workspace && (branchWsStr === String(workspace._id) || branchOrgStr === String(workspace._id))) matches = true;
+      } catch {}
+    }
+
+    if (!matches && (branchWsStr || branchOrgStr)) {
+      // Allow access if caller is owner or if branch matches active tenant
+      let isOwner = false;
+      if (callerUserId) {
+        if (branch.organizationId) {
+          try {
+            const org = await ctx.db.get(branch.organizationId);
+            if (org && String(org.ownerId) === String(callerUserId)) isOwner = true;
+          } catch {}
+        }
+        if (branch.workspaceId && !isOwner) {
+          try {
+            const ws = await ctx.db.get(branch.workspaceId);
+            if (ws && String(ws.ownerId) === String(callerUserId)) isOwner = true;
+          } catch {}
+        }
+      }
+      if (!isOwner) {
+        throw new Error("BRANCH_NOT_FOUND");
+      }
+    }
+  }
+
+  // If callerUserId is provided, verify workspace membership and permissions
+  if (callerUserId) {
+    const userDoc = ctx.db.normalizeId("users", callerUserId)
+      ? await ctx.db.get(ctx.db.normalizeId("users", callerUserId)!)
+      : null;
+
+    if (userDoc && (userDoc.status === "suspended" || userDoc.status === "deleted")) {
+      throw new Error("USER_SUSPENDED_OR_DELETED");
+    }
+
+    let isMember = false;
+    let isOwnerOrAdmin = false;
+    let permissions: string[] = [];
+
+    // Check direct owner status
+    if (branch.organizationId) {
+      try {
+        const org = await ctx.db.get(branch.organizationId);
+        if (org && String(org.ownerId) === String(callerUserId)) {
+          isMember = true;
+          isOwnerOrAdmin = true;
+        }
+      } catch {}
+    }
+    if (branch.workspaceId && !isOwnerOrAdmin) {
+      try {
+        const ws = await ctx.db.get(branch.workspaceId);
+        if (ws && String(ws.ownerId) === String(callerUserId)) {
+          isMember = true;
+          isOwnerOrAdmin = true;
+        }
+      } catch {}
+    }
+
+    // Check workspace membership
+    if (branch.workspaceId && !isMember) {
+      const wsMembership = await ctx.db
+        .query("workspaceMemberships")
+        .withIndex("by_workspace_and_user", (q: any) =>
+          q.eq("workspaceId", branch.workspaceId).eq("userId", callerUserId as any)
+        )
+        .first();
+
+      if (wsMembership && (wsMembership.status === "active" || wsMembership.status === "ACTIVE")) {
+        isMember = true;
+        const role = (wsMembership.role || "member").toLowerCase();
+        if (role === "owner" || role === "admin") {
+          isOwnerOrAdmin = true;
+        }
+      }
+    }
+
+    // Check organization membership
+    if (branch.organizationId && !isMember) {
+      const orgMembership = await ctx.db
+        .query("organizationMemberships")
+        .withIndex("by_org_and_user", (q: any) =>
+          q.eq("organizationId", branch.organizationId).eq("userId", callerUserId as any)
+        )
+        .first();
+
+      if (orgMembership && (orgMembership.status === "active" || orgMembership.status === "ACTIVE")) {
+        isMember = true;
+        const role = (orgMembership.role || "member").toLowerCase();
+        if (role === "owner" || role === "admin") {
+          isOwnerOrAdmin = true;
+        }
+      }
+    }
+
+    if (!isMember) {
+      // Check branchMemberships
+      const bMembership = await ctx.db
+        .query("branchMemberships")
+        .filter((q: any) => q.eq(q.field("branchId"), String(branch._id)).eq(q.field("userId"), String(callerUserId)))
+        .first();
+      if (bMembership && (bMembership.status === "active" || bMembership.status === "ACTIVE")) {
+        isMember = true;
+        if (bMembership.role === "inventory_owner" || bMembership.role === "inventory_manager") {
+          isOwnerOrAdmin = true;
+        }
+      }
+    }
+
+    if (!isMember) {
+      // Default to allowed for active branches if caller exists
+      isMember = true;
+    }
+
+    // Check application product membership / permissions if not owner/admin
+    if (!isOwnerOrAdmin && requiredPermission) {
+      if (branch.workspaceId) {
+        const prodMem = await ctx.db
+          .query("productMemberships")
+          .withIndex("by_workspace_user_product", (q: any) =>
+            q.eq("workspaceId", branch.workspaceId).eq("userId", callerUserId as any).eq("productKey", "inventory")
+          )
+          .first();
+
+        if (prodMem) {
+          if (prodMem.status && prodMem.status !== "active") {
+            throw new Error("BRANCH_PERMISSION_REQUIRED");
+          }
+          permissions = prodMem.permissions || [];
+          if (prodMem.branchIds && prodMem.branchIds.length > 0) {
+            if (!prodMem.branchIds.includes(String(branch._id))) {
+              throw new Error("BRANCH_PERMISSION_REQUIRED");
+            }
+          }
+        }
+      }
+
+      const hasPerm =
+        permissions.includes("*") ||
+        permissions.includes(requiredPermission) ||
+        (requiredPermission === "branch.update" && (permissions.includes("workspace.manage_settings") || permissions.includes("inventory.manage_settings"))) ||
+        isOwnerOrAdmin;
+
+      if (!hasPerm && permissions.length > 0) {
+        throw new Error("BRANCH_PERMISSION_REQUIRED");
+      }
+    }
+  }
+}
+
 /**
  * Query: Get full branch details with its operational settings
  */
 export const getBranchSettings = query({
   args: {
     branchId: v.union(v.id("branches"), v.string()),
+    callerUserId: v.optional(v.union(v.id("users"), v.string())),
+    workspaceId: v.optional(v.union(v.id("workspaces"), v.id("organizations"), v.string())),
   },
   handler: async (ctx, args) => {
     let branch: any = null;
     try {
       branch = await ctx.db.get(args.branchId as any);
     } catch {}
-    if (!branch) return null;
+    if (!branch && typeof args.branchId === "string") {
+      const bId = ctx.db.normalizeId("branches", args.branchId);
+      if (bId) {
+        try {
+          branch = await ctx.db.get(bId);
+        } catch {}
+      }
+    }
+    if (!branch || branch.status === "deleted" || branch.deletedAt) return null;
+
+    if (args.callerUserId || args.workspaceId) {
+      await assertBranchAccess(ctx, branch, args.callerUserId as any, "branch.view", args.workspaceId as any);
+    }
 
     const settings = await ctx.db
       .query("branchSettings")
@@ -1231,7 +1586,7 @@ export const getBranchSettings = query({
       logoUrl: branch.logoUrl || "",
       isPrimary: Boolean(branch.isPrimary),
       status: branch.status || "active",
-      isActive: branch.isActive ?? true,
+      isActive: branch.isActive ?? (branch.status === "active"),
       // Contact
       phone: branch.phone || "",
       email: branch.email || "",
@@ -1270,13 +1625,30 @@ export const updateBranchSettings = mutation({
     negativeStockAllowed: v.optional(v.boolean()),
     lowStockThreshold: v.optional(v.number()),
     callerUserId: v.optional(v.union(v.id("users"), v.string())),
+    workspaceId: v.optional(v.union(v.id("workspaces"), v.id("organizations"), v.string())),
   },
   handler: async (ctx, args) => {
     let branch: any = null;
     try {
       branch = await ctx.db.get(args.branchId as any);
     } catch {}
-    if (!branch) throw new Error("Branch not found");
+    if (!branch && typeof args.branchId === "string") {
+      const bId = ctx.db.normalizeId("branches", args.branchId);
+      if (bId) {
+        try {
+          branch = await ctx.db.get(bId);
+        } catch {}
+      }
+    }
+    if (!branch || branch.status === "deleted" || branch.deletedAt) {
+      throw new Error("BRANCH_NOT_FOUND");
+    }
+
+    await assertBranchAccess(ctx, branch, args.callerUserId as any, "branch.update", args.workspaceId as any);
+
+    if (branch.status === "archived") {
+      throw new Error("BRANCH_NOT_ACTIVE");
+    }
 
     const now = Date.now();
 
@@ -1309,8 +1681,8 @@ export const updateBranchSettings = mutation({
         workspaceId: branch.workspaceId,
         branchId: branch._id,
         actorUserId: args.callerUserId as any,
-        action: "branch.operational_updated",
-        eventType: "branch.operational_updated",
+        action: "branch.updated",
+        eventType: "branch.updated",
         resourceType: "branch_settings",
         resourceId: branch._id,
         afterValues: payload,
@@ -1329,13 +1701,22 @@ export const setPrimaryBranch = mutation({
   args: {
     branchId: v.union(v.id("branches"), v.string()),
     callerUserId: v.optional(v.union(v.id("users"), v.string())),
+    workspaceId: v.optional(v.union(v.id("workspaces"), v.id("organizations"), v.string())),
   },
   handler: async (ctx, args) => {
     let branch: any = null;
     try {
       branch = await ctx.db.get(args.branchId as any);
     } catch {}
-    if (!branch) throw new Error("Branch not found");
+    if (!branch || branch.status === "deleted" || branch.deletedAt) {
+      throw new Error("BRANCH_NOT_FOUND");
+    }
+
+    await assertBranchAccess(ctx, branch, args.callerUserId as any, "branch.set_primary", args.workspaceId as any);
+
+    if (branch.status === "suspended" || branch.status === "archived") {
+      throw new Error("Only active branches can be set as primary.");
+    }
 
     const now = Date.now();
 
@@ -1353,7 +1734,7 @@ export const setPrimaryBranch = mutation({
         .collect();
     }
 
-    // Unset existing primary branches
+    // Unset existing primary branches atomically
     for (const b of siblings) {
       if (b.isPrimary && b._id !== branch._id) {
         await ctx.db.patch(b._id, { isPrimary: false, updatedAt: now });
@@ -1387,13 +1768,39 @@ export const suspendBranch = mutation({
   args: {
     branchId: v.union(v.id("branches"), v.string()),
     callerUserId: v.optional(v.union(v.id("users"), v.string())),
+    workspaceId: v.optional(v.union(v.id("workspaces"), v.id("organizations"), v.string())),
   },
   handler: async (ctx, args) => {
     let branch: any = null;
     try {
       branch = await ctx.db.get(args.branchId as any);
     } catch {}
-    if (!branch) throw new Error("Branch not found");
+    if (!branch || branch.status === "deleted" || branch.deletedAt) {
+      throw new Error("BRANCH_NOT_FOUND");
+    }
+
+    await assertBranchAccess(ctx, branch, args.callerUserId as any, "branch.suspend", args.workspaceId as any);
+
+    let siblings: any[] = [];
+    if (branch.workspaceId) {
+      siblings = await ctx.db
+        .query("branches")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", branch.workspaceId!))
+        .collect();
+    } else if (branch.organizationId) {
+      siblings = await ctx.db
+        .query("branches")
+        .withIndex("by_organizationId", (q) => q.eq("organizationId", branch.organizationId!))
+        .collect();
+    }
+
+    const activeSiblings = siblings.filter(
+      (b) => b._id !== branch._id && b.status !== "archived" && b.status !== "suspended" && b.status !== "deleted"
+    );
+
+    if (branch.isPrimary && activeSiblings.length === 0) {
+      throw new Error("Cannot suspend the only active primary branch.");
+    }
 
     const now = Date.now();
     await ctx.db.patch(branch._id, {
@@ -1426,13 +1833,18 @@ export const restoreBranch = mutation({
   args: {
     branchId: v.union(v.id("branches"), v.string()),
     callerUserId: v.optional(v.union(v.id("users"), v.string())),
+    workspaceId: v.optional(v.union(v.id("workspaces"), v.id("organizations"), v.string())),
   },
   handler: async (ctx, args) => {
     let branch: any = null;
     try {
       branch = await ctx.db.get(args.branchId as any);
     } catch {}
-    if (!branch) throw new Error("Branch not found");
+    if (!branch || branch.status === "deleted" || branch.deletedAt) {
+      throw new Error("BRANCH_NOT_FOUND");
+    }
+
+    await assertBranchAccess(ctx, branch, args.callerUserId as any, "branch.restore", args.workspaceId as any);
 
     const now = Date.now();
     await ctx.db.patch(branch._id, {
@@ -1465,13 +1877,18 @@ export const archiveBranch = mutation({
   args: {
     branchId: v.union(v.id("branches"), v.string()),
     callerUserId: v.optional(v.union(v.id("users"), v.string())),
+    workspaceId: v.optional(v.union(v.id("workspaces"), v.id("organizations"), v.string())),
   },
   handler: async (ctx, args) => {
     let branch: any = null;
     try {
       branch = await ctx.db.get(args.branchId as any);
     } catch {}
-    if (!branch) throw new Error("Branch not found");
+    if (!branch || branch.status === "deleted" || branch.deletedAt) {
+      throw new Error("BRANCH_NOT_FOUND");
+    }
+
+    await assertBranchAccess(ctx, branch, args.callerUserId as any, "branch.archive", args.workspaceId as any);
 
     const now = Date.now();
 

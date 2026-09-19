@@ -33,25 +33,39 @@ export function isValidOrgStatusTransition(currentStatus: string, newStatus: str
   return allowed.includes(newStatus.toLowerCase());
 }
 
-export async function checkHasFinancialRecords(ctx: { db: any }, orgId: any): Promise<boolean> {
+export async function checkHasFinancialRecords(ctx: { db: any }, targetId: any): Promise<boolean> {
+  if (!targetId) return false;
+
   // 1. Check invoices
-  const invoice = await ctx.db
+  const orgInvoice = await ctx.db
     .query("invoices")
-    .withIndex("by_organizationId", (q: any) => q.eq("organizationId", orgId))
+    .withIndex("by_organizationId", (q: any) => q.eq("organizationId", targetId))
     .first();
-  if (invoice) return true;
+  if (orgInvoice) return true;
+
+  const wsInvoice = await ctx.db
+    .query("invoices")
+    .withIndex("by_workspace", (q: any) => q.eq("workspaceId", targetId))
+    .first();
+  if (wsInvoice) return true;
 
   // 2. Check payments
-  const payment = await ctx.db
+  const orgPayment = await ctx.db
     .query("payments")
-    .withIndex("by_organizationId", (q: any) => q.eq("organizationId", orgId))
+    .withIndex("by_organizationId", (q: any) => q.eq("organizationId", targetId))
     .first();
-  if (payment) return true;
+  if (orgPayment) return true;
 
-  // 3. Check inventory sales for workspaces under this organization
+  const wsPayment = await ctx.db
+    .query("payments")
+    .withIndex("by_workspace", (q: any) => q.eq("workspaceId", targetId))
+    .first();
+  if (wsPayment) return true;
+
+  // 3. If targetId is an organization, check all its workspaces for sales
   const workspaces = await ctx.db
     .query("workspaces")
-    .withIndex("by_organizationId", (q: any) => q.eq("organizationId", orgId))
+    .withIndex("by_organizationId", (q: any) => q.eq("organizationId", targetId))
     .collect();
 
   for (const ws of workspaces) {
@@ -61,6 +75,13 @@ export async function checkHasFinancialRecords(ctx: { db: any }, orgId: any): Pr
       .first();
     if (sale) return true;
   }
+
+  // 4. If targetId itself is a workspace, check sales for it directly
+  const directSale = await ctx.db
+    .query("inventorySales")
+    .withIndex("by_workspaceId", (q: any) => q.eq("workspaceId", targetId))
+    .first();
+  if (directSale) return true;
 
   return false;
 }
@@ -189,22 +210,19 @@ export async function ensureUserHasNoOtherFreeTrial(
     const isFreeTrial = planKey === "free_trial" || planKey === "free";
     const isActiveOrTrial = ["trial", "trialing", "active"].includes(sub.status);
 
-    if (isFreeTrial && isActiveOrTrial) {
-      const isExpired = sub.trialEndsAt && sub.trialEndsAt < Date.now() && sub.status !== "active";
-      if (!isExpired) {
-        await ctx.db.insert("organizationAuditLogs", {
-          userId,
-          eventType: "organization.free_trial_limit_reached",
-          metadata: {
-            organizationId: m.organizationId?.toString(),
-            message: "Attempted to create second Free Trial organization",
-          },
-          createdAt: Date.now(),
-        });
-        throw new Error(
-          "FREE_TRIAL_LIMIT_REACHED: You already have an organization on Free Trial. Please choose Standard for this new organization."
-        );
-      }
+    if (isFreeTrial) {
+      await ctx.db.insert("organizationAuditLogs", {
+        userId,
+        eventType: "organization.free_trial_limit_reached",
+        metadata: {
+          organizationId: m.organizationId?.toString(),
+          message: "Attempted to create second Free Trial organization",
+        },
+        createdAt: Date.now(),
+      });
+      throw new Error(
+        "FREE_TRIAL_LIMIT_REACHED: You have already used your Free Trial organization eligibility. Please choose Standard or Premium for this new organization."
+      );
     }
   }
 }
@@ -937,12 +955,21 @@ export const createOrganization = mutation({
     });
 
     // Primary branch
+    const inventoryApp = await ctx.db
+      .query("applications")
+      .withIndex("by_key", (q: any) => q.eq("key", "inventory"))
+      .first();
+
     const branchData = args.primaryBranch;
     const branchId = await ctx.db.insert("branches", {
       workspaceId,
+      organizationId,
+      applicationId: inventoryApp?._id,
+      productKey: "inventory",
       name: branchData?.name || "Main Store",
       code: branchData?.code || "MAIN",
       isPrimary: true,
+      isActive: true,
       status: "active",
       country: branchData?.country || args.country || "Nigeria",
       state: branchData?.state || "Lagos",

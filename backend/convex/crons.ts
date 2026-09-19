@@ -7,35 +7,49 @@ const crons = cronJobs();
 crons.daily(
   "purge-expired-account-deletions",
   { hourUTC: 1, minuteUTC: 0 },
-  api.cronCleanups.purgeExpiredAccountDeletions
+  api.cronCleanups.purgeExpiredAccountDeletions,
+  {}
 );
 
-// 2. Check trial expirations daily at 9:00 AM WAT (8:00 AM UTC)
+// 2. Check trial expirations daily at 8:00 AM UTC
 crons.daily(
   "check-trial-expirations",
   { hourUTC: 8, minuteUTC: 0 },
-  api.subscriptions.checkTrialExpirations
+  api.subscriptions.checkTrialExpirations,
+  {}
 );
 
-// 3. Check renewal reminders daily at 9:00 AM WAT (8:00 AM UTC)
+// 3. Check renewal reminders daily at 8:00 AM UTC
 crons.daily(
   "check-renewals",
   { hourUTC: 8, minuteUTC: 0 },
-  api.subscriptions.checkRenewals
+  api.subscriptions.checkRenewals,
+  {}
 );
 
 // 4. Expire trials hourly
-crons.hourly(
+crons.interval(
   "expire-trials",
-  { minuteUTC: 0 },
-  api.subscriptions.expireTrials
+  { hours: 1 },
+  api.subscriptions.expireTrials,
+  {}
 );
 
 // 5. Process subscription renewals hourly
-crons.hourly(
+crons.interval(
   "process-renewals",
-  { minuteUTC: 0 },
-  api.subscriptions.processRenewals
+  { hours: 1 },
+  api.subscriptions.processRenewals,
+  {}
+);
+
+// 7. Cleanup old read notifications daily at 3:00 AM UTC (30-day retention)
+crons.daily(
+  "cleanup-old-notifications",
+  { hourUTC: 3, minuteUTC: 0 },
+  api.notifications.cleanupOldNotifications,
+  { olderThanDays: 30 }
 );
 
 export default crons;
+

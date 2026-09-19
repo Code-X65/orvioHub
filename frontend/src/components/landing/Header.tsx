@@ -20,7 +20,7 @@ export const Header: React.FC = () => {
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
   const { user, isAuthenticated, isInitialized, refreshSession, logout } = useAuthStore();
-  const { workspaces, fetchWorkspaces } = useWorkspaceStore();
+  const { workspaces, fetchWorkspaces, isLoading } = useWorkspaceStore();
 
   useEffect(() => {
     if (!isInitialized) {
@@ -29,10 +29,10 @@ export const Header: React.FC = () => {
   }, [isInitialized, refreshSession]);
 
   useEffect(() => {
-    if (isAuthenticated && workspaces.length === 0) {
+    if (isAuthenticated && workspaces.length === 0 && !isLoading) {
       fetchWorkspaces('inventory').catch(() => {});
     }
-  }, [isAuthenticated, fetchWorkspaces, workspaces.length]);
+  }, [isAuthenticated, fetchWorkspaces, workspaces.length, isLoading]);
 
   const hasOrganization = Boolean(workspaces && workspaces.length > 0);
 
@@ -93,7 +93,7 @@ export const Header: React.FC = () => {
                   <p className="font-semibold text-xs text-white">Workspaces</p>
                   <p className="text-[11px] text-slate-400">View and manage all your organizations</p>
                 </a>
-                <a href={inventoryUrl} className="block p-2.5 rounded-sm hover:bg-white/5 text-slate-300 hover:text-white transition">
+                <a href="/inventory" className="block p-2.5 rounded-sm hover:bg-white/5 text-slate-300 hover:text-white transition">
                   <p className="font-semibold text-xs text-white">Inventory Management</p>
                   <p className="text-[11px] text-slate-400">Multi-branch stock, POS checkout & registers</p>
                 </a>

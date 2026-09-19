@@ -265,7 +265,7 @@ export const AppGrid: React.FC = () => {
           {apps.map((app) => (
             <a
               key={app.id}
-              href={launcherUrl}
+              href={app.id === 'inventory' ? '/inventory' : launcherUrl}
               className="relative overflow-hidden group p-6 rounded-2xl bg-[#0b0b0d] hover:bg-[#121216] border border-white/5 hover:border-[#714B67]/60 transition-all duration-300 flex flex-col items-center justify-center text-center space-y-4 shadow-lg hover:shadow-xl hover:shadow-[#714B67]/15 hover:-translate-y-1"
             >
               {/* Faint Background Pattern */}

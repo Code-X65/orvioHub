@@ -123,9 +123,10 @@ export const BranchSetupPage: React.FC = () => {
     loadData();
   }, [loadData]);
 
-  const isFreeTrialPlan = org?.planKey === 'free_trial' || org?.planKey === 'free';
-  const maxBranches = isFreeTrialPlan ? 1 : Infinity;
-  const atLimit = isFreeTrialPlan && branches.length >= maxBranches;
+  const planKey = org?.planKey || 'free_trial';
+  const isFreeTrialPlan = planKey === 'free_trial' || planKey === 'free';
+  const maxBranches = isFreeTrialPlan ? 1 : planKey === 'standard' ? 3 : 10;
+  const atLimit = branches.length >= maxBranches;
 
   const handleCreateBranch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -135,7 +136,11 @@ export const BranchSetupPage: React.FC = () => {
       return;
     }
     if (atLimit) {
-      toast.error('Free Trial allows only 1 branch per app. Upgrade to Standard for more branches.');
+      toast.error(
+        isFreeTrialPlan
+          ? 'Free Trial allows only 1 branch. Upgrade to Standard for up to 3 branches.'
+          : `Your current plan allows up to ${maxBranches} branches. Upgrade to add more.`
+      );
       return;
     }
 

@@ -1,36 +1,22 @@
 import React, { useState } from 'react';
-import { Check, X, Clock, Info, CheckCircle2, AlertTriangle, AlertCircle, Loader2 } from 'lucide-react';
+import {
+  Check,
+  X,
+  Clock,
+  Info,
+  CheckCircle2,
+  AlertTriangle,
+  AlertCircle,
+  Loader2,
+  ExternalLink,
+  Layers,
+} from 'lucide-react';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
+import { type NotificationData } from '@/stores/useNotificationStore';
+import { resolveTargetSubdomainUrl } from '@/hooks/useRealtimeNotifications';
 import { cn } from '@/lib/utils';
 
-export interface NotificationData {
-  _id: string;
-  userId: string;
-  workspaceId?: string;
-  productKey?: string;
-  type: string;
-  title: string;
-  body: string;
-  data?: {
-    inviteId?: string;
-    inviteType?: 'organization' | 'workspace';
-    organizationId?: string;
-    organizationName?: string;
-    workspaceId?: string;
-    workspaceName?: string;
-    role?: string;
-    inviterName?: string;
-    tokenHash?: string;
-    isResolved?: boolean;
-    inviteStatus?: string;
-    isAlreadyMember?: boolean;
-    [key: string]: any;
-  };
-  severity: 'INFO' | 'SUCCESS' | 'WARNING' | 'ERROR';
-  channel: string;
-  status: 'UNREAD' | 'READ' | 'ARCHIVED';
-  createdAt: number;
-}
+export type { NotificationData };
 
 interface NotificationItemProps {
   notification: NotificationData;
@@ -64,11 +50,13 @@ export const NotificationItem: React.FC<NotificationItemProps> = ({
   const [isDeclining, setIsDeclining] = useState(false);
   const [actionDone, setActionDone] = useState<'accepted' | 'declined' | null>(null);
 
+  const notifId = notification._id || notification.id || '';
   const isInvite =
     notification.type === 'org_invite' ||
     notification.type === 'workspace_invite' ||
     notification.type === 'application_invite' ||
-    notification.type === 'branch_invite';
+    notification.type === 'branch_invite' ||
+    Boolean(notification.data?.inviteId);
   const isUnread = notification.status === 'UNREAD';
 
   const orgId =
@@ -120,7 +108,7 @@ export const NotificationItem: React.FC<NotificationItemProps> = ({
       await onAccept(notification);
       setActionDone('accepted');
     } catch {
-      // error handled by parent toast
+      // handled by caller
     } finally {
       setIsAccepting(false);
     }
@@ -134,15 +122,21 @@ export const NotificationItem: React.FC<NotificationItemProps> = ({
       await onDecline(notification);
       setActionDone('declined');
     } catch {
-      // error handled by parent toast
+      // handled by caller
     } finally {
       setIsDeclining(false);
     }
   };
 
   const handleClick = () => {
-    if (isUnread && onMarkRead) {
-      onMarkRead(notification._id);
+    if (isUnread && onMarkRead && notifId) {
+      onMarkRead(notifId);
+    }
+    if (notification.actionUrl && !isInvite) {
+      const targetUrl = resolveTargetSubdomainUrl(notification.actionUrl);
+      if (targetUrl.startsWith('http://') || targetUrl.startsWith('https://')) {
+        window.location.href = targetUrl;
+      }
     }
   };
 
@@ -150,31 +144,31 @@ export const NotificationItem: React.FC<NotificationItemProps> = ({
     <div
       onClick={handleClick}
       className={cn(
-        'group relative p-3.5 rounded-lg border transition-all duration-200 cursor-pointer',
+        'group relative p-3.5 rounded-xl border transition-all duration-200 cursor-pointer text-left',
         isUnread
-          ? 'bg-white/[0.04] hover:bg-white/[0.07] border-white/10'
-          : 'bg-transparent hover:bg-white/[0.02] border-transparent opacity-80 hover:opacity-100'
+          ? 'bg-slate-900/90 hover:bg-slate-800/90 border-slate-700/80 shadow-sm'
+          : 'bg-slate-950/40 hover:bg-slate-900/50 border-slate-800/50 opacity-80 hover:opacity-100'
       )}
     >
       {/* Unread indicator dot */}
       {isUnread && !isResolved && (
-        <span className="absolute top-3 right-3 w-2 h-2 rounded-full bg-[#FDB02F] shadow-[0_0_8px_#FDB02F]" />
+        <span className="absolute top-3 right-3 w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_#10B981]" />
       )}
 
       <div className="flex items-start gap-3">
         {/* Avatar or Type Icon */}
         {isInvite ? (
-          <div className="w-9 h-9 rounded-md bg-gradient-to-tr from-[#714B67] to-[#FDB02F] flex items-center justify-center font-bold text-white text-xs shrink-0 shadow-md">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-purple-700 to-emerald-600 flex items-center justify-center font-bold text-white text-xs shrink-0 shadow-md">
             {orgName.charAt(0).toUpperCase()}
           </div>
         ) : (
           <div
             className={cn(
-              'w-8 h-8 rounded-md flex items-center justify-center shrink-0 text-xs',
-              notification.severity === 'SUCCESS' && 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20',
-              notification.severity === 'WARNING' && 'bg-amber-500/10 text-amber-400 border border-amber-500/20',
-              notification.severity === 'ERROR' && 'bg-rose-500/10 text-rose-400 border border-rose-500/20',
-              notification.severity === 'INFO' && 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+              'w-8 h-8 rounded-lg flex items-center justify-center shrink-0 text-xs shadow-inner',
+              notification.severity === 'SUCCESS' && 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30',
+              notification.severity === 'WARNING' && 'bg-amber-500/10 text-amber-400 border border-amber-500/30',
+              notification.severity === 'ERROR' && 'bg-rose-500/10 text-rose-400 border border-rose-500/30',
+              notification.severity === 'INFO' && 'bg-blue-500/10 text-blue-400 border border-blue-500/30'
             )}
           >
             {notification.severity === 'SUCCESS' && <CheckCircle2 className="w-4 h-4" />}
@@ -190,31 +184,67 @@ export const NotificationItem: React.FC<NotificationItemProps> = ({
             <h4 className={cn('text-xs font-semibold truncate', isUnread ? 'text-white' : 'text-slate-300')}>
               {notification.title}
             </h4>
+
+            {notification.priority === 'URGENT' && (
+              <span className="px-1.5 py-0.2 rounded text-[9px] font-black bg-red-500/20 text-red-400 border border-red-500/30 uppercase">
+                Urgent
+              </span>
+            )}
+
+            {notification.category && (
+              <span className="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-slate-800 text-slate-400 border border-slate-700 uppercase">
+                {notification.category}
+              </span>
+            )}
+
             {isInvite && (
-              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-[#714B67]/30 text-[#e0a8d3] border border-[#714B67]/40 uppercase tracking-wider">
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-500/20 text-purple-300 border border-purple-500/30 uppercase tracking-wider">
                 {roleName}
               </span>
             )}
           </div>
 
-          <p className="text-[11px] text-slate-400 leading-relaxed break-words">
-            {notification.body}
+          <p className="text-[11px] text-slate-300 leading-relaxed break-words">
+            {notification.body || notification.message}
           </p>
 
-          <div className="flex items-center gap-2 mt-1.5 text-[10px] text-slate-500">
+          <div className="flex items-center gap-2 mt-1.5 text-[10px] text-slate-400">
             <Clock className="w-3 h-3" />
             <span>{formatRelativeTime(notification.createdAt)}</span>
-            {isInvite && inviter && <span>• by {inviter}</span>}
+            {isInvite && inviter && <span>• from {inviter}</span>}
+            {notification.batchCount && notification.batchCount > 1 && (
+              <span className="flex items-center gap-1 text-emerald-400 font-semibold bg-emerald-500/10 px-1.5 py-0.2 rounded border border-emerald-500/20">
+                <Layers className="w-2.5 h-2.5" />
+                {notification.batchCount} batched
+              </span>
+            )}
           </div>
 
-          {/* Accept / Decline Action Buttons for Invites (only if active & unresolved) */}
+          {/* Action Button if actionUrl present */}
+          {notification.actionUrl && !isInvite && (
+            <div className="mt-2.5">
+              <a
+                href={resolveTargetSubdomainUrl(notification.actionUrl)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (isUnread && onMarkRead && notifId) onMarkRead(notifId);
+                }}
+                className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400 hover:text-emerald-300 hover:underline"
+              >
+                <span>{notification.actionLabel || 'View Details'}</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+          )}
+
+          {/* Accept / Decline Action Buttons for Invites */}
           {isInvite && !actionDone && !isResolved && (
-            <div className="flex items-center gap-2 mt-3 pt-2 border-t border-white/5">
+            <div className="flex items-center gap-2 mt-3 pt-2 border-t border-slate-800">
               <button
                 type="button"
                 onClick={handleAccept}
                 disabled={isAccepting || isDeclining}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded bg-[#714B67] hover:bg-[#85587a] text-white shadow-sm transition disabled:opacity-50 cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm transition disabled:opacity-50 cursor-pointer"
               >
                 {isAccepting ? (
                   <>
@@ -233,7 +263,7 @@ export const NotificationItem: React.FC<NotificationItemProps> = ({
                 type="button"
                 onClick={handleDecline}
                 disabled={isAccepting || isDeclining}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white border border-white/10 transition disabled:opacity-50 cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition disabled:opacity-50 cursor-pointer"
               >
                 {isDeclining ? (
                   <>
@@ -252,21 +282,21 @@ export const NotificationItem: React.FC<NotificationItemProps> = ({
 
           {/* Resolved State Indicators */}
           {(actionDone === 'accepted' || (isInvite && alreadyMember)) && (
-            <div className="mt-2.5 pt-2 border-t border-white/5 text-[11px] font-medium text-emerald-400 flex items-center gap-1.5">
+            <div className="mt-2.5 pt-2 border-t border-slate-800 text-[11px] font-medium text-emerald-400 flex items-center gap-1.5">
               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-              <span>Invitation accepted • You are an active member</span>
+              <span>Invitation accepted • Active member</span>
             </div>
           )}
 
           {(actionDone === 'declined' || (isInvite && isCancelled && !alreadyMember)) && (
-            <div className="mt-2.5 pt-2 border-t border-white/5 text-[11px] font-medium text-slate-400 flex items-center gap-1.5">
+            <div className="mt-2.5 pt-2 border-t border-slate-800 text-[11px] font-medium text-slate-400 flex items-center gap-1.5">
               <X className="w-3.5 h-3.5 text-slate-400 shrink-0" />
               <span>Invitation no longer active</span>
             </div>
           )}
 
           {isInvite && isExpired && !alreadyMember && !actionDone && (
-            <div className="mt-2.5 pt-2 border-t border-white/5 text-[11px] font-medium text-amber-400/80 flex items-center gap-1.5">
+            <div className="mt-2.5 pt-2 border-t border-slate-800 text-[11px] font-medium text-amber-400/80 flex items-center gap-1.5">
               <Clock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
               <span>Invitation expired</span>
             </div>
@@ -276,3 +306,5 @@ export const NotificationItem: React.FC<NotificationItemProps> = ({
     </div>
   );
 };
+
+export default NotificationItem;

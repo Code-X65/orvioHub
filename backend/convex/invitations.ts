@@ -1,5 +1,6 @@
 import { query, mutation } from "./_generated/server.js";
 import { v } from "convex/values";
+import { getSubscriptionForWorkspaceOrOrg, getEntitlementsFromPlan } from "./entitlements.js";
 
 export const getInvitationByToken = query({
   args: { token: v.string() },
@@ -330,13 +331,28 @@ export const acceptInvitation = mutation({
       throw new Error("INVITATION_EMAIL_MISMATCH");
     }
 
-    // 3. Create or update membership
-    const existingMembership = await ctx.db
-      .query("organizationMemberships")
-      .withIndex("by_org_and_user", (q: any) =>
-        q.eq("organizationId", invite.organizationId).eq("userId", user._id)
-      )
-      .first();
+    // 3. Check seat capacity before activating a new membership
+    const isAlreadyActive =
+      existingMembership &&
+      existingMembership.status === "ACTIVE";
+
+    if (!isAlreadyActive) {
+      const subData = await getSubscriptionForWorkspaceOrOrg(ctx, invite.organizationId);
+      const entitlements = getEntitlementsFromPlan(subData.plan, subData.isTrial);
+      const maxMembers = entitlements.maxMembers ?? 2;
+
+      const existingMembers = await ctx.db
+        .query("organizationMemberships")
+        .withIndex("by_organizationId", (q: any) => q.eq("organizationId", invite.organizationId))
+        .filter((q: any) => q.eq(q.field("status"), "ACTIVE"))
+        .collect();
+
+      if (existingMembers.length >= maxMembers) {
+        throw new Error(
+          `PLAN_MEMBER_LIMIT_REACHED: Organization seat limit reached (${maxMembers} members max on ${entitlements.planName}). Please contact your organization administrator to upgrade.`
+        );
+      }
+    }
 
     if (existingMembership) {
       await ctx.db.patch(existingMembership._id, {

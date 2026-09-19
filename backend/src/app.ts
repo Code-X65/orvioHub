@@ -25,11 +25,15 @@ import { adminUserRoutes } from './routes/admin/users.js';
 import { adminWorkspaceRoutes } from './routes/admin/workspaces.js';
 import { adminPhoneChallengeRoutes } from './routes/admin/phoneChallenges.js';
 import { adminDeletionRoutes } from './routes/admin/deletions.js';
+import { adminOverrideRoutes } from './routes/admin/overrides.js';
+import { adminAnalyticsRoutes } from './routes/admin/analytics.js';
+import { workspaceAnalyticsRoutes } from './routes/workspaceAnalytics.js';
 import { receiptSettingsRoutes } from './routes/receiptSettings.js';
 import { branchTeamRoutes } from './routes/branchTeam.js';
 import { workspaceSettingsRoutes } from './routes/workspaceSettings.js';
 import { branchSettingsRoutes } from './routes/branchSettings.js';
 import { applicationSettingsRoutes } from './routes/applicationSettings.js';
+import { entitlementRoutes } from './routes/entitlements.js';
 import { webhookRoutes } from './routes/webhooks.js';
 import { convexPlugin } from './plugins/convex.js';
 import { observabilityPlugin } from './plugins/observability.js';
@@ -117,7 +121,16 @@ export async function buildApp() {
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Orviohub-Application'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-Requested-With',
+      'X-Orviohub-Application',
+      'Idempotency-Key',
+      'idempotency-key',
+      'x-workspace-id',
+      'x-branch-id',
+    ],
   });
 
   // 2. Cookie Support (Required for cross-subdomain session cookies)
@@ -150,7 +163,7 @@ export async function buildApp() {
   // Redirect legacy /v1/* routes to canonical /api/v1/*
   fastify.addHook('onRequest', async (request, reply) => {
     const rawUrl = request.raw.url || request.url;
-    if (rawUrl.startsWith('/v1/') && !rawUrl.startsWith('/v1/host-context')) {
+    if (rawUrl.startsWith('/v1/') && !rawUrl.startsWith('/v1/host-context') && !rawUrl.startsWith('/v1/auth') && !rawUrl.startsWith('/v1/users')) {
       const targetUrl = `/api${rawUrl}`;
       const statusCode = request.method === 'GET' || request.method === 'HEAD' ? 308 : 307;
       return reply.code(statusCode).redirect(targetUrl);
@@ -160,7 +173,9 @@ export async function buildApp() {
   // API Routes
   await fastify.register(healthRoutes);
   await fastify.register(authRoutes, { prefix: '/api/v1/auth' });
+  await fastify.register(authRoutes, { prefix: '/v1/auth' });
   await fastify.register(userRoutes, { prefix: '/api/v1/users' });
+  await fastify.register(userRoutes, { prefix: '/v1/users' });
   await fastify.register(organizationRoutes, { prefix: '/api/v1/organizations' });
   await fastify.register(organizationRoutes, { prefix: '/api/v1/orgs' });
   await fastify.register(workspaceRoutes, { prefix: '/api/v1/workspaces' });
@@ -175,6 +190,11 @@ export async function buildApp() {
   await fastify.register(adminWorkspaceRoutes, { prefix: '/api/v1/admin' });
   await fastify.register(adminPhoneChallengeRoutes, { prefix: '/api/v1/admin' });
   await fastify.register(adminDeletionRoutes, { prefix: '/api/v1/admin' });
+  await fastify.register(adminOverrideRoutes, { prefix: '/api/v1/admin' });
+  await fastify.register(adminAnalyticsRoutes, { prefix: '/api/v1/admin/analytics' });
+  await fastify.register(adminAnalyticsRoutes, { prefix: '/v1/admin/analytics' });
+  await fastify.register(workspaceAnalyticsRoutes, { prefix: '/api/v1' });
+  await fastify.register(workspaceAnalyticsRoutes, { prefix: '/v1' });
   await fastify.register(webhookRoutes, { prefix: '/api/v1' });
   await fastify.register(onboardingRoutes, { prefix: '/api/v1/onboarding' });
   await fastify.register(invitationRoutes, { prefix: '/api/v1/invitations' });
@@ -186,6 +206,8 @@ export async function buildApp() {
   await fastify.register(workspaceSettingsRoutes, { prefix: '/api/v1' });
   await fastify.register(branchSettingsRoutes, { prefix: '/api/v1' });
   await fastify.register(applicationSettingsRoutes, { prefix: '/api/v1' });
+  await fastify.register(entitlementRoutes, { prefix: '/api/v1/entitlements' });
+  await fastify.register(entitlementRoutes, { prefix: '/v1/entitlements' });
 
   return fastify;
 }

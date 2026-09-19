@@ -51,8 +51,9 @@ export const PaymentPage: React.FC = () => {
   const orgId = searchParams.get('orgId') || searchParams.get('org') || searchParams.get('organizationId');
   const orgName = searchParams.get('orgName') || 'Your Business';
   const cycleParam = (searchParams.get('cycle') || 'monthly') as 'monthly' | 'annual';
+  const planParam = (searchParams.get('plan') || 'standard').toLowerCase() === 'premium' ? 'premium' : 'standard';
 
-  const [selectedPlan] = useState<'standard'>('standard');
+  const [selectedPlan, setSelectedPlan] = useState<'standard' | 'premium'>(planParam);
   const [billingCycle, setBillingCycle] = useState<'monthly' | 'annual'>(cycleParam);
   const [paymentMethod, setPaymentMethod] = useState<'paystack' | 'bank_transfer'>('paystack');
 
@@ -72,11 +73,15 @@ export const PaymentPage: React.FC = () => {
   const [createdInvoiceNumber, setCreatedInvoiceNumber] = useState<string | null>(null);
   const [confirmedPaymentRef, setConfirmedPaymentRef] = useState<string>('');
 
-  // Pricing calculations (Standard: ₦7,500/mo or ₦75,000/yr)
+  // Authoritative Pricing (Standard: ₦7.5k/mo or ₦75k/yr, Premium: ₦25k/mo or ₦250k/yr)
   const prices = {
     standard: {
       monthly: 7500,
       annual: 75000,
+    },
+    premium: {
+      monthly: 25000,
+      annual: 250000,
     },
   };
 
@@ -94,14 +99,35 @@ export const PaymentPage: React.FC = () => {
     setIsProcessingPayment(true);
     setPaymentError(null);
 
+    // Persist pending payment state so in-app billing page can fallback poll if redirect/popup is interrupted
+    if (orgId) {
+      try {
+        localStorage.setItem(
+          `orvio_pending_payment_${orgId}`,
+          JSON.stringify({
+            orgId,
+            plan: selectedPlan,
+            amount: amountNGN,
+            cycle: billingCycle,
+            timestamp: Date.now(),
+          })
+        );
+      } catch {}
+    }
+
     try {
       const email = user?.email || 'customer@orvio.io';
       await openPaystackPopup({
         email,
         amountInNaira: amountNGN,
-        planName: `Orviohub Standard Plan (${billingCycle})`,
+        planName: `Orviohub ${selectedPlan === 'premium' ? 'Premium' : 'Standard'} Plan (${billingCycle})`,
         onSuccess: async (verifiedRef: string) => {
           try {
+            if (orgId) {
+              try {
+                localStorage.removeItem(`orvio_pending_payment_${orgId}`);
+              } catch {}
+            }
             setConfirmedPaymentRef(verifiedRef);
             let res: any = null;
 
@@ -111,12 +137,13 @@ export const PaymentPage: React.FC = () => {
                 paymentReference: verifiedRef,
                 provider: 'paystack',
                 amount: amountNGN,
+                planKey: selectedPlan,
                 billingInterval: billingCycle,
               });
             } else {
               res = await api.post('/billing/verify', {
                 reference: verifiedRef,
-                planKey: 'standard',
+                planKey: selectedPlan,
                 billingInterval: billingCycle,
               });
             }
@@ -139,7 +166,8 @@ export const PaymentPage: React.FC = () => {
             }
 
             setSubmittedSuccess(true);
-            toast.success(`Payment of ₦${amountNGN.toLocaleString('en-NG')} confirmed! "${orgName}" is now active on Standard Plan.`);
+            const planTitle = selectedPlan === 'premium' ? 'Premium Plan' : 'Standard Plan';
+            toast.success(`Payment of ₦${amountNGN.toLocaleString('en-NG')} confirmed! "${orgName}" is now active on ${planTitle}.`);
           } catch (backendErr: any) {
             const errorMsg = backendErr?.message || 'Payment confirmation failed. Please contact support.';
             setPaymentError(errorMsg);
@@ -212,6 +240,7 @@ export const PaymentPage: React.FC = () => {
           paymentReference: ref,
           provider: 'bank_transfer',
           amount: amountNGN,
+          planKey: selectedPlan,
           billingInterval: billingCycle,
         });
       } else {
@@ -242,7 +271,8 @@ export const PaymentPage: React.FC = () => {
       }
 
       setSubmittedSuccess(true);
-      toast.success(`Transfer details submitted! "${orgName}" has been activated.`);
+      const planTitle = selectedPlan === 'premium' ? 'Premium Plan' : 'Standard Plan';
+      toast.success(`Transfer details submitted! "${orgName}" has been activated on ${planTitle}.`);
     } catch (err: any) {
       toast.error(err.message || 'Failed to submit transfer details. Please try again.');
     } finally {
@@ -265,7 +295,7 @@ export const PaymentPage: React.FC = () => {
             Complete Payment for {orgName}
           </h1>
           <p className="text-xs text-slate-400 mt-2">
-            Activate the Standard plan for your organization with instant Paystack checkout or direct Nigerian bank transfer.
+            Activate your organization subscription with instant Paystack checkout or direct Nigerian bank transfer.
           </p>
         </div>
 
@@ -313,7 +343,7 @@ export const PaymentPage: React.FC = () => {
             </div>
             <h2 className="text-2xl font-bold text-white tracking-tight mb-1">Payment Confirmed!</h2>
             <p className="text-xs text-slate-300 mb-6 leading-relaxed">
-              Your organization <strong className="text-white">{orgName}</strong> is now activated on the <strong className="text-emerald-400">Standard Plan</strong> ({billingCycle}).
+              Your organization <strong className="text-white">{orgName}</strong> is now activated on the <strong className="text-emerald-400 capitalize">{selectedPlan} Plan</strong> ({billingCycle}).
             </p>
 
             {/* Payment Summary Box */}
@@ -328,7 +358,7 @@ export const PaymentPage: React.FC = () => {
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-400">Plan & Cycle</span>
-                <span className="text-white font-medium capitalize">Standard ({billingCycle})</span>
+                <span className="text-white font-medium capitalize">{selectedPlan} ({billingCycle})</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-400">Amount Paid</span>
@@ -384,11 +414,40 @@ export const PaymentPage: React.FC = () => {
                 <div className="mt-3 flex items-center justify-between">
                   <div>
                     <h4 className="text-lg font-bold text-white">{orgName}</h4>
-                    <p className="text-xs text-slate-400 capitalize">Standard Plan • {billingCycle}</p>
+                    <p className="text-xs text-slate-400 capitalize">{selectedPlan} Plan • {billingCycle}</p>
                   </div>
                   <span className="text-xl font-extrabold text-white">
                     ₦{amountNGN.toLocaleString('en-NG')}
                   </span>
+                </div>
+              </div>
+
+              {/* Plan Switcher */}
+              <div className="pt-2 border-t border-white/5 space-y-3">
+                <Label className="text-xs text-slate-300">Choose Plan</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPlan('standard')}
+                    className={`py-2 px-3 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                      selectedPlan === 'standard'
+                        ? 'bg-[#714b67] border-[#714b67] text-white shadow-sm'
+                        : 'bg-black/30 border-white/10 text-slate-300 hover:border-white/20'
+                    }`}
+                  >
+                    Standard (₦7.5k)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPlan('premium')}
+                    className={`py-2 px-3 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                      selectedPlan === 'premium'
+                        ? 'bg-purple-600 border-purple-500 text-white shadow-sm'
+                        : 'bg-black/30 border-white/10 text-slate-300 hover:border-white/20'
+                    }`}
+                  >
+                    Premium (₦25k)
+                  </button>
                 </div>
               </div>
 
@@ -405,7 +464,7 @@ export const PaymentPage: React.FC = () => {
                         : 'bg-black/30 border-white/10 text-slate-300 hover:border-white/20'
                     }`}
                   >
-                    Monthly (₦7.5k/mo)
+                    Monthly
                   </button>
                   <button
                     type="button"
@@ -416,7 +475,7 @@ export const PaymentPage: React.FC = () => {
                         : 'bg-black/30 border-white/10 text-slate-300 hover:border-white/20'
                     }`}
                   >
-                    <span>Annual (₦75k/yr)</span>
+                    <span>Annual</span>
                     <span className="text-[9px] text-emerald-300 font-bold">2 Months Free</span>
                   </button>
                 </div>
@@ -426,19 +485,19 @@ export const PaymentPage: React.FC = () => {
               <div className="pt-4 border-t border-white/5 space-y-2.5 text-xs text-slate-300">
                 <div className="flex items-center gap-2">
                   <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span>Full access to Inventory, POS & Tasks apps</span>
+                  <span>Full access to Inventory & Business apps</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span>Multiple branch management & transfers</span>
+                  <span>{selectedPlan === 'premium' ? 'Up to 10 branches / warehouses' : 'Up to 3 branches / warehouses'}</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span>Up to 10 staff members with custom roles</span>
+                  <span>{selectedPlan === 'premium' ? 'Up to 50 staff members' : 'Up to 10 staff members'}</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <Check className="w-4 h-4 text-[#FDB02F] shrink-0" />
-                  <span>Priority support & audit logs</span>
+                  <span>{selectedPlan === 'premium' ? '25,000 products & 25,000 transactions/mo' : '5,000 products & 5,000 transactions/mo'}</span>
                 </div>
               </div>
 

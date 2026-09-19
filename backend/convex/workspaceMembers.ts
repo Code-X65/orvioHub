@@ -1,5 +1,6 @@
 import { query, mutation } from "./_generated/server.js";
 import { v } from "convex/values";
+import { getSubscriptionForWorkspaceOrOrg, getEntitlementsFromPlan } from "./entitlements.js";
 
 export const getWorkspaceMembers = query({
   args: {
@@ -29,6 +30,21 @@ export const getWorkspaceMembers = query({
       .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
       .collect();
 
+    const appMemberships = await ctx.db
+      .query("applicationMemberships")
+      .withIndex("by_workspace", (q: any) => q.eq("workspaceId", args.workspaceId as any))
+      .collect();
+
+    const branchAssignments = await ctx.db
+      .query("branchAssignments")
+      .withIndex("by_workspace", (q: any) => q.eq("workspaceId", args.workspaceId as any))
+      .collect();
+
+    const branches = await ctx.db
+      .query("branches")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
+      .collect();
+
     const members = [];
     for (const m of memberships) {
       if (m.status.toLowerCase() === "removed") continue;
@@ -37,6 +53,45 @@ export const getWorkspaceMembers = query({
       const userProductMemberships = productMemberships.filter(
         (pm) => pm.userId === m.userId && pm.status.toLowerCase() !== "removed"
       );
+      const userAppMemberships = appMemberships.filter(
+        (am) => am.userId === m.userId && am.status !== "removed"
+      );
+      const userBranchAssignments = branchAssignments.filter(
+        (ba) => ba.userId === m.userId && (!ba.status || ba.status === "active")
+      );
+
+      // Merge app memberships with legacy product memberships if needed
+      const mergedAppAccess: Array<{
+        id: string;
+        applicationKey: string;
+        productKey: string;
+        role: string;
+        permissions: string[];
+        branchIds: any[];
+        status: string;
+      }> = userAppMemberships.map((am) => ({
+        id: String(am._id),
+        applicationKey: am.applicationKey,
+        productKey: am.applicationKey,
+        role: am.role,
+        permissions: am.permissions || [],
+        branchIds: am.branchIds || [],
+        status: am.status,
+      }));
+
+      for (const pm of userProductMemberships) {
+        if (!mergedAppAccess.some((a) => a.applicationKey === pm.productKey)) {
+          mergedAppAccess.push({
+            id: String(pm._id),
+            applicationKey: pm.productKey,
+            productKey: pm.productKey,
+            role: pm.role,
+            permissions: pm.permissions || [],
+            branchIds: pm.branchIds || [],
+            status: pm.status,
+          });
+        }
+      }
 
       members.push({
         id: m._id,
@@ -45,18 +100,24 @@ export const getWorkspaceMembers = query({
         email: user?.email || "",
         avatar: user?.avatar || user?.avatarUrl,
         role: m.role || m.defaultRole || "member",
+        workspaceRole: m.role || m.defaultRole || "member",
         status: m.status,
         invitedAt: m.invitedAt,
         acceptedAt: m.acceptedAt,
         createdAt: m.createdAt,
-        productAccess: userProductMemberships.map((pm) => ({
-          id: pm._id,
-          productKey: pm.productKey,
-          role: pm.role,
-          permissions: pm.permissions,
-          branchIds: pm.branchIds,
-          status: pm.status,
-        })),
+        productAccess: mergedAppAccess,
+        appAccess: mergedAppAccess,
+        branchAssignments: userBranchAssignments.map((ba) => {
+          const br = branches.find((b) => b._id === ba.branchId);
+          return {
+            id: ba._id,
+            branchId: ba.branchId,
+            branchName: br?.name || "Branch",
+            branchCode: br?.code,
+            role: ba.role,
+            status: ba.status || "active",
+          };
+        }),
       });
     }
 
@@ -441,6 +502,36 @@ export const createWorkspaceInvitation = mutation({
       throw new Error("ACTIVE_INVITATION_EXISTS");
     }
 
+    // 4. Subscription & Plan limit check
+    const subData = await getSubscriptionForWorkspaceOrOrg(ctx, args.workspaceId);
+    if (subData.subscription && subData.subscription.status === "suspended") {
+      throw new Error("SUBSCRIPTION_SUSPENDED: Cannot invite members because the workspace subscription is suspended. Please upgrade or reactivate.");
+    }
+    const entitlements = getEntitlementsFromPlan(subData.plan, subData.isTrial);
+    const maxMembers = entitlements.maxMembers ?? 2;
+
+    const allMembers = await ctx.db
+      .query("workspaceMemberships")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
+      .collect();
+    const activeMembers = allMembers.filter(
+      (m) => m.status.toLowerCase() !== "removed" && m.status.toLowerCase() !== "left"
+    );
+
+    const allInvites = await ctx.db
+      .query("workspaceInvitations")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
+      .collect();
+    const pendingInvites = allInvites.filter(
+      (i) => i.status.toLowerCase() === "pending" && i.expiresAt > Date.now()
+    );
+
+    if (activeMembers.length + pendingInvites.length >= maxMembers) {
+      throw new Error(
+        `PLAN_MEMBER_LIMIT_REACHED: Cannot invite member. Your current plan (${entitlements.planName}) allows up to ${maxMembers} members (currently ${activeMembers.length} active, ${pendingInvites.length} pending). Upgrade your plan to add more members.`
+      );
+    }
+
     const now = Date.now();
     const effectiveOrgRole = args.organizationRole || args.role || "staff";
 
@@ -700,6 +791,30 @@ export const acceptWorkspaceInvitation = mutation({
       )
       .first();
 
+    const isAlreadyActive =
+      existingMembership &&
+      existingMembership.status.toLowerCase() === "active";
+
+    if (!isAlreadyActive) {
+      const subData = await getSubscriptionForWorkspaceOrOrg(ctx, invite.workspaceId);
+      const entitlements = getEntitlementsFromPlan(subData.plan, subData.isTrial);
+      const maxMembers = entitlements.maxMembers ?? 2;
+
+      const allMembers = await ctx.db
+        .query("workspaceMemberships")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", invite.workspaceId))
+        .collect();
+      const activeMembers = allMembers.filter(
+        (m) => m.status.toLowerCase() !== "removed" && m.status.toLowerCase() !== "left"
+      );
+
+      if (activeMembers.length >= maxMembers) {
+        throw new Error(
+          `PLAN_MEMBER_LIMIT_REACHED: Workspace seat limit reached (${maxMembers} members max on ${entitlements.planName}). Please contact your workspace administrator to upgrade.`
+        );
+      }
+    }
+
     if (existingMembership) {
       await ctx.db.patch(existingMembership._id, {
         role: orgRole,
@@ -724,6 +839,10 @@ export const acceptWorkspaceInvitation = mutation({
     // 2. Provision App and Branch Access
     if (invite.appAccess && Array.isArray(invite.appAccess) && invite.appAccess.length > 0) {
       for (const app of invite.appAccess) {
+        const validBranchIds = (app.branchIds || []).filter(
+          (id: any) => typeof id === "string" && id.trim().length > 0 && id !== '""' && id !== "''"
+        );
+
         // Upsert productMemberships
         const existingPm = await ctx.db
           .query("productMemberships")
@@ -735,7 +854,7 @@ export const acceptWorkspaceInvitation = mutation({
         if (existingPm) {
           await ctx.db.patch(existingPm._id, {
             role: app.appRole,
-            branchIds: app.branchIds as any,
+            branchIds: validBranchIds.length > 0 ? (validBranchIds as any) : undefined,
             status: "active",
             updatedAt: now,
           });
@@ -746,7 +865,7 @@ export const acceptWorkspaceInvitation = mutation({
             productKey: app.productKey,
             role: app.appRole,
             permissions: [],
-            branchIds: app.branchIds as any,
+            branchIds: validBranchIds.length > 0 ? (validBranchIds as any) : undefined,
             status: "active",
             createdAt: now,
             updatedAt: now,
@@ -754,7 +873,7 @@ export const acceptWorkspaceInvitation = mutation({
         }
 
         // Upsert appBranchAccess for each branch
-        for (const branchId of app.branchIds) {
+        for (const branchId of validBranchIds) {
           const existingBranchAccess = await ctx.db
             .query("appBranchAccess")
             .withIndex("by_branch_user", (q) =>
@@ -870,6 +989,10 @@ export const acceptWorkspaceInvitation = mutation({
       }
     } else if (invite.productKey) {
       // Backward compatible single productKey support
+      const validInviteBranchIds = (invite.branchIds || []).filter(
+        (id: any) => typeof id === "string" && id.trim().length > 0 && id !== '""' && id !== "''"
+      );
+
       const existingPm = await ctx.db
         .query("productMemberships")
         .withIndex("by_workspace_user", (q) =>
@@ -880,7 +1003,7 @@ export const acceptWorkspaceInvitation = mutation({
       if (existingPm && existingPm.productKey === invite.productKey) {
         await ctx.db.patch(existingPm._id, {
           role: invite.role,
-          branchIds: invite.branchIds,
+          branchIds: validInviteBranchIds.length > 0 ? (validInviteBranchIds as any) : undefined,
           status: "active",
           updatedAt: now,
         });
@@ -891,7 +1014,7 @@ export const acceptWorkspaceInvitation = mutation({
           productKey: invite.productKey,
           role: invite.role,
           permissions: [],
-          branchIds: invite.branchIds,
+          branchIds: validInviteBranchIds.length > 0 ? (validInviteBranchIds as any) : undefined,
           status: "active",
           createdAt: now,
           updatedAt: now,
@@ -927,6 +1050,40 @@ export const acceptWorkspaceInvitation = mutation({
           createdAt: now,
           updatedAt: now,
         });
+      }
+
+      // Upsert branchMemberships for each branch
+      for (const branchId of validInviteBranchIds) {
+        const existingBm = await ctx.db
+          .query("branchMemberships")
+          .withIndex("by_user_branch", (q) =>
+            q.eq("userId", user._id).eq("branchId", String(branchId))
+          )
+          .first();
+
+        if (existingBm) {
+          await ctx.db.patch(existingBm._id, {
+            role: invite.role,
+            status: "active",
+            assignedByUserId: invite.invitedBy,
+            assignedAt: now,
+            updatedAt: now,
+          });
+        } else {
+          await ctx.db.insert("branchMemberships", {
+            workspaceId: String(invite.workspaceId),
+            applicationKey: invite.productKey,
+            branchId: String(branchId),
+            userId: user._id,
+            role: invite.role,
+            permissions: [],
+            status: "active",
+            assignedByUserId: invite.invitedBy,
+            assignedAt: now,
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
       }
     }
 
@@ -1313,6 +1470,10 @@ export const updateMemberAccess = mutation({
 
     // 3. Process app access & branch access
     for (const app of args.appAccess) {
+      const validBranchIds = (app.branchIds || []).filter(
+        (id: any) => typeof id === "string" && id.trim().length > 0 && id !== '""' && id !== "''"
+      );
+
       const existingPm = await ctx.db
         .query("productMemberships")
         .withIndex("by_workspace_product_user", (q) =>
@@ -1325,7 +1486,7 @@ export const updateMemberAccess = mutation({
           await ctx.db.patch(existingPm._id, {
             role: app.appRole,
             status: "active",
-            branchIds: app.branchIds as any,
+            branchIds: validBranchIds.length > 0 ? (validBranchIds as any) : undefined,
             updatedAt: now,
           });
         } else {
@@ -1335,7 +1496,7 @@ export const updateMemberAccess = mutation({
             productKey: app.productKey,
             role: app.appRole,
             permissions: [],
-            branchIds: app.branchIds as any,
+            branchIds: validBranchIds.length > 0 ? (validBranchIds as any) : undefined,
             status: "active",
             createdAt: now,
             updatedAt: now,
@@ -1361,9 +1522,9 @@ export const updateMemberAccess = mutation({
           )
           .collect();
 
-        // Revoke branches not in app.branchIds
+        // Revoke branches not in validBranchIds
         for (const eba of existingBranchAccesses) {
-          if (!app.branchIds.includes(eba.branchId) && eba.status === "active") {
+          if (!validBranchIds.includes(eba.branchId) && eba.status === "active") {
             await ctx.db.patch(eba._id, { status: "revoked", updatedAt: now });
             await ctx.db.insert("workspaceAuditLogs", {
               workspaceId: args.workspaceId,
@@ -1378,8 +1539,8 @@ export const updateMemberAccess = mutation({
           }
         }
 
-        // Grant branches in app.branchIds
-        for (const branchId of app.branchIds) {
+        // Grant branches in validBranchIds
+        for (const branchId of validBranchIds) {
           const match = existingBranchAccesses.find((eba) => eba.branchId === branchId);
           if (match) {
             if (match.status !== "active") {
@@ -1439,3 +1600,281 @@ export const updateMemberAccess = mutation({
     return { success: true };
   },
 });
+
+/**
+ * Explicitly grant / update application-level access with optional branch scoping
+ */
+export const grantApplicationAccess = mutation({
+  args: {
+    workspaceId: v.string(),
+    callerUserId: v.id("users"),
+    targetUserId: v.id("users"),
+    applicationKey: v.string(), // "inventory", "tasks", "pos", "gym", "booking", "crm"
+    role: v.string(), // "admin" | "member" | "viewer"
+    branchIds: v.optional(v.array(v.string())),
+    permissions: v.optional(v.array(v.string())),
+    reason: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const wsId = ctx.db.normalizeId("workspaces", args.workspaceId);
+    const targetWsId = wsId || args.workspaceId;
+
+    // 1. Verify caller permission (owner or admin)
+    const callerMem = await ctx.db
+      .query("workspaceMemberships")
+      .withIndex("by_workspace_user", (q: any) =>
+        q.eq("workspaceId", targetWsId).eq("userId", args.callerUserId)
+      )
+      .first();
+
+    const callerRole = (callerMem?.role || "").toLowerCase();
+    if (!callerMem || (callerRole !== "owner" && callerRole !== "admin")) {
+      let ws: any = null;
+      if (wsId) ws = await ctx.db.get(wsId);
+      if (!ws || ws.ownerId !== args.callerUserId) {
+        throw new Error("WORKSPACE_ACCESS_DENIED");
+      }
+    }
+
+    // 2. Verify target has active workspace membership
+    const targetMem = await ctx.db
+      .query("workspaceMemberships")
+      .withIndex("by_workspace_user", (q: any) =>
+        q.eq("workspaceId", targetWsId).eq("userId", args.targetUserId)
+      )
+      .first();
+
+    if (!targetMem || targetMem.status !== "active") {
+      throw new Error("TARGET_NOT_ACTIVE_MEMBER");
+    }
+
+    const now = Date.now();
+    const appKey = args.applicationKey.toLowerCase();
+    const existing = await ctx.db
+      .query("applicationMemberships")
+      .withIndex("by_workspace_user_app", (q: any) =>
+        q.eq("workspaceId", targetWsId).eq("userId", args.targetUserId).eq("applicationKey", appKey)
+      )
+      .first();
+
+    let membershipId: any = null;
+    let previousRole: string | undefined = undefined;
+
+    if (existing) {
+      previousRole = existing.role;
+      await ctx.db.patch(existing._id, {
+        role: args.role,
+        branchIds: args.branchIds,
+        permissions: args.permissions || [],
+        status: "active",
+        assignedBy: args.callerUserId,
+        assignedAt: now,
+        grantedBy: args.callerUserId,
+        grantedAt: now,
+        updatedAt: now,
+      });
+      membershipId = existing._id;
+    } else {
+      membershipId = await ctx.db.insert("applicationMemberships", {
+        workspaceId: targetWsId,
+        userId: args.targetUserId,
+        applicationKey: appKey,
+        role: args.role,
+        permissions: args.permissions || [],
+        status: "active",
+        grantedBy: args.callerUserId,
+        grantedAt: now,
+        assignedBy: args.callerUserId,
+        assignedAt: now,
+        branchIds: args.branchIds,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    // Record audit log
+    await ctx.db.insert("membershipAuditLogs", {
+      workspaceId: targetWsId,
+      actorUserId: args.callerUserId,
+      targetUserId: args.targetUserId,
+      actionType: previousRole ? "role_changed" : "app_access_granted",
+      membershipType: "application",
+      membershipId: String(membershipId),
+      applicationKey: appKey,
+      previousRole,
+      newRole: args.role,
+      reason: args.reason,
+      createdAt: now,
+    });
+
+    await ctx.db.insert("workspaceAuditLogs", {
+      workspaceId: targetWsId as any,
+      actorUserId: args.callerUserId,
+      eventType: "application.access_granted",
+      entityType: "application",
+      entityId: appKey,
+      severity: "info",
+      metadata: { applicationKey: appKey, role: args.role, targetUserId: args.targetUserId },
+      createdAt: now,
+    });
+
+    return { id: membershipId, success: true };
+  },
+});
+
+/**
+ * Revoke application-level access
+ */
+export const revokeApplicationAccess = mutation({
+  args: {
+    workspaceId: v.string(),
+    callerUserId: v.id("users"),
+    targetUserId: v.id("users"),
+    applicationKey: v.string(),
+    reason: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const wsId = ctx.db.normalizeId("workspaces", args.workspaceId);
+    const targetWsId = wsId || args.workspaceId;
+
+    const callerMem = await ctx.db
+      .query("workspaceMemberships")
+      .withIndex("by_workspace_user", (q: any) =>
+        q.eq("workspaceId", targetWsId).eq("userId", args.callerUserId)
+      )
+      .first();
+
+    const callerRole = (callerMem?.role || "").toLowerCase();
+    if (!callerMem || (callerRole !== "owner" && callerRole !== "admin")) {
+      let ws: any = null;
+      if (wsId) ws = await ctx.db.get(wsId);
+      if (!ws || ws.ownerId !== args.callerUserId) {
+        throw new Error("WORKSPACE_ACCESS_DENIED");
+      }
+    }
+
+    const appKey = args.applicationKey.toLowerCase();
+    const existing = await ctx.db
+      .query("applicationMemberships")
+      .withIndex("by_workspace_user_app", (q: any) =>
+        q.eq("workspaceId", targetWsId).eq("userId", args.targetUserId).eq("applicationKey", appKey)
+      )
+      .first();
+
+    if (!existing) {
+      return { success: true, message: "No active application membership found" };
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(existing._id, {
+      status: "removed",
+      removedAt: now,
+      removalReason: args.reason,
+      updatedAt: now,
+    });
+
+    // Record audit log
+    await ctx.db.insert("membershipAuditLogs", {
+      workspaceId: targetWsId,
+      actorUserId: args.callerUserId,
+      targetUserId: args.targetUserId,
+      actionType: "app_access_revoked",
+      membershipType: "application",
+      membershipId: String(existing._id),
+      applicationKey: appKey,
+      previousRole: existing.role,
+      reason: args.reason,
+      createdAt: now,
+    });
+
+    await ctx.db.insert("workspaceAuditLogs", {
+      workspaceId: targetWsId as any,
+      actorUserId: args.callerUserId,
+      eventType: "application.access_revoked",
+      entityType: "application",
+      entityId: appKey,
+      severity: "warning",
+      metadata: { applicationKey: appKey, targetUserId: args.targetUserId },
+      createdAt: now,
+    });
+
+    return { success: true };
+  },
+});
+
+/**
+ * List application memberships
+ */
+export const getApplicationMemberships = query({
+  args: {
+    workspaceId: v.string(),
+    callerUserId: v.id("users"),
+    applicationKey: v.optional(v.string()),
+    userId: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const wsId = ctx.db.normalizeId("workspaces", args.workspaceId);
+    const targetWsId = wsId || args.workspaceId;
+
+    let memberships: any[] = [];
+    if (args.applicationKey && args.userId) {
+      const single = await ctx.db
+        .query("applicationMemberships")
+        .withIndex("by_workspace_user_app", (q: any) =>
+          q.eq("workspaceId", targetWsId).eq("userId", args.userId as any).eq("applicationKey", args.applicationKey!)
+        )
+        .first();
+      if (single) memberships = [single];
+    } else if (args.applicationKey) {
+      memberships = await ctx.db
+        .query("applicationMemberships")
+        .withIndex("by_workspace_application", (q: any) =>
+          q.eq("workspaceId", targetWsId).eq("applicationKey", args.applicationKey!)
+        )
+        .collect();
+    } else if (args.userId) {
+      memberships = await ctx.db
+        .query("applicationMemberships")
+        .withIndex("by_user_workspace", (q: any) =>
+          q.eq("userId", args.userId as any).eq("workspaceId", targetWsId)
+        )
+        .collect();
+    } else {
+      memberships = await ctx.db
+        .query("applicationMemberships")
+        .withIndex("by_workspace", (q: any) => q.eq("workspaceId", targetWsId))
+        .collect();
+    }
+
+    const enriched = [];
+    for (const m of memberships) {
+      if (m.status === "removed") continue;
+      let user = null;
+      try {
+        const uId = ctx.db.normalizeId("users", m.userId);
+        if (uId) user = await ctx.db.get(uId);
+      } catch (_) {}
+
+      enriched.push({
+        id: m._id,
+        workspaceId: m.workspaceId,
+        userId: m.userId,
+        userName: user?.name || "Unknown User",
+        userEmail: user?.email || "",
+        avatar: user?.avatar || user?.avatarUrl,
+        applicationKey: m.applicationKey,
+        role: m.role,
+        permissions: m.permissions || [],
+        branchIds: m.branchIds || [],
+        status: m.status,
+        grantedBy: m.grantedBy || m.assignedBy,
+        grantedAt: m.grantedAt || m.assignedAt,
+        createdAt: m.createdAt,
+        updatedAt: m.updatedAt,
+      });
+    }
+
+    return enriched;
+  },
+});
+

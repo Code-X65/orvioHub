@@ -7,6 +7,8 @@ import { WorkspaceSettingsPage } from "../../pages/settings/WorkspaceSettingsPag
 import { BranchSettingsPage } from "../../pages/settings/BranchSettingsPage";
 import { InventorySettingsPage } from "../../pages/settings/InventorySettingsPage";
 import { WorkspaceMembers } from "../../pages/settings/WorkspaceMembers";
+import { WorkspaceDangerZone } from "../../pages/workspaces/WorkspaceDangerZone";
+import { WorkspaceInvitationsPage } from "../../pages/workspaces/WorkspaceInvitationsPage";
 import { ProfileSettings } from "../../pages/settings/ProfileSettings";
 import { AcceptInvite } from "../../pages/auth/AcceptInvite";
 
@@ -317,6 +319,62 @@ export default function HomeApp() {
       />
       <Route
         path="/settings/members"
+        element={
+          <AuthGuard>
+            <WorkspaceMembers />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/settings/invitations"
+        element={
+          <AuthGuard>
+            <WorkspaceInvitationsPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/settings/danger-zone"
+        element={
+          <AuthGuard>
+            <WorkspaceDangerZone />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/settings/danger"
+        element={
+          <AuthGuard>
+            <WorkspaceDangerZone />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/workspaces/:workspaceId/settings"
+        element={
+          <AuthGuard>
+            <WorkspaceSettingsPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/workspaces/:workspaceId/danger-zone"
+        element={
+          <AuthGuard>
+            <WorkspaceDangerZone />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/workspaces/:workspaceId/invitations"
+        element={
+          <AuthGuard>
+            <WorkspaceInvitationsPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/workspaces/:workspaceId/members"
         element={
           <AuthGuard>
             <WorkspaceMembers />

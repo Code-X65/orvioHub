@@ -15,7 +15,21 @@ export const applicationSettingsRoutes: FastifyPluginAsync = async (fastify) => 
   fastify.get('/workspaces/:workspaceId/applications', async (request, reply) => {
     const { workspaceId } = request.params as { workspaceId: string };
     try {
-      const apps = await dataService.listWorkspaceApplications(workspaceId);
+      const apps = await dataService.query('workspaceApplications:getWorkspaceApplications', {
+        workspaceId,
+        userId: request.user.id as any,
+      });
+
+      if (!apps || (Array.isArray(apps) && apps.length === 0)) {
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.FORBIDDEN,
+            message: 'You do not have permission to view applications in this workspace.',
+          },
+        });
+      }
+
       return reply.send({ success: true, data: { applications: apps } });
     } catch (err: any) {
       return reply.status(500).send({

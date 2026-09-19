@@ -205,9 +205,16 @@ export const InventoryAppOnboarding: React.FC = () => {
 
   if (isInitializing) {
     return (
-      <div className="min-h-screen bg-black flex flex-col items-center justify-center space-y-3">
-        <Spinner size="lg" className="text-[#714b67]" />
-        <p className="text-xs text-slate-400">Loading Inventory onboarding...</p>
+      <div className="min-h-screen bg-black text-slate-100 flex flex-col justify-between animate-pulse">
+        <div className="h-20 border-b border-white/5 bg-black/90 px-6 sm:px-12 flex items-center justify-between">
+          <div className="w-28 h-8 rounded-xs bg-white/10" />
+          <div className="w-20 h-8 rounded-xs bg-white/5" />
+        </div>
+        <div className="flex-1 max-w-3xl w-full mx-auto px-6 py-12 space-y-6">
+          <div className="w-48 h-7 rounded-xs bg-white/10" />
+          <div className="w-80 h-4 rounded-xs bg-white/5" />
+          <div className="h-72 rounded-2xl bg-white/[0.02] border border-white/5" />
+        </div>
       </div>
     );
   }

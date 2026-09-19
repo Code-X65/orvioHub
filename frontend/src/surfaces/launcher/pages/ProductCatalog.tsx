@@ -37,10 +37,10 @@ const FALLBACK_VISIBLE_PRODUCTS: ProductCardData[] = [
 import { UpgradeModal } from '@/components/billing/UpgradeModal';
 
 const PLAN_LIMITS: Record<string, { maxApps: number | string; maxMembers: number; maxBranches: number; maxWorkspaces: number; label: string; allowedApps: string[] }> = {
-  free: { maxApps: 1, maxMembers: 2, maxBranches: 1, maxWorkspaces: 1, label: 'Free', allowedApps: ['inventory', 'tasks', 'taskmanagement', 'pos'] },
-  free_trial: { maxApps: 1, maxMembers: 2, maxBranches: 1, maxWorkspaces: 1, label: 'Free Trial', allowedApps: ['inventory', 'tasks', 'taskmanagement', 'pos'] },
-  standard: { maxApps: 3, maxMembers: 10, maxBranches: 3, maxWorkspaces: 3, label: 'Standard', allowedApps: ['inventory', 'tasks', 'taskmanagement', 'pos', 'booking', 'gym'] },
-  premium: { maxApps: 'Unlimited', maxMembers: 50, maxBranches: 10, maxWorkspaces: 10, label: 'Premium', allowedApps: ['inventory', 'tasks', 'taskmanagement', 'pos', 'booking', 'gym', 'crm', 'analytics', 'invoicing', 'hr'] },
+  free_trial: { maxApps: 1, maxMembers: 2, maxBranches: 1, maxWorkspaces: 1, label: 'Free Trial', allowedApps: ['inventory'] },
+  standard: { maxApps: 3, maxMembers: 10, maxBranches: 3, maxWorkspaces: 3, label: 'Standard', allowedApps: ['inventory'] },
+  premium: { maxApps: 'Unlimited', maxMembers: 50, maxBranches: 10, maxWorkspaces: 10, label: 'Premium', allowedApps: ['inventory'] },
+  free: { maxApps: 1, maxMembers: 2, maxBranches: 1, maxWorkspaces: 1, label: 'Free', allowedApps: ['inventory'] },
 };
 
 export const ProductCatalog: React.FC = () => {

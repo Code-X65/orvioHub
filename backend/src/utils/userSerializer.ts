@@ -22,6 +22,7 @@ export interface PublicUser {
   state?: string;
   city?: string;
   timezone: string;
+  timezoneLabel?: string;
   language: string;
   locale?: string;
   dateFormat: string;
@@ -30,7 +31,16 @@ export interface PublicUser {
   firstDayOfWeek: 'monday' | 'sunday';
   theme: 'dark' | 'light' | 'system';
   layoutDensity: 'compact' | 'comfortable';
-  status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
+  status:
+    | 'pending_email_verification'
+    | 'active'
+    | 'suspended'
+    | 'deactivated'
+    | 'deletion_requested'
+    | 'deleted'
+    | 'ACTIVE'
+    | 'INACTIVE'
+    | 'SUSPENDED';
   emailVerified: boolean;
   emailVerifiedAt?: number;
   twoFactorEnabled: boolean;
@@ -77,10 +87,11 @@ export function toPublicUser(
     phoneVerified: Boolean(user.phoneVerifiedAt),
     phoneVerifiedAt: user.phoneVerifiedAt,
     phoneVisibility: user.phoneVisibility || 'private',
-    country: user.country,
+    country: user.country || 'NG',
     state: user.state,
     city: user.city,
     timezone: user.timezone || 'Africa/Lagos',
+    timezoneLabel: 'West Africa Time (WAT)',
     language: user.language || 'en',
     locale: user.locale,
     dateFormat: user.dateFormat || 'DD/MM/YYYY',
@@ -89,7 +100,7 @@ export function toPublicUser(
     firstDayOfWeek: (user.firstDayOfWeek as 'monday' | 'sunday') || 'monday',
     theme: (user.theme as 'dark' | 'light' | 'system') || 'dark',
     layoutDensity: (user.layoutDensity as 'compact' | 'comfortable') || 'comfortable',
-    status: user.status || 'ACTIVE',
+    status: user.status || (user.emailVerified ? 'active' : 'pending_email_verification'),
     emailVerified: Boolean(user.emailVerified),
     emailVerifiedAt: user.emailVerifiedAt,
     twoFactorEnabled: Boolean(user.twoFactorEnabled),

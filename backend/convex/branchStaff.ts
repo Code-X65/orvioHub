@@ -388,14 +388,24 @@ export const listBranchMembers = query({
     const populated = await Promise.all(
       filtered.map(async (m) => {
         let user: any = null;
-        try {
-          user = await ctx.db.get(m.userId);
-        } catch {}
-        if (!user) {
-          const uId = ctx.db.normalizeId("users", m.userId);
-          if (uId) {
+        if (m.userId) {
+          try {
+            user = await ctx.db.get(m.userId);
+          } catch {}
+          if (!user) {
+            const uId = ctx.db.normalizeId("users", m.userId);
+            if (uId) {
+              try {
+                user = await ctx.db.get(uId);
+              } catch {}
+            }
+          }
+          if (!user && typeof m.userId === "string" && m.userId.includes("@")) {
             try {
-              user = await ctx.db.get(uId);
+              user = await ctx.db
+                .query("users")
+                .withIndex("by_email", (q: any) => q.eq("emailNormalized", m.userId.toLowerCase().trim()))
+                .first();
             } catch {}
           }
         }
@@ -407,6 +417,9 @@ export const listBranchMembers = query({
           } catch {}
         }
 
+        const resolvedName = user?.name || user?.displayName || (user?.email ? user.email.split("@")[0] : "") || m.name || "Staff Member";
+        const resolvedEmail = user?.email || m.email || "";
+
         return {
           id: m._id,
           workspaceId: m.workspaceId,
@@ -415,18 +428,20 @@ export const listBranchMembers = query({
           branchName: branch?.name || m.branchName || "Main Branch",
           branchCode: branch?.code || m.branchCode || "MAIN",
           userId: m.userId,
+          name: resolvedName,
+          email: resolvedEmail,
           user: user
             ? {
                 id: user._id,
-                name: user.name || user.displayName || user.email?.split("@")[0] || "Staff Member",
-                email: user.email || "",
+                name: resolvedName,
+                email: resolvedEmail,
                 avatar: user.avatar || user.avatarUrl,
                 status: user.status || "active",
               }
             : {
                 id: m.userId,
-                name: "Staff Member",
-                email: "",
+                name: resolvedName,
+                email: resolvedEmail,
                 avatar: null,
                 status: "active",
               },
@@ -434,7 +449,7 @@ export const listBranchMembers = query({
           permissions: m.permissions || INVENTORY_ROLE_PERMISSIONS[m.role] || [],
           status: m.status || "active",
           assignedByUserId: m.assignedByUserId,
-          assignedAt: m.assignedAt,
+          assignedAt: m.assignedAt || m.createdAt || Date.now(),
           transferredFromBranchId: m.transferredFromBranchId,
           transferredFromRole: m.transferredFromRole,
           removedAt: m.removedAt,
@@ -1692,4 +1707,192 @@ export const getAccessContext = query({
     return args.workspaceId ? contextList[0] || null : contextList;
   },
 });
+
+/**
+ * Update branch member role directly
+ */
+export const updateBranchMemberRole = mutation({
+  args: {
+    workspaceId: v.string(),
+    membershipId: v.string(),
+    role: v.string(),
+    permissions: v.optional(v.array(v.string())),
+    updatedBy: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    let branchMembership: any = null;
+    let targetUserId: any = null;
+
+    try {
+      const doc: any = await ctx.db.get(args.membershipId as any);
+      if (doc) {
+        if ("branchId" in doc && "applicationKey" in doc) {
+          branchMembership = doc;
+          targetUserId = doc.userId;
+        } else if ("email" in doc) {
+          targetUserId = doc._id;
+        } else if ("userId" in doc) {
+          targetUserId = doc.userId;
+        }
+      }
+    } catch {}
+
+    if (!targetUserId) {
+      targetUserId = ctx.db.normalizeId("users", args.membershipId);
+    }
+
+    const now = Date.now();
+    let normalizedRole = args.role;
+    if (normalizedRole === "branch_manager") normalizedRole = "inventory_manager";
+    else if (normalizedRole === "viewer") normalizedRole = "inventory_viewer";
+    else if (normalizedRole === "inventory_staff") normalizedRole = "cashier";
+
+    const perms =
+      args.permissions && args.permissions.length > 0
+        ? args.permissions
+        : INVENTORY_ROLE_PERMISSIONS[normalizedRole] || INVENTORY_ROLE_PERMISSIONS[args.role] || [];
+
+    // If membershipId was a synthesized_... string
+    if (!branchMembership && typeof args.membershipId === "string" && args.membershipId.startsWith("synthesized_")) {
+      const parts = args.membershipId.split("_");
+      if (parts.length >= 3) {
+        const orgMemberId = parts[1];
+        const branchId = parts.slice(2).join("_");
+        let orgMember: any = null;
+        try {
+          orgMember = await ctx.db.get(orgMemberId as any);
+        } catch {}
+        if (orgMember) {
+          const createdId = await ctx.db.insert("branchMemberships", {
+            workspaceId: args.workspaceId,
+            applicationKey: "inventory",
+            branchId,
+            userId: orgMember.userId,
+            role: normalizedRole,
+            permissions: perms,
+            status: "active",
+            assignedByUserId: args.updatedBy,
+            assignedAt: now,
+            createdAt: now,
+            updatedAt: now,
+          });
+          return await ctx.db.get(createdId);
+        }
+      }
+    }
+
+    // If no direct branchMembership yet, find by user in this workspace
+    if (!branchMembership && targetUserId) {
+      const foundMems = await ctx.db
+        .query("branchMemberships")
+        .withIndex("by_user_application", (q) =>
+          q.eq("userId", targetUserId).eq("applicationKey", "inventory")
+        )
+        .collect();
+      branchMembership = foundMems.find((m) => m.workspaceId === args.workspaceId) || foundMems[0] || null;
+    }
+
+    // Patch existing branchMembership record ONLY
+    if (branchMembership && "branchId" in branchMembership) {
+      await ctx.db.patch(branchMembership._id, {
+        role: normalizedRole,
+        permissions: perms,
+        updatedAt: now,
+      });
+      return await ctx.db.get(branchMembership._id);
+    }
+
+    // Fallback: If passed a valid userId and no branchMembership record existed, insert one
+    if (targetUserId) {
+      const targetWsId = ctx.db.normalizeId("workspaces", args.workspaceId);
+      let targetBranchId = "main";
+      if (targetWsId) {
+        try {
+          const branches = await ctx.db
+            .query("branches")
+            .withIndex("by_workspace", (q) => q.eq("workspaceId", targetWsId))
+            .collect();
+          if (branches.length > 0) {
+            const primaryB = branches.find((b) => b.isPrimary) || branches[0];
+            targetBranchId = String(primaryB._id);
+          }
+        } catch {}
+      }
+
+      const createdId = await ctx.db.insert("branchMemberships", {
+        workspaceId: args.workspaceId,
+        applicationKey: "inventory",
+        branchId: targetBranchId,
+        userId: targetUserId,
+        role: normalizedRole,
+        permissions: perms,
+        status: "active",
+        assignedByUserId: args.updatedBy,
+        assignedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+      return await ctx.db.get(createdId);
+    }
+
+    throw new Error("Branch membership not found.");
+  },
+});
+
+/**
+ * Set branch member status (active / suspended / removed)
+ */
+export const setBranchMemberStatus = mutation({
+  args: {
+    workspaceId: v.string(),
+    membershipId: v.string(),
+    status: v.union(v.literal("active"), v.literal("suspended"), v.literal("removed")),
+    actingUserId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    let branchMembership: any = null;
+    let targetUserId: any = null;
+
+    try {
+      const doc: any = await ctx.db.get(args.membershipId as any);
+      if (doc) {
+        if ("branchId" in doc && "applicationKey" in doc) {
+          branchMembership = doc;
+          targetUserId = doc.userId;
+        } else if ("email" in doc) {
+          targetUserId = doc._id;
+        } else if ("userId" in doc) {
+          targetUserId = doc.userId;
+        }
+      }
+    } catch {}
+
+    if (!targetUserId) {
+      targetUserId = ctx.db.normalizeId("users", args.membershipId);
+    }
+
+    const now = Date.now();
+
+    if (!branchMembership && targetUserId) {
+      const foundMems = await ctx.db
+        .query("branchMemberships")
+        .withIndex("by_user_application", (q) =>
+          q.eq("userId", targetUserId).eq("applicationKey", "inventory")
+        )
+        .collect();
+      branchMembership = foundMems.find((m) => m.workspaceId === args.workspaceId) || foundMems[0] || null;
+    }
+
+    if (branchMembership && "branchId" in branchMembership) {
+      await ctx.db.patch(branchMembership._id, {
+        status: args.status,
+        updatedAt: now,
+      });
+      return await ctx.db.get(branchMembership._id);
+    }
+
+    throw new Error("Branch membership not found.");
+  },
+});
+
 

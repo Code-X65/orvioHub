@@ -225,17 +225,7 @@ export const ApplicationsPage: React.FC = () => {
     return <Navigate to="/dashboard" replace />;
   }
 
-  if (!hasLoaded && workspaces.length === 0 && isLoading) {
-    return (
-      <div className="min-h-screen bg-black text-slate-100 flex flex-col">
-        <Header />
-        <div className="flex-1 flex flex-col items-center justify-center space-y-4">
-          <Spinner size="lg" className="text-[#714b67]" />
-          <p className="text-xs text-slate-400">Loading organization applications...</p>
-        </div>
-      </div>
-    );
-  }
+  const isInitialLoading = !hasLoaded && workspaces.length === 0 && isLoading;
 
   const isFreeTrial = planKey === 'free_trial' || planKey === 'free' || planKey === 'trial';
   const activeAppsCount = apps.filter((a) => a.isActivated && a.status !== 'inactive' && a.status !== 'suspended').length;
@@ -469,7 +459,35 @@ export const ApplicationsPage: React.FC = () => {
 
         {/* Applications Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {apps.map((app) => {
+          {isInitialLoading ? (
+            [1, 2].map((idx) => (
+              <div
+                key={idx}
+                className="p-6 sm:p-7 rounded-2xl border border-white/5 bg-[#120b10]/60 animate-pulse flex flex-col justify-between space-y-6"
+              >
+                <div className="space-y-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="w-12 h-12 rounded-xl bg-white/10" />
+                    <div className="w-20 h-4 rounded-full bg-white/5" />
+                  </div>
+                  <div className="space-y-2">
+                    <div className="w-16 h-3 rounded-xs bg-white/5" />
+                    <div className="w-32 h-5 rounded-xs bg-white/10" />
+                    <div className="w-full h-3 rounded-xs bg-white/5" />
+                  </div>
+                  <div className="space-y-2 pt-2 border-t border-white/5">
+                    <div className="w-3/4 h-3 rounded-xs bg-white/5" />
+                    <div className="w-2/3 h-3 rounded-xs bg-white/5" />
+                  </div>
+                </div>
+                <div className="pt-4 border-t border-white/5 flex gap-3">
+                  <div className="flex-1 h-10 rounded-lg bg-white/10" />
+                  <div className="w-10 h-10 rounded-lg bg-white/5" />
+                </div>
+              </div>
+            ))
+          ) : (
+            apps.map((app) => {
             const isActive = app.isActivated && app.status !== 'inactive';
             const appDisplayName = app.name || (app.key ? app.key.charAt(0).toUpperCase() + app.key.slice(1) : 'Application');
             const meta = appDescriptions[app.key] || {
@@ -609,7 +627,7 @@ export const ApplicationsPage: React.FC = () => {
                 </div>
               </div>
             );
-          })}
+          }))}
         </div>
       </main>
 

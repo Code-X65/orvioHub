@@ -58,10 +58,12 @@ export const createUser = mutation({
     avatarUrl: v.optional(v.string()),
     passwordHash: v.string(),
     emailVerificationToken: v.optional(v.string()),
+    emailVerificationTokenHash: v.optional(v.string()),
     emailVerificationExpiresAt: v.optional(v.number()),
     emailVerificationCode: v.optional(v.string()),
     emailVerificationCodeExpiresAt: v.optional(v.number()),
     emailVerified: v.optional(v.boolean()),
+    status: v.optional(v.string()),
     planKey: v.optional(v.string()),
     billingInterval: v.optional(v.union(v.literal("monthly"), v.literal("annual"))),
     paymentMethod: v.optional(v.union(v.literal("bank_transfer"), v.literal("paystack"))),
@@ -80,6 +82,9 @@ export const createUser = mutation({
 
     const now = Date.now();
     const displayName = args.displayName || args.name || `${args.firstName || ''} ${args.lastName || ''}`.trim();
+    const isVerified = args.emailVerified ?? false;
+    const initialStatus = args.status || (isVerified ? "active" : "pending_email_verification");
+
     const userId = await ctx.db.insert("users", {
       email: emailNorm,
       emailNormalized: emailNorm,
@@ -93,12 +98,15 @@ export const createUser = mutation({
       phone: args.phone,
       avatarUrl: args.avatarUrl,
       passwordHash: args.passwordHash,
-      emailVerified: args.emailVerified ?? false,
+      emailVerified: isVerified,
+      emailVerifiedAt: isVerified ? now : undefined,
       emailVerificationToken: args.emailVerificationToken,
+      emailVerificationTokenHash: args.emailVerificationTokenHash,
+      emailVerificationTokenUsed: false,
       emailVerificationExpiresAt: args.emailVerificationExpiresAt,
       emailVerificationCode: args.emailVerificationCode,
       emailVerificationCodeExpiresAt: args.emailVerificationCodeExpiresAt,
-      status: "ACTIVE",
+      status: initialStatus as any,
       tokenVersion: 1,
       createdAt: now,
       updatedAt: now,
@@ -110,7 +118,7 @@ export const createUser = mutation({
       provider: "password",
       providerSubject: emailNorm,
       providerEmail: emailNorm,
-      providerEmailVerified: false,
+      providerEmailVerified: isVerified,
       createdAt: now,
       lastUsedAt: now,
       updatedAt: now,
@@ -119,7 +127,6 @@ export const createUser = mutation({
     // Users are free. Subscriptions are strictly per-organization and created during organization setup.
 
     // Initialize onboarding progress immediately upon account creation
-    const isVerified = args.emailVerified ?? false;
     await ctx.db.insert("onboardingProgress", {
       userId,
       currentStep: isVerified ? "ORGANIZATION_CREATION" : "EMAIL_VERIFICATION",
@@ -137,6 +144,7 @@ export const setVerificationToken = mutation({
   args: {
     userId: v.id("users"),
     token: v.string(),
+    tokenHash: v.optional(v.string()),
     expiresAt: v.number(),
     code: v.optional(v.string()),
     codeExpiresAt: v.optional(v.number()),
@@ -144,6 +152,8 @@ export const setVerificationToken = mutation({
   handler: async (ctx, args) => {
     await ctx.db.patch(args.userId, {
       emailVerificationToken: args.token,
+      emailVerificationTokenHash: args.tokenHash,
+      emailVerificationTokenUsed: false,
       emailVerificationExpiresAt: args.expiresAt,
       ...(args.code ? { emailVerificationCode: args.code, emailVerificationCodeExpiresAt: args.codeExpiresAt } : {}),
       updatedAt: Date.now(),
@@ -154,20 +164,35 @@ export const setVerificationToken = mutation({
 export const verifyUserEmail = mutation({
   args: {
     token: v.optional(v.string()),
+    tokenHash: v.optional(v.string()),
     code: v.optional(v.string()),
     email: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     let user;
-    if (args.token) {
-      user = await ctx.db
-        .query("users")
-        .withIndex("by_verification_token", (q) =>
-          q.eq("emailVerificationToken", args.token!)
-        )
-        .first();
+    if (args.tokenHash || args.token) {
+      if (args.tokenHash) {
+        user = await ctx.db
+          .query("users")
+          .withIndex("by_verification_token_hash", (q) =>
+            q.eq("emailVerificationTokenHash", args.tokenHash!)
+          )
+          .first();
+      }
+      if (!user && args.token) {
+        user = await ctx.db
+          .query("users")
+          .withIndex("by_verification_token", (q) =>
+            q.eq("emailVerificationToken", args.token!)
+          )
+          .first();
+      }
 
       if (!user) {
+        throw new Error("INVALID_TOKEN");
+      }
+
+      if (user.emailVerificationTokenUsed) {
         throw new Error("INVALID_TOKEN");
       }
 
@@ -216,7 +241,10 @@ export const verifyUserEmail = mutation({
     await ctx.db.patch(user._id, {
       emailVerified: true,
       emailVerifiedAt: now,
+      status: "active",
       emailVerificationToken: undefined,
+      emailVerificationTokenHash: undefined,
+      emailVerificationTokenUsed: true,
       emailVerificationExpiresAt: undefined,
       emailVerificationCode: undefined,
       emailVerificationCodeExpiresAt: undefined,
@@ -242,7 +270,6 @@ export const verifyUserEmail = mutation({
       .query("onboardingProgress")
       .withIndex("by_userId", (q) => q.eq("userId", user._id))
       .first();
-
     if (onboarding) {
       const completedSteps = Array.from(
         new Set([...onboarding.completedSteps, "EMAIL_VERIFIED"])
@@ -331,6 +358,64 @@ export const verifyUserEmail = mutation({
     } catch {}
 
     return { userId: user._id, email: user.email };
+  },
+});
+
+export const updatePendingEmail = mutation({
+  args: {
+    userId: v.id("users"),
+    newEmail: v.string(),
+    token: v.optional(v.string()),
+    tokenHash: v.optional(v.string()),
+    expiresAt: v.optional(v.number()),
+    code: v.optional(v.string()),
+    codeExpiresAt: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.userId);
+    if (!user) throw new Error("USER_NOT_FOUND");
+    if (user.status !== "pending_email_verification" && user.emailVerified) {
+      throw new Error("CANNOT_CHANGE_VERIFIED_EMAIL_HERE");
+    }
+
+    const newNorm = args.newEmail.toLowerCase().trim();
+    const existing = await ctx.db
+      .query("users")
+      .withIndex("by_email", (q) => q.eq("email", newNorm))
+      .first();
+
+    if (existing && existing._id !== user._id) {
+      throw new Error("EMAIL_ALREADY_IN_USE");
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(user._id, {
+      email: newNorm,
+      emailNormalized: newNorm,
+      emailVerificationToken: args.token,
+      emailVerificationTokenHash: args.tokenHash,
+      emailVerificationTokenUsed: false,
+      emailVerificationExpiresAt: args.expiresAt,
+      emailVerificationCode: args.code,
+      emailVerificationCodeExpiresAt: args.codeExpiresAt,
+      updatedAt: now,
+    });
+
+    const identities = await ctx.db
+      .query("authIdentities")
+      .withIndex("by_userId", (q) => q.eq("userId", user._id))
+      .collect();
+    for (const identity of identities) {
+      if (identity.provider === "password") {
+        await ctx.db.patch(identity._id, {
+          providerSubject: newNorm,
+          providerEmail: newNorm,
+          updatedAt: now,
+        });
+      }
+    }
+
+    return true;
   },
 });
 
@@ -621,33 +706,56 @@ export const getUserByPasswordResetToken = query({
 export const setPasswordResetToken = mutation({
   args: {
     userId: v.id("users"),
-    token: v.string(),
+    token: v.optional(v.string()),
+    tokenHash: v.optional(v.string()),
     expiresAt: v.number(),
   },
   handler: async (ctx, args) => {
+    const now = Date.now();
     await ctx.db.patch(args.userId, {
-      passwordResetToken: args.token,
+      passwordResetToken: undefined, // Never store plaintext reset tokens
+      passwordResetTokenHash: args.tokenHash,
+      passwordResetTokenUsed: false,
+      passwordResetRequestedAt: now,
       passwordResetExpiresAt: args.expiresAt,
-      updatedAt: Date.now(),
+      updatedAt: now,
     });
   },
 });
 
 export const resetPassword = mutation({
   args: {
-    token: v.string(),
+    token: v.optional(v.string()),
+    tokenHash: v.optional(v.string()),
     passwordHash: v.string(),
   },
   handler: async (ctx, args) => {
-    const user = await ctx.db
-      .query("users")
-      .withIndex("by_password_reset_token", (q) =>
-        q.eq("passwordResetToken", args.token)
-      )
-      .first();
+    let user = null;
+
+    if (args.tokenHash) {
+      user = await ctx.db
+        .query("users")
+        .withIndex("by_password_reset_token_hash", (q) =>
+          q.eq("passwordResetTokenHash", args.tokenHash)
+        )
+        .first();
+    }
+
+    if (!user && args.token) {
+      user = await ctx.db
+        .query("users")
+        .withIndex("by_password_reset_token", (q) =>
+          q.eq("passwordResetToken", args.token)
+        )
+        .first();
+    }
 
     if (!user) {
       throw new Error("INVALID_TOKEN");
+    }
+
+    if (user.passwordResetTokenUsed === true) {
+      throw new Error("TOKEN_ALREADY_USED");
     }
 
     if (
@@ -662,6 +770,8 @@ export const resetPassword = mutation({
     await ctx.db.patch(user._id, {
       passwordHash: args.passwordHash,
       passwordResetToken: undefined,
+      passwordResetTokenHash: args.tokenHash ?? user.passwordResetTokenHash,
+      passwordResetTokenUsed: true,
       passwordResetExpiresAt: undefined,
       tokenVersion: nextVersion,
       updatedAt: now,
@@ -769,6 +879,7 @@ export const updateUserProfile = mutation({
     avatar: v.optional(v.string()),
     avatarUrl: v.optional(v.string()),
     phone: v.optional(v.string()),
+    phoneNormalized: v.optional(v.string()),
     phoneVisibility: v.optional(v.union(v.literal("private"), v.literal("workspace"))),
     country: v.optional(v.string()),
     state: v.optional(v.string()),
@@ -818,6 +929,13 @@ export const updateUserProfile = mutation({
 
     if (args.avatarUrl !== undefined && args.avatar === undefined) {
       updates.avatar = args.avatarUrl;
+    }
+
+    if (!user.country && !updates.country) {
+      updates.country = "NG";
+    }
+    if (!user.timezone && !updates.timezone) {
+      updates.timezone = "Africa/Lagos";
     }
 
     await ctx.db.patch(user._id, updates);

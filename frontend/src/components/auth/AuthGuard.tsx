@@ -59,6 +59,14 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({
 
   // 2. Authenticated user trying to access guest route (like login/signup)
   if (requireGuest && isAuthenticated) {
+    const isPendingVerification =
+      user?.emailVerified === false ||
+      user?.status === 'pending_email_verification';
+
+    if (isPendingVerification) {
+      return <Navigate to="/verify-email" replace />;
+    }
+
     const urlParams = new URLSearchParams(location.search);
     const isExplicitLogout = urlParams.has('logged_out') || urlParams.has('logout');
     if (isExplicitLogout) {
@@ -94,15 +102,26 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({
 
   // 3. Authenticated user onboarding & boundary checks
   if (requireAuth && isAuthenticated) {
-    // If email verification is strictly pending and user is not yet verified
-    if (
-      user?.emailVerified === false &&
-      (location.pathname.startsWith('/onboarding') ||
-        location.pathname.startsWith('/workspaces/new') ||
-        location.pathname.startsWith('/organizations/new')) &&
-      location.pathname !== '/verify-email'
-    ) {
-      return <Navigate to="/verify-email" replace />;
+    const isPendingVerification =
+      user?.emailVerified === false ||
+      user?.status === 'pending_email_verification';
+
+    // Strictly guard all application routes if email verification is pending
+    if (isPendingVerification) {
+      const isAllowedPending =
+        location.pathname === '/verify-email' ||
+        location.pathname.startsWith('/verify-email') ||
+        location.pathname === '/logout';
+
+      if (!isAllowedPending) {
+        if (host.application !== 'accounts') {
+          const returnUrl = typeof window !== 'undefined' ? window.location.href : '';
+          const verifyUrl = `${getLoginUrl(returnUrl, host.environment).replace(/\/login(\?|$)/, '/verify-email$1')}`;
+          window.location.href = verifyUrl;
+          return null;
+        }
+        return <Navigate to="/verify-email" replace />;
+      }
     }
 
     // Personal Onboarding Guard:

@@ -4,7 +4,7 @@ import { v } from "convex/values";
 export const DEFAULT_PLANS = [
   {
     key: "free",
-    name: "Free Trial",
+    name: "Legacy Free",
     type: "free",
     priceAmount: 0,
     price: {
@@ -38,7 +38,7 @@ export const DEFAULT_PLANS = [
     allowedAppKeys: ["inventory"],
     trialDays: 30,
     trialDurationDays: 30,
-    isActive: true,
+    isActive: false, // Legacy plan, inactive for new subscriptions
   },
   {
     key: "free_trial",
@@ -107,21 +107,21 @@ export const DEFAULT_PLANS = [
     features: {
       maxApplications: 3,
       maxBranchesPerApplication: 3,
-      appsIncluded: ["inventory", "tasks", "taskmanagement", "pos", "booking", "gym"],
+      appsIncluded: ["inventory"],
       advancedReports: true,
     },
-    allowedApps: ["inventory", "tasks", "taskmanagement", "pos", "booking", "gym"],
-    allowedAppKeys: ["inventory", "tasks", "pos", "booking", "gym"],
+    allowedApps: ["inventory"],
+    allowedAppKeys: ["inventory"],
     isActive: true,
   },
   {
     key: "premium",
     name: "Premium",
     type: "paid",
-    priceAmount: 20000,
+    priceAmount: 25000,
     price: {
-      monthly: 20000,
-      annual: 200000,
+      monthly: 25000,
+      annual: 250000,
     },
     limits: {
       maxOrganizations: 10,
@@ -143,11 +143,11 @@ export const DEFAULT_PLANS = [
     features: {
       maxApplications: 999999,
       maxBranchesPerApplication: 10,
-      appsIncluded: ["inventory", "tasks", "taskmanagement", "pos", "booking", "gym", "crm", "analytics", "invoicing", "hr"],
+      appsIncluded: ["inventory"],
       advancedReports: true,
     },
-    allowedApps: ["inventory", "tasks", "taskmanagement", "pos", "booking", "gym", "crm", "analytics", "invoicing", "hr"],
-    allowedAppKeys: ["inventory", "tasks", "pos", "booking", "gym", "crm", "analytics"],
+    allowedApps: ["inventory"],
+    allowedAppKeys: ["inventory"],
     isActive: true,
   },
 ];
@@ -155,19 +155,33 @@ export const DEFAULT_PLANS = [
 export const list = query({
   args: {},
   handler: async (ctx) => {
-    const plans = await ctx.db.query("plans").collect();
-    if (plans.length === 0) {
-      return DEFAULT_PLANS.filter((p) => p.key !== "free_trial");
-    }
-    const seenKeys = new Set<string>();
-    const filtered = plans.filter((p) => {
-      const canonicalKey = p.key === "free_trial" ? "free" : p.key;
-      if (seenKeys.has(canonicalKey)) return false;
-      seenKeys.add(canonicalKey);
-      return true;
-    });
+    const dbPlans = await ctx.db.query("plans").collect();
+    const publicKeys = ["free_trial", "standard", "premium"];
+    const plansMap = new Map<string, any>();
 
-    return filtered.sort((a, b) => ((a.price?.monthly || a.monthlyPrice || 0) - (b.price?.monthly || b.monthlyPrice || 0)));
+    // First populate from authoritative DEFAULT_PLANS
+    for (const dp of DEFAULT_PLANS) {
+      if (publicKeys.includes(dp.key) && dp.isActive !== false) {
+        plansMap.set(dp.key, dp);
+      }
+    }
+
+    // Then merge DB records if present
+    for (const p of dbPlans) {
+      if (publicKeys.includes(p.key)) {
+        if (p.isActive === false) {
+          plansMap.delete(p.key);
+        } else {
+          plansMap.set(p.key, { ...plansMap.get(p.key), ...p, isActive: true });
+        }
+      }
+    }
+
+    return Array.from(plansMap.values()).sort((a: any, b: any) => {
+      const priceA = a.price?.monthly ?? a.monthlyPrice ?? a.priceAmount ?? 0;
+      const priceB = b.price?.monthly ?? b.monthlyPrice ?? b.priceAmount ?? 0;
+      return priceA - priceB;
+    });
   },
 });
 
@@ -341,10 +355,8 @@ export const adminListPlans = query({
   args: {},
   handler: async (ctx) => {
     const plans = await ctx.db.query("plans").collect();
-    if (plans.length === 0) {
-      return DEFAULT_PLANS.filter((p) => p.key !== "free_trial");
-    }
-    return plans.sort((a, b) => {
+    const source = plans.length > 0 ? plans : DEFAULT_PLANS;
+    return [...source].sort((a: any, b: any) => {
       const pA = a.priceAmount ?? a.price?.monthly ?? a.monthlyPrice ?? 0;
       const pB = b.priceAmount ?? b.price?.monthly ?? b.monthlyPrice ?? 0;
       return pA - pB;

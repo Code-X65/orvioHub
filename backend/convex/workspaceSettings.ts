@@ -1,5 +1,6 @@
 import { mutation, query } from "./_generated/server.js";
 import { v } from "convex/values";
+import { checkHasFinancialRecords } from "./organizations.js";
 
 /**
  * Normalizes a slug: converts to lowercase, trims, replaces non-alphanumeric chars with hyphens.
@@ -27,6 +28,23 @@ async function resolveWorkspace(ctx: any, id: any) {
     } catch {}
   }
   return ws;
+}
+
+/**
+ * Verify that callerUserId is an active member of the workspace.
+ * If callerUserId is not provided, skip the check (caller is responsible for auth).
+ */
+async function requireActiveMember(ctx: any, ws: any, callerUserId: any): Promise<void> {
+  if (!callerUserId) return;
+  const membership = await ctx.db
+    .query("workspaceMemberships")
+    .withIndex("by_workspace_user", (q: any) =>
+      q.eq("workspaceId", ws._id).eq("userId", callerUserId as any)
+    )
+    .first();
+  if (!membership || membership.status !== 'active') {
+    throw new Error("WORKSPACE_ACCESS_DENIED: You do not have active access to this workspace.");
+  }
 }
 
 /**
@@ -118,6 +136,7 @@ export const updateGeneralSettings = mutation({
     if (!ws) {
       throw new Error("Workspace not found");
     }
+    await requireActiveMember(ctx, ws, args.callerUserId);
 
     const updates: Record<string, any> = {
       updatedAt: Date.now(),
@@ -195,6 +214,7 @@ export const updateBusinessSettings = mutation({
   handler: async (ctx, args) => {
     const ws = await resolveWorkspace(ctx, args.workspaceId);
     if (!ws) throw new Error("Workspace not found");
+    await requireActiveMember(ctx, ws, args.callerUserId);
 
     const now = Date.now();
     const wsUpdates: Record<string, any> = { updatedAt: now };
@@ -270,6 +290,7 @@ export const updateAddressSettings = mutation({
   handler: async (ctx, args) => {
     const ws = await resolveWorkspace(ctx, args.workspaceId);
     if (!ws) throw new Error("Workspace not found");
+    await requireActiveMember(ctx, ws, args.callerUserId);
 
     const now = Date.now();
     const updates: Record<string, any> = { updatedAt: now };
@@ -346,6 +367,7 @@ export const updateBrandingSettings = mutation({
   handler: async (ctx, args) => {
     const ws = await resolveWorkspace(ctx, args.workspaceId);
     if (!ws) throw new Error("Workspace not found");
+    await requireActiveMember(ctx, ws, args.callerUserId);
 
     const now = Date.now();
 
@@ -410,6 +432,7 @@ export const removeLogo = mutation({
   handler: async (ctx, args) => {
     const ws = await resolveWorkspace(ctx, args.workspaceId);
     if (!ws) throw new Error("Workspace not found");
+    await requireActiveMember(ctx, ws, args.callerUserId);
 
     const now = Date.now();
 
@@ -472,6 +495,16 @@ export const updateLocalizationSettings = mutation({
   handler: async (ctx, args) => {
     const ws = await resolveWorkspace(ctx, args.workspaceId);
     if (!ws) throw new Error("Workspace not found");
+    await requireActiveMember(ctx, ws, args.callerUserId);
+
+    if (args.currency !== undefined && args.currency.trim().toUpperCase() !== (ws.currency || "").toUpperCase()) {
+      const hasFinance = await checkHasFinancialRecords(ctx, ws.organizationId || ws._id);
+      if (hasFinance) {
+        throw new Error(
+          "CURRENCY_LOCKED: Workspace currency cannot be modified because financial or sales records already exist."
+        );
+      }
+    }
 
     const now = Date.now();
 

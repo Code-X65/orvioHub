@@ -129,6 +129,28 @@ export const Login: React.FC = () => {
         return;
       }
 
+      if (response?.status === 'already_authenticated' || response?.data?.status === 'already_authenticated') {
+        const authPayload = response.data || response;
+        setAuthData(authPayload, rememberMe);
+        toast.info('You are already signed in.');
+        await handlePostLoginRedirect(authPayload.user, authPayload.session);
+        return;
+      }
+
+      if (
+        response.status === 'pending_email_verification' ||
+        response.data?.status === 'pending_email_verification' ||
+        response.user?.status === 'pending_email_verification' ||
+        response.user?.emailVerified === false
+      ) {
+        setAuthData(response, rememberMe);
+        toast.info('Email verification is required before full access is granted.');
+        navigate('/verify-email', {
+          state: { email: data.email, returnTo },
+        });
+        return;
+      }
+
       setAuthData(response, rememberMe);
       toast.success(`Welcome back, ${response.user?.name || 'there'}!`);
       await handlePostLoginRedirect(response.user, response.session);

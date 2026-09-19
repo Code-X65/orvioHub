@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Routes, Route, Navigate, useSearchParams } from 'react-router-dom';
 import { AuthGuard } from '../../components/auth/AuthGuard';
 import { InventoryLanding } from './pages/Landing';
+import { InventoryLayout } from '@/layouts/InventoryLayout';
 import { InventoryDashboard } from '../../pages/inventory/InventoryDashboard';
 import { InventoryAppOnboarding } from './pages/InventoryAppOnboarding';
 import { SingleBranchConfirmation } from './pages/SingleBranchConfirmation';
@@ -9,22 +10,36 @@ import { MultiBranchSetup } from './pages/MultiBranchSetup';
 import { InventorySettingsPage } from '../../pages/settings/InventorySettingsPage';
 import { BranchSettingsPage } from '../../pages/settings/BranchSettingsPage';
 import { WorkspaceSettingsPage } from '../../pages/settings/WorkspaceSettingsPage';
+import { WorkspaceMembers } from '../../pages/settings/WorkspaceMembers';
+import { WorkspaceInvitationsPage } from '../../pages/workspaces/WorkspaceInvitationsPage';
 import { BranchTeamManagement } from '../../pages/inventory/BranchTeamManagement';
+import { ApplicationTeamListPage } from '../../pages/team/ApplicationTeamListPage';
+import { AddTeamMemberPage } from '../../pages/team/AddTeamMemberPage';
+import { BulkAddTeamMembersPage } from '../../pages/team/BulkAddTeamMembersPage';
+import { TeamMemberDetailPage } from '../../pages/team/TeamMemberDetailPage';
+import { TransferStaffWizardPage } from '../../pages/team/TransferStaffWizardPage';
+import { BranchVisualOrgPage } from '../../pages/team/BranchVisualOrgPage';
+import { TeamInvitationsPage } from '../../pages/team/TeamInvitationsPage';
+import { TeamAuditLogPage } from '../../pages/team/TeamAuditLogPage';
+import { PersonalTeamView } from '../../pages/team/PersonalTeamView';
+import { TeamMigrationPage } from '../../pages/team/TeamMigrationPage';
+import {
+  ProductsCatalogPage,
+  SalesPOSPage,
+  StockTransfersPage,
+  ReportsAnalyticsPage,
+} from '../../pages/inventory/InventoryDemoViews';
 import { AcceptInvite } from '../../pages/auth/AcceptInvite';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { api } from '../../lib/api';
 import { getCrossSubdomainUrl } from '@/lib/domain';
 import { getCrossSubdomainItem } from '@/lib/cookieStorage';
-import { Spinner } from '../../components/ui/spinner';
 
 /**
  * Guard for checking whether the active workspace has the Inventory module activated.
  */
 let inFlightActivationChecks = new Map<string, Promise<[any, any, any]>>();
 
-/**
- * Guard for checking whether the active workspace has the Inventory module activated.
- */
 function InventoryActivationGuard({ children }: { children: React.ReactNode }) {
   const [searchParams] = useSearchParams();
   const urlOrg = searchParams.get('org');
@@ -129,15 +144,6 @@ function InventoryActivationGuard({ children }: { children: React.ReactNode }) {
       clearTimeout(timeout);
     };
   }, [urlOrg, currentWorkspace?.id, isWsLoading, workspaces.length, selectWorkspace]);
-
-  if (isChecking && !isAlreadyActive) {
-    return (
-      <div className="min-h-screen bg-black flex flex-col items-center justify-center space-y-3">
-        <Spinner size="lg" className="text-[#714b67]" />
-        <p className="text-xs text-slate-400">Verifying application access...</p>
-      </div>
-    );
-  }
 
   const effectiveOrgId = urlOrg || currentWorkspace?.id || getCrossSubdomainItem('orvio_active_workspace_id');
 
@@ -246,13 +252,15 @@ export default function InventoryApp() {
       <Route path="/preview" element={<InventoryLanding />} />
       <Route path="/overview" element={<InventoryLanding />} />
 
-      {/* 2. Authenticated Application Dashboard & Operations (Guarded with Activation Check) */}
+      {/* 2. Authenticated Inventory Operations Wrapped in InventoryLayout with Primary Sidebar */}
       <Route
         path="/dashboard"
         element={
           <AuthGuard>
             <InventoryActivationGuard>
-              <InventoryDashboard />
+              <InventoryLayout>
+                <InventoryDashboard />
+              </InventoryLayout>
             </InventoryActivationGuard>
           </AuthGuard>
         }
@@ -262,7 +270,9 @@ export default function InventoryApp() {
         element={
           <AuthGuard>
             <InventoryActivationGuard>
-              <InventoryDashboard />
+              <InventoryLayout>
+                <InventoryDashboard />
+              </InventoryLayout>
             </InventoryActivationGuard>
           </AuthGuard>
         }
@@ -272,7 +282,9 @@ export default function InventoryApp() {
         element={
           <AuthGuard>
             <InventoryActivationGuard>
-              <InventoryDashboard />
+              <InventoryLayout>
+                <InventoryDashboard />
+              </InventoryLayout>
             </InventoryActivationGuard>
           </AuthGuard>
         }
@@ -282,7 +294,9 @@ export default function InventoryApp() {
         element={
           <AuthGuard>
             <InventoryActivationGuard>
-              <InventoryDashboard />
+              <InventoryLayout>
+                <InventoryDashboard />
+              </InventoryLayout>
             </InventoryActivationGuard>
           </AuthGuard>
         }
@@ -292,15 +306,265 @@ export default function InventoryApp() {
         element={
           <AuthGuard>
             <InventoryActivationGuard>
-              <InventoryDashboard />
+              <InventoryLayout>
+                <InventoryDashboard />
+              </InventoryLayout>
             </InventoryActivationGuard>
           </AuthGuard>
         }
       />
-      {/* 3. Application Activation & Onboarding Wizard Flows (US-A2, US-3, US-4A, US-4B) */}
+
+      {/* 3. Demo Navigation Views */}
+      <Route
+        path="/inventory/products"
+        element={
+          <AuthGuard>
+            <InventoryActivationGuard>
+              <InventoryLayout>
+                <ProductsCatalogPage />
+              </InventoryLayout>
+            </InventoryActivationGuard>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/inventory/sales"
+        element={
+          <AuthGuard>
+            <InventoryActivationGuard>
+              <InventoryLayout>
+                <SalesPOSPage />
+              </InventoryLayout>
+            </InventoryActivationGuard>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/inventory/stock"
+        element={
+          <AuthGuard>
+            <InventoryActivationGuard>
+              <InventoryLayout>
+                <StockTransfersPage />
+              </InventoryLayout>
+            </InventoryActivationGuard>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/inventory/reports"
+        element={
+          <AuthGuard>
+            <InventoryActivationGuard>
+              <InventoryLayout>
+                <ReportsAnalyticsPage />
+              </InventoryLayout>
+            </InventoryActivationGuard>
+          </AuthGuard>
+        }
+      />
+      {/* Hybrid Team Management System */}
+      <Route
+        path="/inventory/team"
+        element={
+          <AuthGuard>
+            <InventoryActivationGuard>
+              <InventoryLayout>
+                <ApplicationTeamListPage />
+              </InventoryLayout>
+            </InventoryActivationGuard>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/inventory/team/members"
+        element={
+          <AuthGuard>
+            <InventoryActivationGuard>
+              <InventoryLayout>
+                <ApplicationTeamListPage />
+              </InventoryLayout>
+            </InventoryActivationGuard>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/inventory/team/members/add"
+        element={
+          <AuthGuard>
+            <InventoryActivationGuard>
+              <InventoryLayout>
+                <AddTeamMemberPage />
+              </InventoryLayout>
+            </InventoryActivationGuard>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/inventory/team/members/bulk-add"
+        element={
+          <AuthGuard>
+            <InventoryActivationGuard>
+              <InventoryLayout>
+                <BulkAddTeamMembersPage />
+              </InventoryLayout>
+            </InventoryActivationGuard>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/inventory/team/members/:userId"
+        element={
+          <AuthGuard>
+            <InventoryActivationGuard>
+              <InventoryLayout>
+                <TeamMemberDetailPage />
+              </InventoryLayout>
+            </InventoryActivationGuard>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/inventory/team/members/:userId/transfer"
+        element={
+          <AuthGuard>
+            <InventoryActivationGuard>
+              <InventoryLayout>
+                <TransferStaffWizardPage />
+              </InventoryLayout>
+            </InventoryActivationGuard>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/inventory/team/branches"
+        element={
+          <AuthGuard>
+            <InventoryActivationGuard>
+              <InventoryLayout>
+                <BranchVisualOrgPage />
+              </InventoryLayout>
+            </InventoryActivationGuard>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/inventory/team/invitations"
+        element={
+          <AuthGuard>
+            <InventoryActivationGuard>
+              <InventoryLayout>
+                <TeamInvitationsPage />
+              </InventoryLayout>
+            </InventoryActivationGuard>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/inventory/team/audit"
+        element={
+          <AuthGuard>
+            <InventoryActivationGuard>
+              <InventoryLayout>
+                <TeamAuditLogPage />
+              </InventoryLayout>
+            </InventoryActivationGuard>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/inventory/my-team"
+        element={
+          <AuthGuard>
+            <InventoryActivationGuard>
+              <InventoryLayout>
+                <PersonalTeamView />
+              </InventoryLayout>
+            </InventoryActivationGuard>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/inventory/my-team/invitations"
+        element={
+          <AuthGuard>
+            <InventoryActivationGuard>
+              <InventoryLayout>
+                <PersonalTeamView />
+              </InventoryLayout>
+            </InventoryActivationGuard>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/settings/team-migration"
+        element={
+          <AuthGuard>
+            <InventoryActivationGuard>
+              <InventoryLayout>
+                <TeamMigrationPage />
+              </InventoryLayout>
+            </InventoryActivationGuard>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/inventory/settings/team"
+        element={
+          <AuthGuard>
+            <InventoryActivationGuard>
+              <InventoryLayout>
+                <ApplicationTeamListPage />
+              </InventoryLayout>
+            </InventoryActivationGuard>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/inventory/settings/branch"
+        element={
+          <AuthGuard>
+            <InventoryActivationGuard>
+              <InventoryLayout>
+                <BranchSettingsPage />
+              </InventoryLayout>
+            </InventoryActivationGuard>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/inventory/settings/branches/:branchId"
+        element={
+          <AuthGuard>
+            <InventoryActivationGuard>
+              <InventoryLayout>
+                <BranchSettingsPage />
+              </InventoryLayout>
+            </InventoryActivationGuard>
+          </AuthGuard>
+        }
+      />
+
+      {/* 4. Application Activation & Onboarding Wizard */}
+      <Route
+        path="/setup"
+        element={
+          <AuthGuard>
+            <InventoryAppOnboarding />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/setup/*"
+        element={
+          <AuthGuard>
+            <InventoryAppOnboarding />
+          </AuthGuard>
+        }
+      />
       <Route
         path="/onboard/activate"
-        element={<Navigate to="/onboard/app" replace />}
+        element={<Navigate to="/setup" replace />}
       />
       <Route
         path="/onboard/app"
@@ -331,43 +595,15 @@ export default function InventoryApp() {
       <Route path="/onboarding" element={<Navigate to="/onboard/app" replace />} />
       <Route path="/onboarding/*" element={<Navigate to="/onboard/app" replace />} />
       <Route path="/onboarding/inventory" element={<Navigate to="/onboard/app" replace />} />
+
+      {/* 5. Inventory & Branch Settings */}
       <Route
         path="/settings"
         element={
           <AuthGuard>
-            <InventorySettingsPage />
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/settings/products"
-        element={
-          <AuthGuard>
-            <InventorySettingsPage />
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/settings/stock"
-        element={
-          <AuthGuard>
-            <InventorySettingsPage />
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/settings/sales"
-        element={
-          <AuthGuard>
-            <InventorySettingsPage />
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/settings/receipts"
-        element={
-          <AuthGuard>
-            <InventorySettingsPage />
+            <InventoryLayout>
+              <BranchSettingsPage />
+            </InventoryLayout>
           </AuthGuard>
         }
       />
@@ -375,7 +611,9 @@ export default function InventoryApp() {
         path="/settings/branches"
         element={
           <AuthGuard>
-            <BranchSettingsPage />
+            <InventoryLayout>
+              <BranchSettingsPage />
+            </InventoryLayout>
           </AuthGuard>
         }
       />
@@ -383,12 +621,72 @@ export default function InventoryApp() {
         path="/settings/branches/:branchId"
         element={
           <AuthGuard>
-            <BranchSettingsPage />
+            <InventoryLayout>
+              <BranchSettingsPage />
+            </InventoryLayout>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/settings/products"
+        element={
+          <AuthGuard>
+            <InventoryLayout>
+              <InventorySettingsPage />
+            </InventoryLayout>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/settings/stock"
+        element={
+          <AuthGuard>
+            <InventoryLayout>
+              <InventorySettingsPage />
+            </InventoryLayout>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/settings/sales"
+        element={
+          <AuthGuard>
+            <InventoryLayout>
+              <InventorySettingsPage />
+            </InventoryLayout>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/settings/receipts"
+        element={
+          <AuthGuard>
+            <InventoryLayout>
+              <InventorySettingsPage />
+            </InventoryLayout>
+          </AuthGuard>
+        }
+      />
+
+      {/* 6. Organization Settings Bridges */}
+      <Route
+        path="/settings/general"
+        element={
+          <AuthGuard>
+            <WorkspaceSettingsPage />
           </AuthGuard>
         }
       />
       <Route
         path="/settings/organization"
+        element={
+          <AuthGuard>
+            <WorkspaceSettingsPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/settings/workspace"
         element={
           <AuthGuard>
             <WorkspaceSettingsPage />
@@ -404,26 +702,10 @@ export default function InventoryApp() {
         }
       />
       <Route
-        path="/inventory/settings/team"
+        path="/settings/members"
         element={
           <AuthGuard>
-            <InventoryActivationGuard>
-              <div className="min-h-screen bg-slate-950 p-6">
-                <BranchTeamManagement />
-              </div>
-            </InventoryActivationGuard>
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/inventory/team"
-        element={
-          <AuthGuard>
-            <InventoryActivationGuard>
-              <div className="min-h-screen bg-slate-950 p-6">
-                <BranchTeamManagement />
-              </div>
-            </InventoryActivationGuard>
+            <WorkspaceMembers />
           </AuthGuard>
         }
       />
@@ -431,26 +713,19 @@ export default function InventoryApp() {
         path="/settings/team"
         element={
           <AuthGuard>
-            <InventoryActivationGuard>
-              <div className="min-h-screen bg-slate-950 p-6">
-                <BranchTeamManagement />
-              </div>
-            </InventoryActivationGuard>
+            <WorkspaceMembers />
           </AuthGuard>
         }
       />
       <Route
-        path="/team"
+        path="/settings/invitations"
         element={
           <AuthGuard>
-            <InventoryActivationGuard>
-              <div className="min-h-screen bg-slate-950 p-6">
-                <BranchTeamManagement />
-              </div>
-            </InventoryActivationGuard>
+            <WorkspaceInvitationsPage />
           </AuthGuard>
         }
       />
+
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

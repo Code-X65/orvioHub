@@ -81,6 +81,22 @@ export interface ManualPaymentRecord {
   createdAt: number;
 }
 
+export interface BillingEventRecord {
+  _id: string;
+  provider: string;
+  providerEventId: string;
+  eventType: string;
+  workspaceId?: string;
+  organizationId?: string;
+  billingAccountId?: string;
+  subscriptionId?: string;
+  status: "received" | "processed" | "ignored" | "failed";
+  payloadMetadata?: any;
+  processedAt?: number;
+  errorMessage?: string;
+  createdAt: number;
+}
+
 export interface SubscriptionStats {
   totalSubscriptions: number;
   totalMRRKobo: number;
@@ -375,5 +391,40 @@ export const adminBillingApi = {
     }
     return [];
   },
+
+  async listBillingEvents(status?: string, limit: number = 50): Promise<BillingEventRecord[]> {
+    try {
+      // Try query first, then fallback to mutation if needed
+      try {
+        const events = await convex.query(anyApi.paystackWebhook.listBillingEventsQuery, {
+          status: status && status !== "all" ? status : undefined,
+          limit,
+        });
+        if (Array.isArray(events)) return events as BillingEventRecord[];
+      } catch {
+        const events = await convex.mutation(anyApi.paystackWebhook.listBillingEvents, {
+          status: status && status !== "all" ? status : undefined,
+          limit,
+        });
+        if (Array.isArray(events)) return events as BillingEventRecord[];
+      }
+    } catch (err) {
+      console.error("Failed to list billing events:", err);
+    }
+    return [];
+  },
+
+  async retryFailedWebhook(params: {
+    billingEventId?: string;
+    providerEventId?: string;
+    adminUserId?: string;
+  }): Promise<{ success: boolean; status: string; eventId?: string }> {
+    return await convex.mutation(anyApi.paystackWebhook.retryFailedWebhook, {
+      billingEventId: params.billingEventId as any,
+      providerEventId: params.providerEventId,
+      adminUserId: params.adminUserId as any,
+    });
+  },
 };
+
 

@@ -52,6 +52,31 @@ export const OrganizationDetails: React.FC = () => {
   const [isSuspendModalOpen, setIsSuspendModalOpen] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [isEmergencyTransferOpen, setIsEmergencyTransferOpen] = useState(false);
+  const [branchActionModal, setBranchActionModal] = useState<{
+    isOpen: boolean;
+    branch: any;
+    targetStatus: "active" | "suspended";
+    reason: string;
+  } | null>(null);
+
+  const handleToggleBranchStatus = async () => {
+    if (!branchActionModal || !sessionToken) return;
+    setActionLoading(true);
+    try {
+      await adminOrganizationsApi.toggleBranchStatus(
+        sessionToken,
+        branchActionModal.branch.id || branchActionModal.branch._id,
+        branchActionModal.targetStatus,
+        branchActionModal.reason || `Status changed to ${branchActionModal.targetStatus} by administrator`
+      );
+      setBranchActionModal(null);
+      await loadDetails();
+    } catch (err: any) {
+      alert(err.message || "Failed to update branch status.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
 
   const handleExtendTrial = async () => {
     if (!id || !sessionToken || !org) return;
@@ -936,11 +961,12 @@ export const OrganizationDetails: React.FC = () => {
                       <th className="py-2.5 px-4">Address</th>
                       <th className="py-2.5 px-4">Contact</th>
                       <th className="py-2.5 px-4">Status</th>
+                      <th className="py-2.5 px-4 text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60">
                     {branches.map((b: any) => (
-                      <tr key={b.id} className="hover:bg-slate-800/30">
+                      <tr key={b.id || b._id} className="hover:bg-slate-800/30">
                         <td className="py-3 px-4">
                           <div className="flex items-center gap-2">
                             <span className="font-bold text-white">{b.name}</span>
@@ -965,6 +991,41 @@ export const OrganizationDetails: React.FC = () => {
                         </td>
                         <td className="py-3 px-4">
                           <StatusBadge status={b.status || "active"} size="sm" />
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          {b.status === "active" ? (
+                            <button
+                              onClick={() =>
+                                setBranchActionModal({
+                                  isOpen: true,
+                                  branch: b,
+                                  targetStatus: "suspended",
+                                  reason: "",
+                                })
+                              }
+                              className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-[11px] font-semibold transition cursor-pointer flex items-center gap-1 ml-auto"
+                              title="Suspend this branch"
+                            >
+                              <Ban className="w-3 h-3" />
+                              Suspend Branch
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() =>
+                                setBranchActionModal({
+                                  isOpen: true,
+                                  branch: b,
+                                  targetStatus: "active",
+                                  reason: "",
+                                })
+                              }
+                              className="px-2.5 py-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 text-[11px] font-semibold transition cursor-pointer flex items-center gap-1 ml-auto"
+                              title="Reactivate this branch"
+                            >
+                              <Power className="w-3 h-3" />
+                              Activate Branch
+                            </button>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -1304,6 +1365,90 @@ export const OrganizationDetails: React.FC = () => {
         onClose={() => setIsEmergencyTransferOpen(false)}
         onConfirm={handleConfirmEmergencyTransfer}
       />
+
+      {/* Branch Suspension / Activation Confirmation Modal */}
+      {branchActionModal?.isOpen && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center gap-3">
+              <div
+                className={`w-10 h-10 rounded-xl flex items-center justify-center border ${
+                  branchActionModal.targetStatus === "suspended"
+                    ? "bg-rose-500/10 text-rose-400 border-rose-500/20"
+                    : "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                }`}
+              >
+                {branchActionModal.targetStatus === "suspended" ? (
+                  <Ban className="w-5 h-5" />
+                ) : (
+                  <Power className="w-5 h-5" />
+                )}
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white">
+                  {branchActionModal.targetStatus === "suspended"
+                    ? "Suspend Branch Location"
+                    : "Activate Branch Location"}
+                </h3>
+                <p className="text-xs text-slate-400 font-mono">
+                  {branchActionModal.branch.name} ({branchActionModal.branch.code || "MAIN"})
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-300">
+              {branchActionModal.targetStatus === "suspended"
+                ? "Suspending this branch will temporarily prevent attendants and managers from conducting POS sales or modifying stock at this location until reactivated."
+                : "Activating this branch will restore all sales and inventory operations for attendants assigned to this location."}
+            </p>
+
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-semibold text-slate-400">
+                Reason / Internal Notes (Logged in Audit Trail)
+              </label>
+              <textarea
+                rows={2}
+                placeholder="e.g., Compliance hold, store refurbishment, owner request..."
+                value={branchActionModal.reason}
+                onChange={(e) =>
+                  setBranchActionModal((prev) =>
+                    prev ? { ...prev, reason: e.target.value } : null
+                  )
+                }
+                className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-brand-500"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setBranchActionModal(null)}
+                disabled={actionLoading}
+                className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleToggleBranchStatus}
+                disabled={actionLoading}
+                className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50 ${
+                  branchActionModal.targetStatus === "suspended"
+                    ? "bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/30"
+                    : "bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/30"
+                }`}
+              >
+                {actionLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>
+                  {branchActionModal.targetStatus === "suspended"
+                    ? "Confirm Suspension"
+                    : "Confirm Activation"}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

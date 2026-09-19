@@ -1,16 +1,19 @@
 import React, { useState } from 'react';
-import { AlertTriangle, Loader2 } from 'lucide-react';
+import { AlertTriangle, Loader2, Eye, EyeOff, Lock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { api } from '@/lib/api';
+import { toast } from 'sonner';
 
 interface ConfirmationModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onConfirm: (reason?: string) => Promise<void> | void;
+  onConfirm: (reason?: string, password?: string) => Promise<void> | void;
   title: string;
   description: string;
   confirmationPhrase?: string;
   requireReason?: boolean;
+  requirePassword?: boolean;
   confirmButtonText?: string;
   isDangerous?: boolean;
 }
@@ -23,25 +26,46 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
   description,
   confirmationPhrase,
   requireReason = false,
+  requirePassword = false,
   confirmButtonText = 'Confirm Action',
   isDangerous = false,
 }) => {
   const [typedPhrase, setTypedPhrase] = useState('');
   const [reason, setReason] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   if (!isOpen) return null;
 
   const isPhraseValid = confirmationPhrase ? typedPhrase.trim() === confirmationPhrase : true;
   const isReasonValid = requireReason ? reason.trim().length > 0 : true;
-  const canConfirm = isPhraseValid && isReasonValid && !isSubmitting;
+  const isPasswordProvided = requirePassword ? password.length > 0 : true;
+  const canConfirm = isPhraseValid && isReasonValid && isPasswordProvided && !isSubmitting;
 
   const handleConfirm = async () => {
     if (!canConfirm) return;
     setIsSubmitting(true);
+    setPasswordError(null);
+
     try {
-      await onConfirm(reason);
+      if (requirePassword) {
+        try {
+          await api.post('/auth/verify-password', { password });
+        } catch (err: any) {
+          const errMsg = err?.message || err?.error?.message || 'Incorrect password.';
+          setPasswordError(errMsg);
+          toast.error(errMsg);
+          setIsSubmitting(false);
+          return;
+        }
+      }
+
+      await onConfirm(reason, password);
       onClose();
+    } catch (err: any) {
+      toast.error(err.message || 'Action failed.');
     } finally {
       setIsSubmitting(false);
     }
@@ -63,6 +87,40 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
             <p className="text-xs text-slate-400 mt-0.5">{description}</p>
           </div>
         </div>
+
+        {requirePassword && (
+          <div className="space-y-1.5 p-3 rounded-xl bg-black/40 border border-white/10">
+            <label className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
+              <Lock className="w-3.5 h-3.5 text-[#c79dbd]" />
+              <span>Confirm Account Password</span>
+            </label>
+            <p className="text-[11px] text-slate-400">
+              For security, please enter your current account password to authorize this action.
+            </p>
+            <div className="relative mt-2">
+              <Input
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  setPasswordError(null);
+                }}
+                placeholder="Enter your current password"
+                className="bg-black/60 border-white/10 text-xs pr-10 focus:border-[#714b67]"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white transition cursor-pointer"
+              >
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            {passwordError && (
+              <p className="text-[11px] text-rose-400 font-medium">{passwordError}</p>
+            )}
+          </div>
+        )}
 
         {confirmationPhrase && (
           <div className="space-y-1.5">

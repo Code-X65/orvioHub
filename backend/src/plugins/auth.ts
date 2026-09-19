@@ -14,6 +14,8 @@ export interface JwtPayload {
   productKey?: string;
   tokenVersion?: number;
   is2faPending?: boolean;
+  accessLevel?: 'full' | 'verification_required';
+  status?: string;
 }
 
 declare module 'fastify' {
@@ -191,6 +193,37 @@ const plugin: FastifyPluginAsync = async (fastify) => {
           }
         }
 
+        const isPending =
+          user.status === 'pending_email_verification' ||
+          user.emailVerified === false ||
+          decoded.accessLevel === 'verification_required';
+
+        if (isPending) {
+          const rawUrl = request.raw.url || request.url;
+          const cleanUrl = rawUrl.split('?')[0];
+          const isAllowedPendingRoute =
+            cleanUrl.endsWith('/auth/verify-email') ||
+            cleanUrl.endsWith('/auth/resend-verification') ||
+            cleanUrl.endsWith('/auth/change-pending-email') ||
+            cleanUrl.endsWith('/auth/session') ||
+            cleanUrl.endsWith('/auth/me') ||
+            cleanUrl.endsWith('/auth/logout') ||
+            cleanUrl.endsWith('/health');
+
+          if (!isAllowedPendingRoute) {
+            return reply.status(403).send({
+              success: false,
+              error: {
+                code: ERROR_CODES.EMAIL_NOT_VERIFIED,
+                message: 'Email verification is required to access this resource.',
+                status: 'pending_email_verification',
+                nextRoute: '/verify-email',
+              },
+            });
+          }
+        }
+
+        (user as any).accessLevel = decoded.accessLevel || (user.emailVerified ? 'full' : 'verification_required');
         request.user = user;
         request.sessionId = decoded.sessionId;
       } catch {

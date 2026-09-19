@@ -31,13 +31,6 @@ export const adminUserRoutes: FastifyPluginAsync = async (fastify) => {
           properties: {
             reason: {
               type: 'string',
-              enum: [
-                'payment_failure',
-                'policy_violation',
-                'security_concern',
-                'fraud_suspected',
-                'other',
-              ],
             },
             notes: { type: 'string' },
             revokeAllSessions: { type: 'boolean' },

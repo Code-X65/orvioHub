@@ -15,12 +15,14 @@ import {
 } from "lucide-react";
 import { adminBillingApi, SubscriptionRecord, SubscriptionStats } from "../api/adminBilling";
 import { RecordPaymentModal } from "../components/RecordPaymentModal";
+import { WebhookEventsTable } from "../components/WebhookEventsTable";
 
 export const Subscriptions: React.FC = () => {
+  const [activeTab, setActiveTab] = useState<"subscriptions" | "webhooks">("subscriptions");
   const [subscriptions, setSubscriptions] = useState<SubscriptionRecord[]>([]);
   const [stats, setStats] = useState<SubscriptionStats | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [searchQuery, setSearchQuery] = useState<string>("" );
+  const [searchQuery, setSearchQuery] = useState<string>("");
   const [planFilter, setPlanFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
 
@@ -192,8 +194,38 @@ export const Subscriptions: React.FC = () => {
         </div>
       </div>
 
-      {/* Metrics Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* Tabs Switcher */}
+      <div className="flex items-center gap-2 border-b border-slate-800 pb-3">
+        <button
+          onClick={() => setActiveTab("subscriptions")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+            activeTab === "subscriptions"
+              ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+              : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+          }`}
+        >
+          <CreditCard className="w-4 h-4" />
+          Subscriptions & Revenue
+        </button>
+        <button
+          onClick={() => setActiveTab("webhooks")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+            activeTab === "webhooks"
+              ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+              : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+          }`}
+        >
+          <RefreshCw className="w-4 h-4" />
+          Webhook Events & Replay
+        </button>
+      </div>
+
+      {activeTab === "webhooks" ? (
+        <WebhookEventsTable onRetrySuccess={fetchData} />
+      ) : (
+        <>
+          {/* Metrics Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Estimated MRR */}
         <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 shadow-xl space-y-2">
           <div className="flex items-center justify-between text-slate-400">
@@ -428,6 +460,8 @@ export const Subscriptions: React.FC = () => {
           </table>
         </div>
       </div>
+      </>
+      )}
 
       {/* Record Payment Modal */}
       <RecordPaymentModal

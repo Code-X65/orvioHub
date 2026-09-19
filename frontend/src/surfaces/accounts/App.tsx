@@ -76,6 +76,7 @@ export default function AccountsApp() {
       />
       <Route path="/auth/callback" element={<AuthCallback />} />
       <Route path="/verify-email" element={<VerifyEmail />} />
+      <Route path="/verify-email/change" element={<VerifyEmail initialChangeOpen />} />
       <Route path="/verify-email/:tokenParam" element={<VerifyEmail />} />
       <Route path="/verify-phone" element={<VerifyPhone />} />
       <Route path="/payment" element={<PaymentPage />} />

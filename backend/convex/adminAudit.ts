@@ -71,8 +71,8 @@ export const getAdminAuditLogs = query({
     for (const l of paginated) {
       let adminEmail = "System";
       if (l.adminId) {
-        const adm = await ctx.db.get(l.adminId);
-        if (adm) adminEmail = adm.email;
+        const adm: any = await ctx.db.get(l.adminId as any);
+        if (adm && adm.email) adminEmail = adm.email;
       }
 
       items.push({

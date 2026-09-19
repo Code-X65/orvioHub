@@ -5,6 +5,9 @@ import { PricingPage } from "../../pages/pricing/PricingPage";
 import { BillingCallbackPage } from "../../pages/billing/BillingCallbackPage";
 import { PaymentPage } from "../../pages/billing/PaymentPage";
 import { AppProductLanding } from "../../pages/products/AppProductLanding";
+import { InventoryMarketingPage } from "../../pages/marketing/InventoryMarketingPage";
+import { InventoryPricingPage } from "../../pages/marketing/InventoryPricingPage";
+import { InventoryInteractiveDemoPage } from "../../pages/marketing/InventoryInteractiveDemoPage";
 import { getLoginUrl, getSignupUrl, getAccountsUrl } from "@/lib/domain";
 
 function RedirectToLogin() {
@@ -32,10 +35,16 @@ export default function MarketingApp() {
   return (
     <Routes>
       <Route path="/" element={<LandingPage />} />
+      <Route path="/inventory" element={<InventoryMarketingPage />} />
+      <Route path="/inventory/pricing" element={<InventoryPricingPage />} />
+      <Route path="/inventory/demo" element={<InventoryInteractiveDemoPage />} />
+      <Route path="/inventory/features" element={<InventoryMarketingPage />} />
+      <Route path="/inventory/faqs" element={<InventoryMarketingPage />} />
       <Route path="/pricing" element={<PricingPage />} />
       <Route path="/payment" element={<PaymentPage />} />
       <Route path="/billing/callback" element={<BillingCallbackPage />} />
       <Route path="/products" element={<AppProductLanding />} />
+      <Route path="/products/:productId" element={<AppProductLanding />} />
       <Route path="/features" element={<AppProductLanding />} />
       <Route path="/login" element={<RedirectToLogin />} />
       <Route path="/signup" element={<RedirectToSignup />} />
@@ -48,3 +57,4 @@ export default function MarketingApp() {
     </Routes>
   );
 }
+

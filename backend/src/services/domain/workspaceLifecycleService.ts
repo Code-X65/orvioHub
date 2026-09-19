@@ -139,9 +139,9 @@ export class WorkspaceLifecycleService extends BaseRepository {
   }
 
   /**
-   * Safe workspace deletion/archival with safety invariants
+   * Safe workspace archival with safety invariants
    */
-  public async archiveWorkspace(workspaceId: string, userId: string): Promise<void> {
+  public async archiveWorkspace(workspaceId: string, userId: string, reason?: string): Promise<any> {
     const workspace: any = await this.query('workspaces:getWorkspaceById', { workspaceId: workspaceId as any });
     if (!workspace) {
       const err: any = new Error('Workspace not found.');
@@ -150,30 +150,87 @@ export class WorkspaceLifecycleService extends BaseRepository {
       throw err;
     }
 
-    // Enforce invariant: Cannot archive default workspace if other workspaces exist
-    if (workspace.isDefault) {
-      const owned: any = (await this.query('workspaces:getUserWorkspaces', { userId: userId as any })) || [];
-      if (owned.length > 1) {
-        const err: any = new Error('Cannot delete default workspace while other workspaces exist. Please assign another default first.');
-        err.code = 'DEFAULT_WORKSPACE_CANNOT_BE_DELETED';
-        err.statusCode = 400;
-        throw err;
-      }
-    }
+    const result = await this.mutate('workspaces:archiveWorkspace', {
+      workspaceId: workspaceId as any,
+      callerUserId: userId as any,
+      reason,
+    });
 
-    await this.mutate('workspaces:deleteWorkspace', { workspaceId: workspaceId as any, userId: userId as any });
+    return result;
+  }
 
-    if (this.auditRepo) {
-      await this.auditRepo.logAudit({
-        workspaceId,
-        actorUserId: userId,
-        eventType: AUDIT_EVENTS.WORKSPACE_DELETED,
-        resource: 'workspaces',
-        entityId: workspaceId,
-        metadata: { workspaceName: workspace.name },
-      }).catch(() => {});
-    }
+  /**
+   * Restore an archived workspace
+   */
+  public async restoreWorkspace(workspaceId: string, userId: string): Promise<any> {
+    const result = await this.mutate('workspaces:restoreWorkspace', {
+      workspaceId: workspaceId as any,
+      callerUserId: userId as any,
+    });
+
+    return result;
+  }
+
+  /**
+   * Suspend a workspace
+   */
+  public async suspendWorkspace(workspaceId: string, userId: string, reason?: string, notes?: string): Promise<any> {
+    const result = await this.mutate('workspaces:suspendWorkspace', {
+      workspaceId: workspaceId as any,
+      callerUserId: userId as any,
+      reason,
+      notes,
+    });
+
+    return result;
+  }
+
+  /**
+   * Request workspace deletion (cooling-off period)
+   */
+  public async requestDeletion(workspaceId: string, userId: string, reason?: string): Promise<any> {
+    const result = await this.mutate('workspaces:requestWorkspaceDeletion', {
+      workspaceId: workspaceId as any,
+      callerUserId: userId as any,
+      reason,
+    });
+
+    return result;
+  }
+
+  /**
+   * Cancel workspace deletion during cooling-off
+   */
+  public async cancelDeletion(workspaceId: string, userId: string): Promise<any> {
+    const result = await this.mutate('workspaces:cancelWorkspaceDeletion', {
+      workspaceId: workspaceId as any,
+      callerUserId: userId as any,
+    });
+
+    return result;
+  }
+
+  /**
+   * Transfer workspace ownership to another active member
+   */
+  public async transferOwnership(
+    workspaceId: string,
+    callerUserId: string,
+    newOwnerUserId: string,
+    transferPassword?: string,
+    reason?: string
+  ): Promise<any> {
+    const result = await this.mutate('workspaces:transferWorkspaceOwnership', {
+      workspaceId: workspaceId as any,
+      callerUserId: callerUserId as any,
+      newOwnerUserId: newOwnerUserId as any,
+      transferPassword,
+      reason,
+    });
+
+    return result;
   }
 }
 
 export const workspaceLifecycleService = new WorkspaceLifecycleService();
+

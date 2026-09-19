@@ -21,8 +21,8 @@ interface LivePlan {
 
 const DEFAULT_DB_PLANS: LivePlan[] = [
   {
-    key: 'free',
-    name: 'Free',
+    key: 'free_trial',
+    name: 'Free Trial',
     monthlyPrice: 0,
     annualPrice: 0,
     currency: 'NGN',
@@ -39,8 +39,8 @@ const DEFAULT_DB_PLANS: LivePlan[] = [
   {
     key: 'premium',
     name: 'Premium',
-    monthlyPrice: 2000000, // ₦20,000
-    annualPrice: 20000000, // ₦200,000
+    monthlyPrice: 2500000, // ₦25,000
+    annualPrice: 25000000, // ₦250,000
     currency: 'NGN',
     isActive: true,
   },
@@ -124,8 +124,8 @@ export const PricingPage: React.FC = () => {
       a: 'When you pay with Paystack or Flutterwave, your workspace organization is automatically and instantly upgraded to the chosen plan. Your receipt and updated billing cycle are immediately active.',
     },
     {
-      q: 'What is the Free Plan single-application rule?',
-      a: 'On the Free plan, you can run one core application in one owned workspace with up to 500 catalogue products and 300 monthly transactions forever. To activate additional applications (like Inventory + Task Management) or unlock multi-workspace capabilities, upgrade to Standard or Premium.',
+      q: 'What is included in the 30-Day Free Trial?',
+      a: 'The Free Trial gives you 30 days to explore the platform with 1 workspace, 1 active application (Inventory), up to 2 team members, 500 catalogue products, and 300 monthly transactions. After the trial, upgrade to Standard or Premium to continue with full access.',
     },
     {
       q: 'Can I change my plan or billing cycle at any time?',
@@ -155,7 +155,7 @@ export const PricingPage: React.FC = () => {
             One platform for all your business apps.
           </h1>
           <p className="text-sm sm:text-base text-slate-300 mt-4 max-w-2xl mx-auto leading-relaxed">
-            Start with our permanent Free tier or unlock multi-app workspaces, higher product catalogues, and high-volume transactions with Standard & Premium.
+            Start with a 30-day free trial to explore the platform, then unlock multi-app workspaces, higher product catalogues, and high-volume transactions with Standard &amp; Premium.
           </p>
 
           {/* Monthly / Annual Toggle */}
@@ -210,38 +210,38 @@ export const PricingPage: React.FC = () => {
 
         {/* 3 Pricing Cards Grid */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 lg:gap-8 max-w-6xl mx-auto">
-          {/* 1. Free Plan */}
+          {/* 1. Free Trial Card */}
           <div className="p-6 sm:p-8 rounded-sm bg-[#0c070a] border border-white/10 flex flex-col justify-between relative group hover:border-white/20 transition-all">
             <div>
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Starter</span>
-                <span className="text-[10px] font-semibold bg-white/5 text-slate-300 px-2 py-0.5 rounded-xs border border-white/10">
-                  Always Free
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Free Trial</span>
+                <span className="text-[10px] font-semibold bg-amber-500/10 text-amber-300 px-2 py-0.5 rounded-xs border border-amber-500/20">
+                  30 Days
                 </span>
               </div>
 
-              <h3 className="text-2xl font-bold text-white mt-2">Free</h3>
+              <h3 className="text-2xl font-bold text-white mt-2">Free Trial</h3>
               <p className="text-xs text-slate-400 mt-1">
-                For solopreneurs & individual shops getting started.
+                Explore the platform free for 30 days. No payment required to start.
               </p>
 
               <div className="mt-6 mb-6">
                 <span className="text-4xl font-extrabold text-white">₦0</span>
-                <span className="text-xs text-slate-400 ml-1">/ forever</span>
+                <span className="text-xs text-slate-400 ml-1">/ 30 days</span>
               </div>
 
               <ul className="space-y-3 text-xs text-slate-300 border-t border-white/5 pt-6">
                 <li className="flex items-center gap-2.5">
                   <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span><strong>1 Workspace</strong></span>
+                  <span><strong>Full Inventory App Access</strong></span>
                 </li>
                 <li className="flex items-center gap-2.5">
                   <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span><strong>1 Active Application</strong> (e.g. Inventory)</span>
+                  <span><strong>1 Branch / Warehouse</strong></span>
                 </li>
                 <li className="flex items-center gap-2.5">
                   <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span><strong>2 Team Members</strong> (1 owner + 1 staff)</span>
+                  <span><strong>Up to 2 Team Members</strong></span>
                 </li>
                 <li className="flex items-center gap-2.5">
                   <Check className="w-4 h-4 text-emerald-400 shrink-0" />
@@ -252,18 +252,18 @@ export const PricingPage: React.FC = () => {
                   <span><strong>300 Monthly Transactions</strong></span>
                 </li>
                 <li className="flex items-center gap-2.5">
-                  <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span>Barcode POS & basic reports</span>
+                  <Check className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>30-Day Temporary Duration</span>
                 </li>
               </ul>
             </div>
 
             <Button
-              onClick={() => handlePlanClick('free')}
+              onClick={() => handlePlanClick('free_trial')}
               variant="outline"
               className="w-full h-11 mt-8 bg-[#160f14] hover:bg-[#22151f] border-white/10 text-white rounded-xs font-semibold text-xs transition-all cursor-pointer"
             >
-              {isAuthenticated && user ? 'Open Workspace' : 'Start Free Trial'}
+              {isAuthenticated && user ? 'Open Workspace' : 'Start 30-Day Free Trial'}
             </Button>
           </div>
 
@@ -277,13 +277,13 @@ export const PricingPage: React.FC = () => {
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold uppercase tracking-wider text-[#c79dbd]">Growth</span>
                 <span className="text-[10px] font-semibold bg-[#714b67]/30 text-white px-2 py-0.5 rounded-xs border border-[#714b67]/50">
-                  Paystack • Flutterwave
+                  Paystack Verified
                 </span>
               </div>
 
               <h3 className="text-2xl font-bold text-white mt-2">Standard</h3>
               <p className="text-xs text-slate-400 mt-1">
-                For expanding stores with multiple apps, team members, and higher volume.
+                Essential inventory management for established stores and growing businesses.
               </p>
 
               <div className="mt-6 mb-6">
@@ -301,15 +301,15 @@ export const PricingPage: React.FC = () => {
               <ul className="space-y-3 text-xs text-slate-200 border-t border-white/10 pt-6">
                 <li className="flex items-center gap-2.5">
                   <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span><strong>3 Workspaces</strong></span>
+                  <span><strong>Full Inventory App Access</strong></span>
                 </li>
                 <li className="flex items-center gap-2.5">
                   <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span><strong>3 Active Applications</strong> (Inventory, Tasks, CRM, etc.)</span>
+                  <span><strong>Up to 3 Branches / Warehouses</strong></span>
                 </li>
                 <li className="flex items-center gap-2.5">
                   <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span><strong>10 Team Members</strong></span>
+                  <span><strong>Up to 10 Team Members</strong></span>
                 </li>
                 <li className="flex items-center gap-2.5">
                   <Check className="w-4 h-4 text-emerald-400 shrink-0" />
@@ -321,11 +321,7 @@ export const PricingPage: React.FC = () => {
                 </li>
                 <li className="flex items-center gap-2.5">
                   <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span>Full analytics & automated stock alerts</span>
-                </li>
-                <li className="flex items-center gap-2.5">
-                  <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span>Priority Email & WhatsApp Support</span>
+                  <span>Standard Email Support</span>
                 </li>
               </ul>
             </div>
@@ -343,7 +339,7 @@ export const PricingPage: React.FC = () => {
           <div className="p-6 sm:p-8 rounded-sm bg-[#0c070a] border border-white/10 flex flex-col justify-between relative group hover:border-white/20 transition-all">
             <div>
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Scale</span>
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Enterprise</span>
                 <span className="text-[10px] font-semibold bg-white/5 text-slate-300 px-2 py-0.5 rounded-xs border border-white/10">
                   Full Power
                 </span>
@@ -351,7 +347,7 @@ export const PricingPage: React.FC = () => {
 
               <h3 className="text-2xl font-bold text-white mt-2">Premium</h3>
               <p className="text-xs text-slate-400 mt-1">
-                For high-volume multi-branch enterprises requiring unlimited apps & high capacity.
+                High-capacity operations with multi-branch expansion and priority support.
               </p>
 
               <div className="mt-6 mb-6">
@@ -369,15 +365,15 @@ export const PricingPage: React.FC = () => {
               <ul className="space-y-3 text-xs text-slate-300 border-t border-white/5 pt-6">
                 <li className="flex items-center gap-2.5">
                   <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span><strong>10 Workspaces</strong></span>
+                  <span><strong>Full Inventory App Access</strong></span>
                 </li>
                 <li className="flex items-center gap-2.5">
                   <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span><strong>Unlimited Applications</strong></span>
+                  <span><strong>Up to 10 Branches / Warehouses</strong></span>
                 </li>
                 <li className="flex items-center gap-2.5">
                   <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span><strong>50 Team Members</strong></span>
+                  <span><strong>Up to 50 Team Members</strong></span>
                 </li>
                 <li className="flex items-center gap-2.5">
                   <Check className="w-4 h-4 text-emerald-400 shrink-0" />
@@ -389,11 +385,7 @@ export const PricingPage: React.FC = () => {
                 </li>
                 <li className="flex items-center gap-2.5">
                   <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span>Developer API & Custom Webhooks</span>
-                </li>
-                <li className="flex items-center gap-2.5">
-                  <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span>Dedicated Priority Account Manager</span>
+                  <span>Priority 24/7 Support</span>
                 </li>
               </ul>
             </div>
@@ -419,7 +411,7 @@ export const PricingPage: React.FC = () => {
               <thead className="bg-[#160f14] text-white uppercase text-[10px] tracking-wider border-b border-white/10">
                 <tr>
                   <th className="p-4">Feature / Resource</th>
-                  <th className="p-4 text-center">Free</th>
+                  <th className="p-4 text-center">Free Trial (30 Days)</th>
                   <th className="p-4 text-center text-[#c79dbd]">
                     Standard ({formatNaira(stdMonthlyNGN)}/mo)
                   </th>
@@ -430,25 +422,25 @@ export const PricingPage: React.FC = () => {
               </thead>
               <tbody className="divide-y divide-white/5">
                 <tr>
-                  <td className="p-4 font-semibold text-white">Workspaces</td>
-                  <td className="p-4 text-center">1 Workspace</td>
-                  <td className="p-4 text-center text-white font-medium">3 Workspaces</td>
-                  <td className="p-4 text-center text-white font-medium">10 Workspaces</td>
+                  <td className="p-4 font-semibold text-white">Active Application</td>
+                  <td className="p-4 text-center">Inventory</td>
+                  <td className="p-4 text-center text-white font-medium">Inventory</td>
+                  <td className="p-4 text-center text-white font-medium">Inventory</td>
                 </tr>
                 <tr>
-                  <td className="p-4 font-semibold text-white">Enabled Applications</td>
-                  <td className="p-4 text-center">1 Application</td>
-                  <td className="p-4 text-center text-white font-medium">3 Applications</td>
-                  <td className="p-4 text-center text-white font-medium">Unlimited</td>
+                  <td className="p-4 font-semibold text-white">Branches / Warehouses</td>
+                  <td className="p-4 text-center">1 Branch</td>
+                  <td className="p-4 text-center text-white font-medium">3 Branches</td>
+                  <td className="p-4 text-center text-white font-medium">10 Branches</td>
                 </tr>
                 <tr>
-                  <td className="p-4 font-semibold text-white">Team Members / Staff</td>
-                  <td className="p-4 text-center">2 Users</td>
-                  <td className="p-4 text-center text-white font-medium">10 Users</td>
-                  <td className="p-4 text-center text-white font-medium">50 Users</td>
+                  <td className="p-4 font-semibold text-white">Team Members</td>
+                  <td className="p-4 text-center">2 Members</td>
+                  <td className="p-4 text-center text-white font-medium">10 Members</td>
+                  <td className="p-4 text-center text-white font-medium">50 Members</td>
                 </tr>
                 <tr>
-                  <td className="p-4 font-semibold text-white">Catalog Products</td>
+                  <td className="p-4 font-semibold text-white">Product Catalogue</td>
                   <td className="p-4 text-center">500 Products</td>
                   <td className="p-4 text-center text-white font-medium">5,000 Products</td>
                   <td className="p-4 text-center text-white font-medium">25,000 Products</td>
@@ -460,22 +452,10 @@ export const PricingPage: React.FC = () => {
                   <td className="p-4 text-center text-white font-medium">25,000 / month</td>
                 </tr>
                 <tr>
-                  <td className="p-4 font-semibold text-white">Barcode POS & Shifts</td>
-                  <td className="p-4 text-center"><Check className="w-4 h-4 text-emerald-400 mx-auto" /></td>
-                  <td className="p-4 text-center"><Check className="w-4 h-4 text-emerald-400 mx-auto" /></td>
-                  <td className="p-4 text-center"><Check className="w-4 h-4 text-emerald-400 mx-auto" /></td>
-                </tr>
-                <tr>
-                  <td className="p-4 font-semibold text-white">Developer API & Webhooks</td>
-                  <td className="p-4 text-center text-slate-500">—</td>
-                  <td className="p-4 text-center text-slate-500">—</td>
-                  <td className="p-4 text-center"><Check className="w-4 h-4 text-emerald-400 mx-auto" /></td>
-                </tr>
-                <tr>
-                  <td className="p-4 font-semibold text-white">Support Channels</td>
-                  <td className="p-4 text-center">Community & Docs</td>
-                  <td className="p-4 text-center text-white font-medium">Priority Email & WhatsApp</td>
-                  <td className="p-4 text-center text-white font-medium">Dedicated Priority Manager</td>
+                  <td className="p-4 font-semibold text-white">Support SLA</td>
+                  <td className="p-4 text-center">Standard Support</td>
+                  <td className="p-4 text-center text-white font-medium">Standard Email Support</td>
+                  <td className="p-4 text-center text-white font-medium">Priority 24/7 Support</td>
                 </tr>
               </tbody>
             </table>

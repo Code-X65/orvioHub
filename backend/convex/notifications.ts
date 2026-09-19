@@ -1,10 +1,22 @@
 import { mutation, query } from "./_generated/server.js";
 import { v } from "convex/values";
 
+/**
+ * 1. Reactive Notifications Query with filtering, search, and resolution enrichment
+ */
 export const getNotifications = query({
   args: {
     userId: v.id("users"),
     status: v.optional(v.union(v.literal("UNREAD"), v.literal("READ"), v.literal("ARCHIVED"))),
+    category: v.optional(
+      v.union(
+        v.literal("SECURITY"),
+        v.literal("WORKSPACE"),
+        v.literal("INVENTORY"),
+        v.literal("BILLING"),
+        v.literal("SYSTEM")
+      )
+    ),
     type: v.optional(v.string()),
     limit: v.optional(v.number()),
   },
@@ -17,6 +29,9 @@ export const getNotifications = query({
     let filtered = list;
     if (args.status) {
       filtered = filtered.filter((n) => n.status === args.status);
+    }
+    if (args.category) {
+      filtered = filtered.filter((n) => n.category === args.category);
     }
     if (args.type) {
       filtered = filtered.filter((n) => n.type === args.type);
@@ -116,6 +131,9 @@ export const getNotifications = query({
   },
 });
 
+/**
+ * 2. Real-Time Unread Count Query for Header Badges
+ */
 export const getUnreadCount = query({
   args: {
     userId: v.id("users"),
@@ -179,6 +197,9 @@ export const getUnreadCount = query({
   },
 });
 
+/**
+ * 3. Mark Single Notification as Read
+ */
 export const markNotificationRead = mutation({
   args: {
     notificationId: v.id("notifications"),
@@ -197,6 +218,9 @@ export const markNotificationRead = mutation({
   },
 });
 
+/**
+ * 4. Mark All Notifications as Read for User
+ */
 export const markAllNotificationsRead = mutation({
   args: {
     userId: v.id("users"),
@@ -220,6 +244,9 @@ export const markAllNotificationsRead = mutation({
   },
 });
 
+/**
+ * 5. Archive Notification
+ */
 export const archiveNotification = mutation({
   args: {
     notificationId: v.id("notifications"),
@@ -237,6 +264,9 @@ export const archiveNotification = mutation({
   },
 });
 
+/**
+ * 6. Send Single In-App Notification Directly
+ */
 export const sendNotification = mutation({
   args: {
     userId: v.id("users"),
@@ -247,6 +277,26 @@ export const sendNotification = mutation({
     body: v.string(),
     data: v.optional(v.any()),
     severity: v.union(v.literal("INFO"), v.literal("SUCCESS"), v.literal("WARNING"), v.literal("ERROR")),
+    category: v.optional(
+      v.union(
+        v.literal("SECURITY"),
+        v.literal("WORKSPACE"),
+        v.literal("INVENTORY"),
+        v.literal("BILLING"),
+        v.literal("SYSTEM")
+      )
+    ),
+    priority: v.optional(
+      v.union(
+        v.literal("LOW"),
+        v.literal("NORMAL"),
+        v.literal("HIGH"),
+        v.literal("URGENT")
+      )
+    ),
+    actionUrl: v.optional(v.string()),
+    actionLabel: v.optional(v.string()),
+    dedupeKey: v.optional(v.string()),
     channel: v.optional(v.union(v.literal("IN_APP"), v.literal("EMAIL"), v.literal("SMS"), v.literal("WHATSAPP"))),
   },
   handler: async (ctx, args) => {
@@ -259,10 +309,111 @@ export const sendNotification = mutation({
       body: args.body,
       data: args.data,
       severity: args.severity,
+      category: args.category || "WORKSPACE",
+      priority: args.priority || "NORMAL",
+      actionUrl: args.actionUrl,
+      actionLabel: args.actionLabel,
+      dedupeKey: args.dedupeKey,
       channel: args.channel || "IN_APP",
       status: "UNREAD",
       createdAt: Date.now(),
     });
     return notifId;
+  },
+});
+
+/**
+ * 7. Broadcast Notification to All Active Members of a Workspace
+ */
+export const broadcastToWorkspace = mutation({
+  args: {
+    workspaceId: v.id("workspaces"),
+    roles: v.optional(v.array(v.string())), // e.g. ["OWNER", "ADMIN"]
+    type: v.string(),
+    title: v.string(),
+    body: v.string(),
+    data: v.optional(v.any()),
+    severity: v.union(v.literal("INFO"), v.literal("SUCCESS"), v.literal("WARNING"), v.literal("ERROR")),
+    category: v.union(
+      v.literal("SECURITY"),
+      v.literal("WORKSPACE"),
+      v.literal("INVENTORY"),
+      v.literal("BILLING"),
+      v.literal("SYSTEM")
+    ),
+    priority: v.union(
+      v.literal("LOW"),
+      v.literal("NORMAL"),
+      v.literal("HIGH"),
+      v.literal("URGENT")
+    ),
+    actionUrl: v.optional(v.string()),
+    actionLabel: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const members = await ctx.db
+      .query("workspaceMemberships")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
+      .filter((q) => q.eq(q.field("status"), "active"))
+      .collect();
+
+    const now = Date.now();
+    const notificationIds: any[] = [];
+
+    for (const member of members) {
+      if (args.roles && args.roles.length > 0 && !args.roles.includes(member.role.toUpperCase())) {
+        continue;
+      }
+
+      const id = await ctx.db.insert("notifications", {
+        userId: member.userId,
+        workspaceId: args.workspaceId,
+        type: args.type,
+        title: args.title,
+        body: args.body,
+        data: args.data,
+        severity: args.severity,
+        category: args.category,
+        priority: args.priority,
+        actionUrl: args.actionUrl,
+        actionLabel: args.actionLabel,
+        channel: "IN_APP",
+        status: "UNREAD",
+        createdAt: now,
+      });
+
+      notificationIds.push(id);
+    }
+
+    return { sentCount: notificationIds.length };
+  },
+});
+
+/**
+ * 8. Cleanup Old Read Notifications (Cron Target: 30-Day Retention)
+ */
+export const cleanupOldNotifications = mutation({
+  args: {
+    olderThanDays: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const days = args.olderThanDays || 30;
+    const threshold = Date.now() - days * 24 * 60 * 60 * 1000;
+
+    const oldNotifications = await ctx.db
+      .query("notifications")
+      .withIndex("by_status_created", (q) =>
+        q.eq("status", "READ")
+      )
+      .filter((q) => q.lt(q.field("createdAt"), threshold))
+      .take(500);
+
+    let deletedCount = 0;
+    for (const notif of oldNotifications) {
+      await ctx.db.delete(notif._id);
+      deletedCount++;
+    }
+
+    return { deletedCount };
   },
 });

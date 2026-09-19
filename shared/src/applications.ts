@@ -8,7 +8,10 @@ export type ApplicationKey =
   | "booking"
   | "gym"
   | "billing"
-  | "taskmanagement";
+  | "taskmanagement"
+  | "task_management";
+
+export type ApplicationStatus = "available" | "coming_soon" | "disabled";
 
 export type ApplicationDefinition = {
   key: ApplicationKey;
@@ -18,6 +21,9 @@ export type ApplicationDefinition = {
   preproductionUrl?: string;
   developmentUrl: string;
   enabled: boolean;
+  status: ApplicationStatus;
+  isVisibleToUsers: boolean;
+  isActivatable: boolean;
 };
 
 export const DEV_ROOT = "orviohub.localhost";
@@ -76,6 +82,9 @@ export const applications: Record<ApplicationKey, ApplicationDefinition> = {
     preproductionUrl: "https://preprod.orviohub.com",
     developmentUrl: resolveDevUrl(""),
     enabled: true,
+    status: "available",
+    isVisibleToUsers: true,
+    isActivatable: false,
   },
   accounts: {
     key: "accounts",
@@ -85,6 +94,9 @@ export const applications: Record<ApplicationKey, ApplicationDefinition> = {
     preproductionUrl: "https://accounts.preprod.orviohub.com",
     developmentUrl: resolveDevUrl("account"),
     enabled: true,
+    status: "available",
+    isVisibleToUsers: true,
+    isActivatable: false,
   },
   home: {
     key: "home",
@@ -94,6 +106,9 @@ export const applications: Record<ApplicationKey, ApplicationDefinition> = {
     preproductionUrl: "https://home.preprod.orviohub.com",
     developmentUrl: resolveDevUrl("home"),
     enabled: true,
+    status: "available",
+    isVisibleToUsers: true,
+    isActivatable: false,
   },
   launcher: {
     key: "launcher",
@@ -103,6 +118,9 @@ export const applications: Record<ApplicationKey, ApplicationDefinition> = {
     preproductionUrl: "https://app.preprod.orviohub.com",
     developmentUrl: resolveDevUrl("home"),
     enabled: true,
+    status: "available",
+    isVisibleToUsers: true,
+    isActivatable: false,
   },
   inventory: {
     key: "inventory",
@@ -112,6 +130,9 @@ export const applications: Record<ApplicationKey, ApplicationDefinition> = {
     preproductionUrl: "https://inventory.preprod.orviohub.com",
     developmentUrl: resolveDevUrl("inventory"),
     enabled: true,
+    status: "available",
+    isVisibleToUsers: true,
+    isActivatable: true,
   },
   pos: {
     key: "pos",
@@ -120,7 +141,10 @@ export const applications: Record<ApplicationKey, ApplicationDefinition> = {
     productionUrl: "https://inventory.orviohub.com/pos",
     preproductionUrl: "https://inventory.preprod.orviohub.com/pos",
     developmentUrl: resolveDevUrl("inventory", "/pos"),
-    enabled: true,
+    enabled: false,
+    status: "coming_soon",
+    isVisibleToUsers: false,
+    isActivatable: false,
   },
   booking: {
     key: "booking",
@@ -129,7 +153,10 @@ export const applications: Record<ApplicationKey, ApplicationDefinition> = {
     productionUrl: "https://home.orviohub.com/apps/booking",
     preproductionUrl: "https://home.preprod.orviohub.com/apps/booking",
     developmentUrl: resolveDevUrl("home", "/apps/booking"),
-    enabled: true,
+    enabled: false,
+    status: "coming_soon",
+    isVisibleToUsers: false,
+    isActivatable: false,
   },
   gym: {
     key: "gym",
@@ -138,7 +165,10 @@ export const applications: Record<ApplicationKey, ApplicationDefinition> = {
     productionUrl: "https://home.orviohub.com/apps/gym",
     preproductionUrl: "https://home.preprod.orviohub.com/apps/gym",
     developmentUrl: resolveDevUrl("home", "/apps/gym"),
-    enabled: true,
+    enabled: false,
+    status: "coming_soon",
+    isVisibleToUsers: false,
+    isActivatable: false,
   },
   billing: {
     key: "billing",
@@ -148,6 +178,9 @@ export const applications: Record<ApplicationKey, ApplicationDefinition> = {
     preproductionUrl: "https://billing.preprod.orviohub.com",
     developmentUrl: resolveDevUrl("billing"),
     enabled: true,
+    status: "available",
+    isVisibleToUsers: true,
+    isActivatable: false,
   },
   taskmanagement: {
     key: "taskmanagement",
@@ -156,7 +189,21 @@ export const applications: Record<ApplicationKey, ApplicationDefinition> = {
     productionUrl: "https://taskmanagement.orviohub.com",
     preproductionUrl: "https://taskmanagement.preprod.orviohub.com",
     developmentUrl: resolveDevUrl("taskmanagement"),
-    enabled: true,
+    enabled: false,
+    status: "coming_soon",
+    isVisibleToUsers: false,
+    isActivatable: false,
+  },
+  task_management: {
+    key: "task_management",
+    name: "Task Management",
+    subdomain: "taskmanagement",
+    productionUrl: "https://taskmanagement.orviohub.com",
+    preproductionUrl: "https://taskmanagement.preprod.orviohub.com",
+    developmentUrl: resolveDevUrl("taskmanagement"),
+    enabled: false,
+    status: "coming_soon",
+    isVisibleToUsers: false,
+    isActivatable: false,
   },
 };
-

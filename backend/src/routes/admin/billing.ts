@@ -8,7 +8,7 @@ export const adminBillingRoutes: FastifyPluginAsync = async (fastify) => {
     await fastify.authenticate(request, reply);
     if (reply.sent) return;
 
-    if (env.ADMIN_USER_ID && request.user?.id !== env.ADMIN_USER_ID) {
+    if (env.ADMIN_USER_ID && request.user?.id !== env.ADMIN_USER_ID && request.user?.role !== 'superadmin' && request.user?.role !== 'ADMIN') {
       return reply.status(403).send({
         success: false,
         error: {
@@ -271,6 +271,200 @@ export const adminBillingRoutes: FastifyPluginAsync = async (fastify) => {
           error: {
             code: ERROR_CODES.VALIDATION_ERROR,
             message: err.message || 'Failed to update subscription.',
+          },
+        });
+      }
+    }
+  );
+
+  // POST /api/v1/admin/organizations/:id/subscription/cancel-downgrade
+  fastify.post(
+    '/organizations/:id/subscription/cancel-downgrade',
+    {
+      preHandler: [requireSingleAdmin],
+      schema: {
+        tags: ['Admin Billing'],
+        summary: 'Cancel a pending scheduled downgrade as Superadmin',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string' },
+          },
+        },
+        body: {
+          type: 'object',
+          properties: {
+            reason: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = (request.body || {}) as any;
+      try {
+        const result = await dataService.cancelScheduledDowngrade({
+          organizationId: id,
+          workspaceId: id,
+          userId: request.user.id,
+          reason: body.reason || 'Superadmin cancelled scheduled downgrade',
+        });
+        await dataService.logAudit({
+          actorUserId: request.user.id,
+          eventType: 'admin.billing_downgrade_cancelled' as any,
+          metadata: { organizationId: id, reason: body.reason, adminEmail: request.user.email },
+        });
+        return reply.send({
+          success: true,
+          message: 'Scheduled downgrade cancelled successfully by administrator.',
+          data: result,
+        });
+      } catch (err: any) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: err.message || 'Failed to cancel downgrade.',
+          },
+        });
+      }
+    }
+  );
+
+  // POST /api/v1/admin/organizations/:id/subscription/apply-downgrade
+  fastify.post(
+    '/organizations/:id/subscription/apply-downgrade',
+    {
+      preHandler: [requireSingleAdmin],
+      schema: {
+        tags: ['Admin Billing'],
+        summary: 'Force apply a scheduled downgrade immediately as Superadmin',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      try {
+        const result = await dataService.applyScheduledBillingChanges(id, true);
+        await dataService.logAudit({
+          actorUserId: request.user.id,
+          eventType: 'admin.billing_downgrade_applied' as any,
+          metadata: { organizationId: id, adminEmail: request.user.email },
+        });
+        return reply.send({
+          success: true,
+          message: 'Downgrade applied immediately by administrator.',
+          data: result,
+        });
+      } catch (err: any) {
+        return reply.status(500).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+            message: err.message || 'Failed to apply downgrade.',
+          },
+        });
+      }
+    }
+  );
+
+  // POST /api/v1/admin/organizations/:id/subscription/resume
+  fastify.post(
+    '/organizations/:id/subscription/resume',
+    {
+      preHandler: [requireSingleAdmin],
+      schema: {
+        tags: ['Admin Billing'],
+        summary: 'Restore a cancelled subscription as Superadmin',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string' },
+          },
+        },
+        body: {
+          type: 'object',
+          properties: {
+            reason: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = (request.body || {}) as any;
+      try {
+        const result = await dataService.resumeSubscription({
+          organizationId: id,
+          workspaceId: id,
+          userId: request.user.id,
+          reason: body.reason || 'Superadmin restored subscription',
+        });
+        await dataService.logAudit({
+          actorUserId: request.user.id,
+          eventType: 'admin.billing_restored' as any,
+          metadata: { organizationId: id, reason: body.reason, adminEmail: request.user.email },
+        });
+        return reply.send({
+          success: true,
+          message: 'Subscription restored successfully by administrator.',
+          data: result,
+        });
+      } catch (err: any) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: err.message || 'Failed to restore subscription.',
+          },
+        });
+      }
+    }
+  );
+
+  // GET /api/v1/admin/organizations/:id/subscription/conflicts
+  fastify.get(
+    '/organizations/:id/subscription/conflicts',
+    {
+      preHandler: [requireSingleAdmin],
+      schema: {
+        tags: ['Admin Billing'],
+        summary: 'Recalculate downgrade conflicts as Superadmin',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      try {
+        const result = await dataService.calculateDowngradeConflicts(id, 'standard');
+        return reply.send({
+          success: true,
+          data: result,
+        });
+      } catch (err: any) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: err.message || 'Failed to calculate conflicts.',
           },
         });
       }
@@ -653,4 +847,900 @@ export const adminBillingRoutes: FastifyPluginAsync = async (fastify) => {
       }
     }
   );
+
+  // GET /api/v1/admin/billing/workspaces/:workspaceId - Inspect workspace billing
+  fastify.get(
+    '/billing/workspaces/:workspaceId',
+    {
+      preHandler: [requireSingleAdmin],
+      schema: {
+        tags: ['Admin Billing'],
+        summary: 'Inspect authoritative workspace billing context, payments, and invoices',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['workspaceId'],
+          properties: { workspaceId: { type: 'string' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId } = request.params as { workspaceId: string };
+      try {
+        const context = await dataService.query('subscriptions:getBillingContext', {
+          organizationId: workspaceId as any,
+        });
+        const invoices = await dataService.getInvoicesByOrganization(workspaceId);
+        const payments = await dataService.getOrganizationPayments(workspaceId);
+
+        return reply.send({
+          success: true,
+          data: {
+            context,
+            invoices: invoices || [],
+            payments: payments || [],
+          },
+        });
+      } catch (err: any) {
+        return reply.status(500).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+            message: err.message || 'Failed to inspect workspace billing.',
+          },
+        });
+      }
+    }
+  );
+
+  // POST /api/v1/admin/billing/workspaces/:workspaceId/recalculate-entitlements
+  fastify.post(
+    '/billing/workspaces/:workspaceId/recalculate-entitlements',
+    {
+      preHandler: [requireSingleAdmin],
+      schema: {
+        tags: ['Admin Billing'],
+        summary: 'Force recalculation of workspace entitlements',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['workspaceId'],
+          properties: { workspaceId: { type: 'string' } },
+        },
+        body: {
+          type: 'object',
+          properties: { reason: { type: 'string' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId } = request.params as { workspaceId: string };
+      const body = (request.body || {}) as any;
+      try {
+        const res = await dataService.mutate('entitlements:recalculateWorkspaceEntitlements', {
+          workspaceId: workspaceId as any,
+          actorUserId: request.user.id as any,
+          reason: body.reason || 'Administrative recalculation',
+        });
+        return reply.send({ success: true, data: res });
+      } catch (err: any) {
+        return reply.status(500).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+            message: err.message || 'Failed to recalculate entitlements.',
+          },
+        });
+      }
+    }
+  );
+
+  // POST /api/v1/admin/billing/workspaces/:workspaceId/manual-grant
+  fastify.post(
+    '/billing/workspaces/:workspaceId/manual-grant',
+    {
+      preHandler: [requireSingleAdmin],
+      schema: {
+        tags: ['Admin Billing'],
+        summary: 'Grant an administrative plan override to workspace',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['workspaceId'],
+          properties: { workspaceId: { type: 'string' } },
+        },
+        body: {
+          type: 'object',
+          required: ['planKey', 'grantType', 'reason'],
+          properties: {
+            planKey: { type: 'string', enum: ['standard', 'premium'] },
+            grantType: {
+              type: 'string',
+              enum: ['paystack', 'support_comp', 'internal_test', 'migration', 'administrative_override'],
+            },
+            reason: { type: 'string' },
+            expiryDays: { type: 'number' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId } = request.params as { workspaceId: string };
+      const body = request.body as any;
+      try {
+        const periodDays = body.expiryDays || 30;
+        const currentPeriodEnd = Date.now() + periodDays * 86_400_000;
+
+        await dataService.updateWorkspaceSubscription(
+          workspaceId,
+          body.planKey,
+          'active',
+          currentPeriodEnd,
+          false
+        );
+
+        await dataService.mutate('entitlements:recalculateWorkspaceEntitlements', {
+          workspaceId: workspaceId as any,
+          actorUserId: request.user.id as any,
+          reason: `Manual plan grant (${body.grantType}): ${body.reason}`,
+        });
+
+        await dataService.logAudit({
+          workspaceId,
+          actorUserId: request.user.id,
+          eventType: 'billing.manual_plan_granted',
+          entityType: 'workspace',
+          entityId: workspaceId,
+          severity: 'warning',
+          metadata: {
+            planKey: body.planKey,
+            grantType: body.grantType,
+            reason: body.reason,
+            expiryDays: body.expiryDays,
+            adminEmail: request.user.email,
+          },
+        });
+
+        return reply.send({
+          success: true,
+          message: `Workspace successfully upgraded to ${body.planKey} via ${body.grantType}.`,
+          data: {
+            workspaceId,
+            planKey: body.planKey,
+            grantType: body.grantType,
+            currentPeriodEnd,
+          },
+        });
+      } catch (err: any) {
+        return reply.status(500).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+            message: err.message || 'Failed to grant manual plan.',
+          },
+        });
+      }
+    }
+  );
+
+  // POST /api/v1/admin/billing/workspaces/:workspaceId/extend-trial
+  fastify.post(
+    '/billing/workspaces/:workspaceId/extend-trial',
+    {
+      preHandler: [requireSingleAdmin],
+      schema: {
+        tags: ['Admin Billing'],
+        summary: 'Extend Free Trial duration for a workspace',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['workspaceId'],
+          properties: { workspaceId: { type: 'string' } },
+        },
+        body: {
+          type: 'object',
+          required: ['extensionDays'],
+          properties: {
+            extensionDays: { type: 'number', minimum: 1, maximum: 90 },
+            reason: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId } = request.params as { workspaceId: string };
+      const body = request.body as any;
+      try {
+        const extensionDays = Number(body.extensionDays) || 14;
+        const newTrialEnd = Date.now() + extensionDays * 86_400_000;
+
+        await dataService.updateWorkspaceSubscription(
+          workspaceId,
+          'free_trial',
+          'trialing',
+          newTrialEnd,
+          false
+        );
+
+        await dataService.logAudit({
+          workspaceId,
+          actorUserId: request.user.id,
+          eventType: 'billing.trial_extended',
+          entityType: 'workspace',
+          entityId: workspaceId,
+          severity: 'info',
+          metadata: {
+            extensionDays,
+            newTrialEnd,
+            reason: body.reason,
+            adminEmail: request.user.email,
+          },
+        });
+
+        return reply.send({
+          success: true,
+          message: `Trial extended by ${extensionDays} days.`,
+          data: {
+            workspaceId,
+            trialEnd: newTrialEnd,
+          },
+        });
+      } catch (err: any) {
+        return reply.status(500).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+            message: err.message || 'Failed to extend trial.',
+          },
+        });
+      }
+    }
+  );
+
+  // POST /api/v1/admin/billing/webhooks/retry
+  fastify.post(
+    '/billing/webhooks/retry',
+    {
+      preHandler: [requireSingleAdmin],
+      schema: {
+        tags: ['Admin Billing'],
+        summary: 'Retry processing a failed or pending webhook event',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          properties: {
+            billingEventId: { type: 'string' },
+            providerEventId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = request.body as any;
+      try {
+        const result = await dataService.mutate('paystackWebhook:retryFailedWebhook', {
+          billingEventId: body.billingEventId ? (body.billingEventId as any) : undefined,
+          providerEventId: body.providerEventId,
+          adminUserId: request.user.id as any,
+        });
+
+        return reply.send({
+          success: true,
+          message: 'Webhook retried and processed successfully.',
+          data: result,
+        });
+      } catch (err: any) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: err.message || 'Webhook retry failed.',
+          },
+        });
+      }
+    }
+  );
+
+  // GET /api/v1/admin/billing/consistency-check
+  fastify.get(
+    '/billing/consistency-check',
+    {
+      preHandler: [requireSingleAdmin],
+      schema: {
+        tags: ['Admin Billing'],
+        summary: 'Run automated billing state consistency audit across all tenant workspaces',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (_request, reply) => {
+      try {
+        const { billingConsistencyChecker } = await import('../../services/domain/billingConsistencyChecker.js');
+        const report = await billingConsistencyChecker.runFullAudit();
+        return reply.send({
+          success: true,
+          data: report,
+        });
+      } catch (err: any) {
+        return reply.status(500).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+            message: err.message || 'Failed to run consistency check.',
+          },
+        });
+      }
+    }
+  );
+
+  // ==========================================
+  // SUPERADMIN TRIAL GOVERNANCE ENDPOINTS
+  // ==========================================
+
+  // GET /api/v1/admin/workspaces/:workspaceId/trial & /api/v1/admin/billing/workspaces/:workspaceId/trial
+  const adminGetWorkspaceTrialHandler = async (request: any, reply: any) => {
+    const { workspaceId } = request.params as { workspaceId: string };
+    try {
+      const trial = await dataService.getWorkspaceTrial(workspaceId);
+      if (!trial) {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: 'TRIAL_NOT_FOUND',
+            message: 'Trial not found for workspace.',
+          },
+        });
+      }
+      return reply.send({
+        success: true,
+        data: trial,
+      });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+          message: err.message || 'Failed to fetch trial.',
+        },
+      });
+    }
+  };
+
+  fastify.get('/workspaces/:workspaceId/trial', { preHandler: [requireSingleAdmin] }, adminGetWorkspaceTrialHandler);
+  fastify.get('/billing/workspaces/:workspaceId/trial', { preHandler: [requireSingleAdmin] }, adminGetWorkspaceTrialHandler);
+
+  // POST /api/v1/admin/workspaces/:workspaceId/trial/extend & /api/v1/admin/billing/workspaces/:workspaceId/trial/extend
+  const adminExtendTrialHandler = async (request: any, reply: any) => {
+    const { workspaceId } = request.params as { workspaceId: string };
+    const body = request.body as any;
+
+    if (!body.reason || String(body.reason).trim().length === 0) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: 'TRIAL_EXTENSION_REASON_REQUIRED',
+          message: 'A detailed reason is required for superadmin trial extension.',
+        },
+      });
+    }
+
+    try {
+      const extensionDays = Number(body.extensionDays) || 30;
+      const result = await dataService.mutate('subscriptions:extendTrialSubscription', {
+        workspaceId: workspaceId as any,
+        extensionDays,
+        reason: body.reason,
+        adminId: request.user.id as any,
+      });
+
+      return reply.send({
+        success: true,
+        message: `Trial successfully extended by ${extensionDays} days.`,
+        data: result,
+      });
+    } catch (err: any) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.VALIDATION_ERROR,
+          message: err.message || 'Failed to extend trial.',
+        },
+      });
+    }
+  };
+
+  fastify.post('/workspaces/:workspaceId/trial/extend', { preHandler: [requireSingleAdmin] }, adminExtendTrialHandler);
+  fastify.post('/billing/workspaces/:workspaceId/trial/extend', { preHandler: [requireSingleAdmin] }, adminExtendTrialHandler);
+
+  // POST /api/v1/admin/workspaces/:workspaceId/trial/reconcile & /api/v1/admin/billing/workspaces/:workspaceId/trial/reconcile
+  const adminReconcileTrialHandler = async (request: any, reply: any) => {
+    const { workspaceId } = request.params as { workspaceId: string };
+    try {
+      const result = await dataService.mutate('subscriptions:reconcileTrialSubscription', {
+        workspaceId: workspaceId as any,
+        actorUserId: request.user.id as any,
+      });
+
+      return reply.send({
+        success: true,
+        message: 'Trial state reconciled successfully.',
+        data: result,
+      });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+          message: err.message || 'Failed to reconcile trial.',
+        },
+      });
+    }
+  };
+
+  fastify.post('/workspaces/:workspaceId/trial/reconcile', { preHandler: [requireSingleAdmin] }, adminReconcileTrialHandler);
+  fastify.post('/billing/workspaces/:workspaceId/trial/reconcile', { preHandler: [requireSingleAdmin] }, adminReconcileTrialHandler);
+
+  // GET /api/v1/admin/workspaces/:workspaceId/trial/history & /api/v1/admin/billing/workspaces/:workspaceId/trial/history
+  const adminGetTrialHistoryHandler = async (request: any, reply: any) => {
+    const { workspaceId } = request.params as { workspaceId: string };
+    try {
+      const history = await dataService.query('subscriptions:getTrialHistory', {
+        workspaceId: workspaceId as any,
+      });
+
+      return reply.send({
+        success: true,
+        data: { history: history || [] },
+      });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+          message: err.message || 'Failed to fetch trial history.',
+        },
+      });
+    }
+  };
+
+  fastify.get('/workspaces/:workspaceId/trial/history', { preHandler: [requireSingleAdmin] }, adminGetTrialHistoryHandler);
+  fastify.get('/billing/workspaces/:workspaceId/trial/history', { preHandler: [requireSingleAdmin] }, adminGetTrialHistoryHandler);
+
+  // POST /api/v1/admin/workspaces/:workspaceId/trial/notifications/retry
+  const adminRetryTrialNotificationHandler = async (request: any, reply: any) => {
+    const { workspaceId } = request.params as { workspaceId: string };
+    try {
+      const result = await dataService.mutate('subscriptions:reconcileTrialSubscription', {
+        workspaceId: workspaceId as any,
+        actorUserId: request.user.id as any,
+      });
+
+      return reply.send({
+        success: true,
+        message: 'Trial notification retried and dispatched successfully.',
+        data: result,
+      });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+          message: err.message || 'Failed to retry trial notification.',
+        },
+      });
+    }
+  };
+
+  fastify.post('/workspaces/:workspaceId/trial/notifications/retry', { preHandler: [requireSingleAdmin] }, adminRetryTrialNotificationHandler);
+  fastify.post('/billing/workspaces/:workspaceId/trial/notifications/retry', { preHandler: [requireSingleAdmin] }, adminRetryTrialNotificationHandler);
+
+  // POST /api/v1/admin/workspaces/:workspaceId/billing/reconcile & /api/v1/admin/billing/workspaces/:workspaceId/reconcile
+  const adminReconcileBillingHandler = async (request: any, reply: any) => {
+    const { workspaceId } = request.params as { workspaceId: string };
+    const body = (request.body as any) || {};
+    try {
+      const result = await dataService.mutate('subscriptions:reconcileBillingState', {
+        workspaceId: workspaceId as any,
+        adminId: request.user.id as any,
+        reason: body.reason || 'Admin manual billing reconciliation',
+      });
+
+      return reply.send({
+        success: true,
+        message: 'Billing state reconciled successfully.',
+        data: result,
+      });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+          message: err.message || 'Failed to reconcile billing state.',
+        },
+      });
+    }
+  };
+
+  fastify.post('/workspaces/:workspaceId/billing/reconcile', { preHandler: [requireSingleAdmin] }, adminReconcileBillingHandler);
+  fastify.post('/billing/workspaces/:workspaceId/reconcile', { preHandler: [requireSingleAdmin] }, adminReconcileBillingHandler);
+  fastify.post('/workspaces/:workspaceId/reconcile', { preHandler: [requireSingleAdmin] }, adminReconcileBillingHandler);
+
+  // Superadmin Downgrade Conflicts
+  const adminDowngradeConflictsHandler = async (request: any, reply: any) => {
+    const { workspaceId } = request.params as { workspaceId: string };
+    try {
+      const conflicts = await dataService.calculateDowngradeConflicts(workspaceId, 'standard');
+      return reply.send({
+        success: true,
+        data: conflicts,
+      });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+          message: err.message || 'Failed to fetch downgrade conflicts',
+        },
+      });
+    }
+  };
+
+  fastify.get('/workspaces/:workspaceId/downgrade/conflicts', { preHandler: [requireSingleAdmin] }, adminDowngradeConflictsHandler);
+  fastify.get('/billing/workspaces/:workspaceId/downgrade/conflicts', { preHandler: [requireSingleAdmin] }, adminDowngradeConflictsHandler);
+
+  // Superadmin Apply Downgrade / Billing Changes
+  const adminApplyDowngradeHandler = async (request: any, reply: any) => {
+    const { workspaceId } = request.params as { workspaceId: string };
+    try {
+      const result = await dataService.applyScheduledBillingChanges();
+      return reply.send({
+        success: true,
+        message: 'Scheduled billing changes applied successfully.',
+        data: result,
+      });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+          message: err.message || 'Failed to apply scheduled billing changes',
+        },
+      });
+    }
+  };
+
+  fastify.post('/workspaces/:workspaceId/apply-downgrade', { preHandler: [requireSingleAdmin] }, adminApplyDowngradeHandler);
+  fastify.post('/billing/workspaces/:workspaceId/apply-downgrade', { preHandler: [requireSingleAdmin] }, adminApplyDowngradeHandler);
+
+  // Superadmin Cancel Scheduled Downgrade
+  const adminCancelDowngradeHandler = async (request: any, reply: any) => {
+    const { workspaceId } = request.params as { workspaceId: string };
+    try {
+      const result = await dataService.cancelScheduledDowngrade(workspaceId, request.user.id);
+      return reply.send({
+        success: true,
+        message: 'Scheduled downgrade cancelled by admin.',
+        data: result,
+      });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+          message: err.message || 'Failed to cancel scheduled downgrade',
+        },
+      });
+    }
+  };
+
+  fastify.post('/workspaces/:workspaceId/cancel-downgrade', { preHandler: [requireSingleAdmin] }, adminCancelDowngradeHandler);
+  fastify.post('/billing/workspaces/:workspaceId/cancel-downgrade', { preHandler: [requireSingleAdmin] }, adminCancelDowngradeHandler);
+
+  // Superadmin Resume Cancelled Subscription
+  const adminResumeSubscriptionHandler = async (request: any, reply: any) => {
+    const { workspaceId } = request.params as { workspaceId: string };
+    try {
+      const result = await dataService.resumeCancelledSubscription(workspaceId, request.user.id);
+      return reply.send({
+        success: true,
+        message: 'Subscription resumed by admin.',
+        data: result,
+      });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+          message: err.message || 'Failed to resume subscription',
+        },
+      });
+    }
+  };
+
+  fastify.post('/workspaces/:workspaceId/resume', { preHandler: [requireSingleAdmin] }, adminResumeSubscriptionHandler);
+  fastify.post('/billing/workspaces/:workspaceId/resume', { preHandler: [requireSingleAdmin] }, adminResumeSubscriptionHandler);
+
+  // ─── Superadmin Invoices & Billing Documents ────────────────────────────────
+
+  // GET /v1/admin/workspaces/:workspaceId/invoices
+  const adminGetWorkspaceInvoices = async (request: any, reply: any) => {
+    const { workspaceId } = request.params as { workspaceId: string };
+    try {
+      let invoices = await dataService.getInvoicesByOrganization(workspaceId);
+      if (!invoices || invoices.length === 0) {
+        invoices = await dataService.getInvoicesByWorkspace(workspaceId);
+      }
+      return reply.send({
+        success: true,
+        data: invoices || [],
+      });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+          message: err.message || 'Failed to fetch workspace invoices.',
+        },
+      });
+    }
+  };
+
+  fastify.get('/v1/admin/workspaces/:workspaceId/invoices', { preHandler: [requireSingleAdmin] }, adminGetWorkspaceInvoices);
+  fastify.get('/workspaces/:workspaceId/invoices', { preHandler: [requireSingleAdmin] }, adminGetWorkspaceInvoices);
+
+  // GET /v1/admin/invoices/:invoiceId
+  const adminGetInvoiceDetail = async (request: any, reply: any) => {
+    const { invoiceId } = request.params as { invoiceId: string };
+    try {
+      const invoice: any = await dataService.getInvoiceById(invoiceId);
+      if (!invoice) {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.NOT_FOUND,
+            message: 'Invoice not found.',
+          },
+        });
+      }
+      const adjustments = await dataService.getAdjustmentsByInvoice(invoiceId);
+      return reply.send({
+        success: true,
+        data: {
+          ...invoice,
+          adjustments: adjustments || [],
+        },
+      });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+          message: err.message || 'Failed to fetch invoice details.',
+        },
+      });
+    }
+  };
+
+  fastify.get('/v1/admin/invoices/:invoiceId', { preHandler: [requireSingleAdmin] }, adminGetInvoiceDetail);
+  fastify.get('/invoices/:invoiceId', { preHandler: [requireSingleAdmin] }, adminGetInvoiceDetail);
+
+  // POST /v1/admin/invoices/:invoiceId/retry-pdf
+  const adminRetryInvoicePdf = async (request: any, reply: any) => {
+    const { invoiceId } = request.params as { invoiceId: string };
+    try {
+      const updated = await dataService.retryPdfGeneration({
+        invoiceId,
+        status: 'completed',
+        pdfUrl: `/billing/invoices/${invoiceId}/download`,
+      });
+      return reply.send({
+        success: true,
+        data: updated,
+      });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+          message: err.message || 'Failed to retry PDF generation.',
+        },
+      });
+    }
+  };
+
+  fastify.post('/v1/admin/invoices/:invoiceId/retry-pdf', { preHandler: [requireSingleAdmin] }, adminRetryInvoicePdf);
+  fastify.post('/invoices/:invoiceId/retry-pdf', { preHandler: [requireSingleAdmin] }, adminRetryInvoicePdf);
+
+  // POST /v1/admin/invoices/:invoiceId/void
+  const adminVoidInvoice = async (request: any, reply: any) => {
+    const { invoiceId } = request.params as { invoiceId: string };
+    const body = (request.body || {}) as any;
+
+    if (!body.reason || !body.reason.trim()) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.VALIDATION_ERROR,
+          message: 'A valid reason is required to void an invoice.',
+        },
+      });
+    }
+
+    try {
+      const voided = await dataService.voidInvoice({
+        invoiceId,
+        reason: body.reason.trim(),
+        actorUserId: request.user?.id || 'admin',
+        actorRole: 'superadmin',
+      });
+      return reply.send({
+        success: true,
+        message: 'Invoice voided successfully.',
+        data: voided,
+      });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+          message: err.message || 'Failed to void invoice.',
+        },
+      });
+    }
+  };
+
+  fastify.post('/v1/admin/invoices/:invoiceId/void', { preHandler: [requireSingleAdmin] }, adminVoidInvoice);
+  fastify.post('/invoices/:invoiceId/void', { preHandler: [requireSingleAdmin] }, adminVoidInvoice);
+
+  // POST /v1/admin/invoices/:invoiceId/adjust
+  const adminAdjustInvoice = async (request: any, reply: any) => {
+    const { invoiceId } = request.params as { invoiceId: string };
+    const body = (request.body || {}) as any;
+
+    if (!body.adjustmentType || !body.reason || typeof body.amount !== 'number') {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.VALIDATION_ERROR,
+          message: 'adjustmentType, amount, and reason are required.',
+        },
+      });
+    }
+
+    try {
+      const adjustment = await dataService.recordBillingAdjustment({
+        invoiceId,
+        adjustmentType: body.adjustmentType,
+        amount: body.amount,
+        reason: body.reason,
+        providerReference: body.providerReference,
+        actorUserId: request.user?.id || 'admin',
+        actorRole: 'superadmin',
+        metadata: body.metadata,
+      });
+      return reply.send({
+        success: true,
+        message: 'Adjustment recorded successfully.',
+        data: adjustment,
+      });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+          message: err.message || 'Failed to record adjustment.',
+        },
+      });
+    }
+  };
+
+  fastify.post('/v1/admin/invoices/:invoiceId/adjust', { preHandler: [requireSingleAdmin] }, adminAdjustInvoice);
+  fastify.post('/invoices/:invoiceId/adjust', { preHandler: [requireSingleAdmin] }, adminAdjustInvoice);
+
+  // POST /v1/admin/payments/:paymentId/reconcile
+  const adminReconcilePayment = async (request: any, reply: any) => {
+    const { paymentId } = request.params as { paymentId: string };
+    const body = (request.body || {}) as any;
+
+    try {
+      let payment: any = await dataService.query('payments:getByReference', { reference: paymentId });
+      if (!payment) {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.NOT_FOUND,
+            message: 'Payment record not found.',
+          },
+        });
+      }
+
+      let invoice: any = null;
+      if (payment.invoiceId) {
+        invoice = await dataService.getInvoiceById(payment.invoiceId);
+      }
+
+      // If no invoice exists, generate one
+      if (!invoice && (payment.status === 'completed' || payment.status === 'success')) {
+        invoice = await dataService.generateSubscriptionInvoice({
+          workspaceId: payment.workspaceId,
+          organizationId: payment.organizationId,
+          paymentId: payment._id,
+          providerReference: payment.providerReference || payment.reference,
+          planKey: body.planKey || 'standard',
+          billingInterval: body.billingInterval || 'monthly',
+          amountSubtotal: payment.amount,
+          totalAmount: payment.amount,
+          amountPaid: payment.amount,
+        });
+
+        // Also ensure receipt exists
+        await dataService.generatePaymentReceipt({
+          invoiceId: invoice?._id,
+          paymentId: payment._id,
+          workspaceId: payment.workspaceId,
+          organizationId: payment.organizationId,
+          providerReference: payment.providerReference || payment.reference,
+          amount: payment.amount,
+          paidAt: payment.paidAt || Date.now(),
+        });
+      }
+
+      await dataService.recordAuditLog({
+        organizationId: payment.organizationId ? String(payment.organizationId) : undefined,
+        workspaceId: payment.workspaceId ? String(payment.workspaceId) : undefined,
+        actorUserId: request.user?.id || 'admin',
+        action: 'admin.payment_reconciled',
+        resource: `payment:${paymentId}`,
+        severity: 'info',
+        metadata: {
+          paymentId: payment._id,
+          invoiceId: invoice?._id,
+          reference: payment.reference || payment.providerReference,
+        },
+      });
+
+      return reply.send({
+        success: true,
+        message: 'Payment reconciled successfully.',
+        data: {
+          payment,
+          invoice,
+        },
+      });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+          message: err.message || 'Failed to reconcile payment.',
+        },
+      });
+    }
+  };
+
+  fastify.post('/v1/admin/payments/:paymentId/reconcile', { preHandler: [requireSingleAdmin] }, adminReconcilePayment);
+  fastify.post('/payments/:paymentId/reconcile', { preHandler: [requireSingleAdmin] }, adminReconcilePayment);
+
+  // GET /v1/admin/billing/consistency-checks
+  const adminBillingConsistencyCheck = async (request: any, reply: any) => {
+    try {
+      const results = await dataService.checkBillingConsistency();
+      return reply.send({
+        success: true,
+        data: results,
+      });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+          message: err.message || 'Failed to run billing consistency check.',
+        },
+      });
+    }
+  };
+
+  fastify.get('/v1/admin/billing/consistency-checks', { preHandler: [requireSingleAdmin] }, adminBillingConsistencyCheck);
+  fastify.get('/billing/consistency-checks', { preHandler: [requireSingleAdmin] }, adminBillingConsistencyCheck);
+  fastify.get('/consistency-checks', { preHandler: [requireSingleAdmin] }, adminBillingConsistencyCheck);
 };
+

@@ -109,6 +109,11 @@ interface AuthState {
   isInitialized: boolean;
   isAuthenticated: boolean;
   user: User | null;
+  session: { id?: string; expiresAt?: number } | null;
+  isLoading: boolean;
+  isEmailVerified: boolean;
+  accountStatus: string;
+  accessLevel: string;
   token: string | null;
   onboardingStatus: OnboardingState | null;
   memberships: Membership[];
@@ -126,9 +131,11 @@ interface AuthState {
   addRememberedAccount: (account: RememberedAccount) => void;
   removeRememberedAccount: (email: string) => void;
   switchAccount: (email: string) => boolean;
+  login: (credentials: { email: string; password: string }) => Promise<any>;
   logout: (redirectToLogin?: boolean) => Promise<void>;
   logoutAllAccounts: () => Promise<void>;
   refreshSession: () => Promise<void>;
+  clearAuthState: () => void;
   setOnboardingStatus: (status: OnboardingState) => void;
 }
 
@@ -141,6 +148,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   isInitialized: !!initialUser,
   isAuthenticated: !!(initialToken && initialUser),
   user: initialUser,
+  session: null,
+  isLoading: false,
+  isEmailVerified: Boolean(initialUser?.emailVerified),
+  accountStatus: initialUser?.status || (initialUser ? 'active' : 'unauthenticated'),
+  accessLevel: initialUser?.emailVerified ? 'full' : (initialUser ? 'verification_required' : 'none'),
   token: initialToken,
   onboardingStatus: null,
   memberships: [],
@@ -204,13 +216,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       saveStoredUser(data.user);
     }
 
+    const isEmailVerified = Boolean(data.user?.emailVerified);
     set({
       isAuthenticated: true,
       user: data.user,
+      session: (data as any).session || get().session,
+      isEmailVerified,
+      accountStatus: data.user?.status || 'active',
+      accessLevel: (data as any).accessLevel || (isEmailVerified ? 'full' : 'verification_required'),
       onboardingStatus: data.onboarding,
       memberships,
       activeOrganizationId: validActiveOrgId,
       isInitialized: true,
+      isLoading: false,
     });
   },
 
@@ -394,73 +412,142 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
+  clearAuthState: () => {
+    localStorage.removeItem('orvio_auth_token');
+    localStorage.removeItem('orvio_refresh_token');
+    localStorage.removeItem('orvio_active_org_id');
+    localStorage.removeItem('orvio_active_workspace_id');
+    saveStoredUser(null);
+    try {
+      useWorkspaceStore.getState().clearWorkspace();
+    } catch {
+      // Safe fallback
+    }
+    set({
+      isAuthenticated: false,
+      user: null,
+      session: null,
+      isLoading: false,
+      isEmailVerified: false,
+      accountStatus: 'unauthenticated',
+      accessLevel: 'none',
+      token: null,
+      onboardingStatus: null,
+      memberships: [],
+      activeOrganizationId: null,
+      isInitialized: true,
+    });
+  },
+
+  login: async (payload: { email: string; password: string }) => {
+    set({ isLoading: true });
+    try {
+      const { API_ORIGIN } = await import('../lib/api');
+      const res = await fetch(`${API_ORIGIN}/v1/auth/login`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        throw new Error(json.error?.message || 'Login failed');
+      }
+
+      if (json.data?.status === 'already_authenticated') {
+        const user = json.data.user;
+        const session = json.data.session;
+        set({
+          isAuthenticated: true,
+          user,
+          session,
+          isEmailVerified: Boolean(user?.emailVerified),
+          accountStatus: user?.status || 'active',
+          accessLevel: user?.emailVerified ? 'full' : 'verification_required',
+          isLoading: false,
+          isInitialized: true,
+        });
+        return json.data;
+      }
+
+      if (json.data) {
+        get().setAuthData(json.data, true);
+        set({
+          session: json.data.session || null,
+          isEmailVerified: Boolean(json.data.user?.emailVerified),
+          accountStatus: json.data.user?.status || 'active',
+          accessLevel: json.data.accessLevel || (json.data.user?.emailVerified ? 'full' : 'verification_required'),
+          isLoading: false,
+        });
+      }
+      return json.data;
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+
   refreshSession: async () => {
     if (inFlightRefreshPromise) {
       return inFlightRefreshPromise;
     }
 
     inFlightRefreshPromise = (async () => {
-      extractHandoffTokensFromUrl();
-      const token = localStorage.getItem('orvio_auth_token');
-      const refreshToken = localStorage.getItem('orvio_refresh_token');
-
+      set({ isLoading: true });
       try {
-        const meData = await api.get<MeResponse>('/auth/me');
-        get().setAuthData(meData, true);
-      } catch (err: any) {
-        // /auth/me failed — try a silent token refresh before giving up.
-        // This handles cross-subdomain visits where localStorage is empty but the
-        // orvio_refresh_token cookie is still valid (e.g. landing on marketing
-        // surface after 15+ min with no localStorage token on that origin).
-        const storedRefresh = refreshToken || null;
-        if (storedRefresh || (!token && !refreshToken)) {
-          try {
-            const refreshRes = await fetch(`${(await import('../lib/api')).API_ORIGIN}/api/v1/auth/refresh`, {
-              method: 'POST',
-              credentials: 'include', // sends orvio_refresh_token cookie
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ refreshToken: storedRefresh || '' }),
+        const { API_ORIGIN } = await import('../lib/api');
+        const res = await fetch(`${API_ORIGIN}/v1/auth/session`, {
+          method: 'GET',
+          credentials: 'include',
+          headers: {
+            'Accept': 'application/json',
+          },
+        });
+
+        if (res.ok) {
+          const json = await res.json();
+          if (json.success && json.data) {
+            const data = json.data;
+            const user = data.user;
+            const session = data.session;
+            const access = data.access;
+            const isEmailVerified = Boolean(user?.emailVerified);
+
+            set({
+              isInitialized: true,
+              isAuthenticated: Boolean(data.authenticated),
+              user: user || null,
+              session: session || null,
+              isEmailVerified,
+              accountStatus: user?.status || 'active',
+              accessLevel: access?.level || (isEmailVerified ? 'full' : 'verification_required'),
+              isLoading: false,
             });
-            if (refreshRes.ok) {
-              const json = await refreshRes.json();
-              if (json.success && json.data?.token) {
-                localStorage.setItem('orvio_auth_token', json.data.token);
-                if (json.data.refreshToken) {
-                  localStorage.setItem('orvio_refresh_token', json.data.refreshToken);
-                }
-                // Now re-fetch /auth/me with the new token
-                const meData = await api.get<MeResponse>('/auth/me');
-                get().setAuthData(meData, true);
-                return;
-              }
+
+            if (user) {
+              saveStoredUser(user);
             }
-          } catch {
-            // Silent refresh also failed — fall through to unauthenticated state
+            return;
           }
         }
 
-        // Silent refresh and /auth/me both failed — session is invalidated/logged out.
-        // Purge all stale local tokens on this subdomain
-        localStorage.removeItem('orvio_auth_token');
-        localStorage.removeItem('orvio_refresh_token');
-        localStorage.removeItem('orvio_active_org_id');
-        localStorage.removeItem('orvio_active_workspace_id');
-        saveStoredUser(null);
+        // Secondary fallback to existing /auth/me
         try {
-          useWorkspaceStore.getState().clearWorkspace();
+          const meData = await api.get<MeResponse>('/auth/me');
+          get().setAuthData(meData, true);
+          return;
         } catch {
-          // Safe fallback
+          // Both failed
         }
-        set({
-          isInitialized: true,
-          isAuthenticated: false,
-          user: null,
-          token: null,
-          memberships: [],
-          activeOrganizationId: null,
-          onboardingStatus: null,
-        });
+
+        get().clearAuthState();
+      } catch {
+        // Network error
       } finally {
+        set({ isLoading: false });
         inFlightRefreshPromise = null;
       }
     })();

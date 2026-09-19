@@ -53,17 +53,7 @@ export const HomePage: React.FC = () => {
     }
   };
 
-  if (!isLoaded && workspaces.length === 0 && (isLoading || isSwitching)) {
-    return (
-      <div className="min-h-screen bg-black text-slate-100 flex flex-col">
-        <Header />
-        <div className="flex-1 flex flex-col items-center justify-center space-y-4">
-          <Spinner size="lg" className="text-[#714b67]" />
-          <p className="text-xs text-slate-400">Loading your organizations...</p>
-        </div>
-      </div>
-    );
-  }
+  const isInitialLoading = !isLoaded && workspaces.length === 0 && (isLoading || isSwitching);
 
   const launcherNewOrgUrl = '/onboard/organization';
 
@@ -93,8 +83,29 @@ export const HomePage: React.FC = () => {
         {/* Real-time In-Dashboard Pending Invitations */}
         <PendingInvitesBanner />
 
-        {/* Organizations Grid or Personal Zero-State */}
-        {workspaces.length === 0 ? (
+        {/* Organizations Grid, Skeleton Loading, or Personal Zero-State */}
+        {isInitialLoading ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {[1, 2, 3, 4, 5, 6].map((idx) => (
+              <div
+                key={idx}
+                className="p-3.5 rounded-sm bg-white/[0.02] border border-white/5 flex items-center justify-between gap-3 animate-pulse"
+              >
+                <div className="flex items-center gap-3 min-w-0 flex-1">
+                  <div className="w-9 h-9 rounded-sm bg-white/10 flex-shrink-0" />
+                  <div className="space-y-1.5 min-w-0 flex-1">
+                    <div className="w-28 h-3.5 rounded-xs bg-white/10" />
+                    <div className="w-20 h-2.5 rounded-xs bg-white/5" />
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 flex-shrink-0">
+                  <div className="w-10 h-3 rounded-xs bg-white/5" />
+                  <div className="w-12 h-6 rounded-sm bg-white/10" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : workspaces.length === 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto">
             {/* Card 1: Create Organization */}
             <div className="p-8 rounded-2xl bg-gradient-to-br from-[#1d101b] via-[#120b10] to-black border border-[#714b67]/40 shadow-xl shadow-[#714b67]/10 flex flex-col justify-between space-y-6">

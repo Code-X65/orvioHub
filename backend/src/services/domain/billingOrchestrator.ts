@@ -50,15 +50,14 @@ export class BillingOrchestrator extends BaseRepository {
   }> {
     const { userId, userEmail, planKey, interval, currency = 'NGN', gateway, callbackUrl } = params;
 
-    // Plan pricing resolver
+    // Authoritative MVP pricing: Standard (₦7,500/mo, ₦75,000/yr), Premium (₦25,000/mo, ₦250,000/yr)
     const planPrices: Record<string, { monthly: number; yearly: number }> = {
-      standard: { monthly: 15000, yearly: 150000 },
-      pro: { monthly: 35000, yearly: 350000 },
-      enterprise: { monthly: 75000, yearly: 750000 },
+      standard: { monthly: 7500, yearly: 75000 },
+      premium: { monthly: 25000, yearly: 250000 },
     };
 
     const targetPlan = planPrices[planKey.toLowerCase()] || planPrices['standard'];
-    const amount = interval === 'yearly' ? targetPlan.yearly : targetPlan.monthly;
+    const amount = (interval === 'yearly' || (interval as string) === 'annual') ? targetPlan.yearly : targetPlan.monthly;
     const reference = `ref_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 7)}`;
 
     let authorizationUrl = '';

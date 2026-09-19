@@ -4,6 +4,18 @@ import { dataService } from '../services/dataService.js';
 import { ERROR_CODES } from '../config/constants.js';
 import { hasPermission, getProductRoleDefaultPermissions } from '../config/permissions.js';
 
+export interface TenantContext {
+  organizationId: string;
+  workspaceId?: string;
+  userId: string;
+  membershipId: string;
+  organizationRole?: string;
+  workspaceRole?: string;
+  productKey?: string;
+  branchId?: string;
+  permissions: string[];
+}
+
 export interface WorkspaceContext {
   id: string;
   name: string;
@@ -14,6 +26,7 @@ export interface WorkspaceContext {
   timezone?: string;
   status: string;
   ownerId?: string;
+  organizationId?: string;
 }
 
 export interface WorkspaceMembershipContext {
@@ -31,8 +44,26 @@ export interface ProductMembershipContext {
   status: string;
 }
 
+export interface BranchContext {
+  id: string;
+  name: string;
+  code?: string;
+  workspaceId?: string;
+  organizationId?: string;
+  productKey?: string;
+  applicationId?: string;
+  isPrimary?: boolean;
+  isActive?: boolean;
+  status: string;
+}
+
 declare module 'fastify' {
   interface FastifyInstance {
+    resolveTenantContext: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    resolveOrganizationContext: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    resolveWorkspaceContext: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    resolveApplicationContext: (productKey?: string) => (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    resolveBranchContext: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
     resolveWorkspace: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
     requireWorkspaceMembership: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
     requireWorkspaceRole: (roles: string[]) => (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
@@ -43,13 +74,19 @@ declare module 'fastify' {
       permission: string,
       options?: { branchIdHeader?: string; requireBranchAccess?: boolean }
     ) => (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    resolveBranch: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    requireBranchOwnership: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    requireBranchPermission: (permission: string) => (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    requireActiveBranch: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
   }
   interface FastifyRequest {
+    tenantContext?: TenantContext;
     workspace?: WorkspaceContext;
     workspaceMembership?: WorkspaceMembershipContext;
     productMembership?: ProductMembershipContext;
     userPermissions?: string[];
     branchScope?: string[];
+    branch?: BranchContext;
   }
 }
 
@@ -88,14 +125,16 @@ const plugin: FastifyPluginAsync = async (fastify) => {
     };
   });
 
-  // Resolve workspace without requiring active membership
+  // Resolve workspace with cross-tenant identifier mismatch verification
   fastify.decorate(
     'resolveWorkspace',
     async function (request: FastifyRequest, reply: FastifyReply) {
-      const workspaceId =
-        (request.headers['x-workspace-id'] as string) ||
-        (request.params as any)?.workspaceId ||
-        (request.params as any)?.id;
+      const headerWsId = request.headers['x-workspace-id'] as string | undefined;
+      const headerOrgId = request.headers['x-organization-id'] as string | undefined;
+      const paramWsId = (request.params as any)?.workspaceId || (request.params as any)?.id;
+      const paramOrgId = (request.params as any)?.organizationId;
+
+      const workspaceId = headerWsId || paramWsId || paramOrgId;
 
       if (!workspaceId) {
         return reply.status(400).send({
@@ -107,6 +146,17 @@ const plugin: FastifyPluginAsync = async (fastify) => {
         });
       }
 
+      // Check header vs param mismatch if both provided
+      if (headerWsId && paramWsId && headerWsId !== paramWsId) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: 'TENANT_ID_MISMATCH',
+            message: 'Header x-workspace-id does not match route workspaceId parameter.',
+          },
+        });
+      }
+
       const workspace = (await dataService.getWorkspaceById(workspaceId)) as any;
       if (!workspace) {
         return reply.status(404).send({
@@ -114,6 +164,17 @@ const plugin: FastifyPluginAsync = async (fastify) => {
           error: {
             code: ERROR_CODES.NOT_FOUND,
             message: 'Workspace not found.',
+          },
+        });
+      }
+
+      // Verify header x-organization-id against persisted relationship
+      if (headerOrgId && workspace.organizationId && headerOrgId !== workspace.organizationId && headerOrgId !== workspace._id) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: 'TENANT_ID_MISMATCH',
+            message: 'Header x-organization-id does not match the target workspace organization.',
           },
         });
       }
@@ -139,9 +200,74 @@ const plugin: FastifyPluginAsync = async (fastify) => {
         timezone: workspace.timezone,
         status: workspace.status,
         ownerId: workspace.ownerId,
+        organizationId: workspace.organizationId,
       };
     }
   );
+
+  // Canonical Tenant Context Resolver
+  fastify.decorate(
+    'resolveTenantContext',
+    async function (request: FastifyRequest, reply: FastifyReply) {
+      if (!request.user) {
+        return reply.status(401).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.UNAUTHENTICATED,
+            message: 'Authentication required to resolve tenant context.',
+          },
+        });
+      }
+
+      if (!request.workspace) {
+        await fastify.resolveWorkspace(request, reply);
+        if (reply.sent) return;
+      }
+
+      if (!request.workspaceMembership) {
+        await fastify.requireWorkspaceMembership(request, reply);
+        if (reply.sent) return;
+      }
+
+      const orgId = request.workspace!.organizationId || request.workspace!.id;
+      const wsId = request.workspace!.id;
+      const role = request.workspaceMembership!.role;
+      const isOwnerOrAdmin = role.toLowerCase() === 'owner' || role.toLowerCase() === 'admin';
+      const defaultPermissions = getProductRoleDefaultPermissions('inventory', role);
+
+      request.tenantContext = {
+        organizationId: orgId,
+        workspaceId: wsId,
+        userId: request.user.id,
+        membershipId: request.workspaceMembership!.id,
+        organizationRole: role,
+        workspaceRole: role,
+        productKey: 'inventory',
+        branchId: request.branch?.id,
+        permissions: defaultPermissions,
+      };
+    }
+  );
+
+  fastify.decorate('resolveOrganizationContext', function (request: FastifyRequest, reply: FastifyReply) {
+    return fastify.resolveTenantContext(request, reply);
+  });
+
+  fastify.decorate('resolveWorkspaceContext', function (request: FastifyRequest, reply: FastifyReply) {
+    return fastify.resolveTenantContext(request, reply);
+  });
+
+  fastify.decorate('resolveApplicationContext', function (productKey = 'inventory') {
+    return async function (request: FastifyRequest, reply: FastifyReply) {
+      await fastify.resolveTenantContext(request, reply);
+      if (reply.sent) return;
+      await fastify.requireApplicationAccess(productKey)(request, reply);
+    };
+  });
+
+  fastify.decorate('resolveBranchContext', function (request: FastifyRequest, reply: FastifyReply) {
+    return fastify.resolveBranch(request, reply);
+  });
 
   // Require active workspace membership
   fastify.decorate(
@@ -152,8 +278,17 @@ const plugin: FastifyPluginAsync = async (fastify) => {
         if (reply.sent) return;
       }
 
+      if (request.workspace?.ownerId && String(request.workspace.ownerId) === String(request.user?.id)) {
+        request.workspaceMembership = {
+          id: 'owner_membership',
+          role: 'owner',
+          status: 'active',
+        };
+        return;
+      }
+
       const workspaceId = request.workspace!.id;
-      const membership = (await dataService.getWorkspaceMembership(workspaceId, request.user.id)) as any;
+      const membership = (await dataService.getWorkspaceMembership(workspaceId, request.user.id).catch(() => null)) as any;
       const memStatus = membership?.status?.toLowerCase();
 
       if (!membership || memStatus !== 'active') {
@@ -312,6 +447,201 @@ const plugin: FastifyPluginAsync = async (fastify) => {
       }
     };
   });
+
+  // Resolve branch from request params or headers
+  fastify.decorate(
+    'resolveBranch',
+    async function (request: FastifyRequest, reply: FastifyReply) {
+      const branchId =
+        (request.params as any)?.branchId ||
+        (request.params as any)?.id ||
+        (request.headers['x-branch-id'] as string) ||
+        (request.query as any)?.branchId;
+
+      if (!branchId) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: 'Branch identifier required via route parameter or x-branch-id header.',
+          },
+        });
+      }
+
+      let branch: any = null;
+      try {
+        branch = await dataService.getBranchById(branchId);
+        if (!branch) {
+          branch = await dataService.getFullBranchSettings(branchId);
+        }
+      } catch (err) {
+        fastify.log.warn({ err, branchId }, 'Failed to resolve branch');
+      }
+
+      if (!branch || branch.status === 'deleted' || branch.deletedAt) {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: 'BRANCH_NOT_FOUND',
+            message: 'Branch not found.',
+          },
+        });
+      }
+
+      request.branch = {
+        id: branch._id || branch.id || branch.branchId || branchId,
+        name: branch.name || '',
+        code: branch.code,
+        workspaceId: branch.workspaceId ? String(branch.workspaceId) : undefined,
+        organizationId: branch.organizationId ? String(branch.organizationId) : undefined,
+        productKey: branch.productKey || 'inventory',
+        applicationId: branch.applicationId ? String(branch.applicationId) : undefined,
+        isPrimary: Boolean(branch.isPrimary),
+        isActive: branch.isActive ?? (branch.status === 'active'),
+        status: branch.status || 'active',
+      };
+    }
+  );
+
+  // Validate branch ownership against workspace/organization
+  fastify.decorate(
+    'requireBranchOwnership',
+    async function (request: FastifyRequest, reply: FastifyReply) {
+      if (!request.workspace) {
+        await fastify.resolveWorkspace(request, reply);
+        if (reply.sent) return;
+      }
+      if (!request.branch) {
+        await fastify.resolveBranch(request, reply);
+        if (reply.sent) return;
+      }
+
+      const reqWsId = request.workspace!.id;
+      const reqOrgId = (request.params as any)?.organizationId || (request.workspace as any)?.organizationId;
+      const branchWsId = request.branch!.workspaceId;
+      const branchOrgId = request.branch!.organizationId;
+
+      let matches = false;
+      if (branchWsId && (branchWsId === reqWsId || branchWsId === reqOrgId)) {
+        matches = true;
+      }
+      if (branchOrgId && (branchOrgId === reqWsId || branchOrgId === reqOrgId)) {
+        matches = true;
+      }
+
+      if (!matches && request.workspace?.ownerId && String(request.workspace.ownerId) === String(request.user?.id)) {
+        matches = true;
+      }
+
+      if (!matches) {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: 'BRANCH_NOT_FOUND',
+            message: 'Branch not found in this organization.',
+          },
+        });
+      }
+
+      if (request.branch!.productKey && request.branch!.productKey !== 'inventory') {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: 'APPLICATION_NOT_AVAILABLE',
+            message: 'This application is not available.',
+          },
+        });
+      }
+    }
+  );
+
+  // Require specific branch permission
+  fastify.decorate('requireBranchPermission', function (permission: string) {
+    return async function (request: FastifyRequest, reply: FastifyReply) {
+      if (!request.user) {
+        return reply.status(401).send({
+          success: false,
+          error: {
+            code: 'AUTHENTICATION_REQUIRED',
+            message: 'Authentication is required.',
+          },
+        });
+      }
+
+      if (!request.workspaceMembership) {
+        await fastify.requireWorkspaceMembership(request, reply);
+        if (reply.sent) return;
+      }
+
+      await fastify.requireBranchOwnership(request, reply);
+      if (reply.sent) return;
+
+      const wsRole = (request.workspaceMembership?.role || 'member').toLowerCase();
+      const isOwner = wsRole === 'owner';
+      const isAdmin = wsRole === 'admin';
+
+      if (isOwner || isAdmin) {
+        return;
+      }
+
+      const productMem = (await dataService.getProductMembership(
+        request.workspace!.id,
+        request.user.id,
+        'inventory'
+      )) as any;
+
+      const permissions: string[] = productMem?.permissions || [];
+      const prodRole = (productMem?.role || wsRole).toLowerCase();
+
+      if (permissions.length === 0) {
+        permissions.push(...getProductRoleDefaultPermissions('inventory', prodRole));
+      }
+
+      if (productMem?.branchIds && productMem.branchIds.length > 0 && request.branch) {
+        if (!productMem.branchIds.includes(request.branch.id)) {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: 'BRANCH_PERMISSION_REQUIRED',
+              message: 'You do not have access to this branch.',
+            },
+          });
+        }
+      }
+
+      if (!hasPermission(permissions, permission, isOwner || isAdmin)) {
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: 'BRANCH_PERMISSION_REQUIRED',
+            message: 'You do not have permission to perform this action.',
+          },
+        });
+      }
+    };
+  });
+
+  // Verify branch is active
+  fastify.decorate(
+    'requireActiveBranch',
+    async function (request: FastifyRequest, reply: FastifyReply) {
+      if (!request.branch) {
+        await fastify.resolveBranch(request, reply);
+        if (reply.sent) return;
+      }
+
+      const status = request.branch!.status?.toLowerCase();
+      if (status === 'archived' || status === 'deleted') {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: 'BRANCH_NOT_ACTIVE',
+            message: 'Branch is archived or deleted.',
+          },
+        });
+      }
+    }
+  );
 };
 
 export const authorizationPlugin = fp(plugin, {

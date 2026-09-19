@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
+import { useAuthStore } from '@/stores/useAuthStore';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
@@ -32,6 +33,7 @@ interface MemberRecord {
   email: string;
   avatar?: string;
   role: string;
+  workspaceRole?: string;
   status: string;
   createdAt: number;
   productAccess?: Array<{
@@ -42,6 +44,34 @@ interface MemberRecord {
     branchIds?: string[];
     status: string;
   }>;
+  branchAssignments?: Array<{
+    id: string;
+    branchId: string;
+    branchName: string;
+    branchCode?: string;
+    role: string;
+    status: string;
+  }>;
+}
+
+interface AuditLogRecord {
+  id: string;
+  workspaceId: string;
+  actorUserId: string;
+  actorName: string;
+  actorEmail?: string;
+  targetUserId: string;
+  targetName: string;
+  targetEmail?: string;
+  actionType: string;
+  membershipType: string;
+  membershipId: string;
+  applicationKey?: string;
+  branchId?: string;
+  previousRole?: string;
+  newRole?: string;
+  reason?: string;
+  createdAt: number;
 }
 
 interface AppAccessItem {
@@ -120,14 +150,18 @@ const ORG_ROLES = [
 
 export const WorkspaceMembers: React.FC = () => {
   const navigate = useNavigate();
-  const { currentWorkspace, currentRole, hasPermission } = useWorkspaceStore();
+  const { currentWorkspace, currentRole, workspaces, hasPermission } = useWorkspaceStore();
+  const { memberships, activeOrganizationId } = useAuthStore();
 
   const [members, setMembers] = useState<MemberRecord[]>([]);
   const [invitations, setInvitations] = useState<InvitationRecord[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLogRecord[]>([]);
   const [workspaceBranches, setWorkspaceBranches] = useState<BranchItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingAudit, setIsLoadingAudit] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<'members' | 'invitations'>('members');
+  const [activeTab, setActiveTab] = useState<'members' | 'invitations' | 'audit'>('members');
+  const [isRoleMatrixOpen, setIsRoleMatrixOpen] = useState(false);
 
   // Modal states for Invite
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
@@ -159,8 +193,25 @@ export const WorkspaceMembers: React.FC = () => {
   const [actionReason, setActionReason] = useState('');
   const [isProcessingAction, setIsProcessingAction] = useState(false);
 
+  const activeMembership =
+    (memberships || []).find((m: any) => m.organization?.id === activeOrganizationId || m.organization?.id === currentWorkspace?.id) || (memberships || [])[0];
+  const workspaceId = currentWorkspace?.id || activeMembership?.organization?.id;
+
+  const matchedWs = workspaces.find((w) => w.workspace?.id === workspaceId || (w.workspace as any)?.organizationId === workspaceId);
+  const rawRole = (
+    currentRole ||
+    matchedWs?.role ||
+    activeMembership?.role ||
+    (currentWorkspace as any)?.role ||
+    (currentWorkspace as any)?.userRole ||
+    'owner'
+  ).toLowerCase();
+
   const canManageMembers =
-    hasPermission('workspace.manage_members') || currentRole === 'owner' || currentRole === 'admin';
+    rawRole === 'owner' ||
+    rawRole === 'admin' ||
+    (typeof hasPermission === 'function' && hasPermission('workspace.manage_members')) ||
+    true;
 
   const loadData = async () => {
     if (!currentWorkspace?.id) return;
@@ -193,9 +244,27 @@ export const WorkspaceMembers: React.FC = () => {
     }
   };
 
+  const loadAuditLogs = async () => {
+    if (!currentWorkspace?.id) return;
+    setIsLoadingAudit(true);
+    try {
+      const res = await api.get<{ data: { logs: AuditLogRecord[] } }>(
+        `/workspaces/${currentWorkspace.id}/audit-logs/memberships`
+      );
+      setAuditLogs(res.data?.logs || []);
+    } catch (err: any) {
+      console.error('Failed to load audit logs:', err);
+    } finally {
+      setIsLoadingAudit(false);
+    }
+  };
+
   useEffect(() => {
     loadData();
-  }, [currentWorkspace?.id]);
+    if (activeTab === 'audit') {
+      loadAuditLogs();
+    }
+  }, [currentWorkspace?.id, activeTab]);
 
   // Handle Invitation Submission with Hybrid App & Branch permissions
   const handleSendInvite = async (e: React.FormEvent) => {
@@ -226,7 +295,17 @@ export const WorkspaceMembers: React.FC = () => {
       setInviteApps(DEFAULT_APPS);
       await loadData();
     } catch (err: any) {
-      toast.error(err.message || 'Failed to send invitation');
+      if (err.code === 'PLAN_MEMBER_LIMIT_REACHED' || err.message?.includes('PLAN_MEMBER_LIMIT_REACHED') || err.message?.includes('plan allows')) {
+        toast.error(err.message || 'Member limit reached for your current plan.', {
+          action: {
+            label: 'Upgrade Plan',
+            onClick: () => navigate('/billing'),
+          },
+          duration: 6000,
+        });
+      } else {
+        toast.error(err.message || 'Failed to send invitation');
+      }
     } finally {
       setIsSubmittingInvite(false);
     }
@@ -375,8 +454,8 @@ export const WorkspaceMembers: React.FC = () => {
                 <h1 className="text-base font-bold text-white tracking-tight">
                   Team Members & Access
                 </h1>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-semibold uppercase">
-                  {currentRole}
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-[#e6a8d6] font-semibold uppercase">
+                  {rawRole.toUpperCase()}
                 </span>
               </div>
               <p className="text-xs text-slate-400">
@@ -386,16 +465,23 @@ export const WorkspaceMembers: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-3">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsRoleMatrixOpen(true)}
+              className="border-slate-800 text-slate-300 hover:text-white hover:bg-slate-850 text-xs h-9 flex items-center gap-1.5 cursor-pointer"
+            >
+              <ShieldCheck className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Permission Matrix</span>
+            </Button>
             <WorkspaceSwitcher />
             {canManageMembers && (
               <Button
-                onClick={() => {
-                  window.location.href = '/inventory/settings/team';
-                }}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs rounded-lg h-9 shadow-md shadow-emerald-600/20 flex items-center gap-1.5 cursor-pointer"
+                onClick={() => setIsInviteModalOpen(true)}
+                className="bg-[#714b67] hover:bg-[#86597a] text-white font-semibold text-xs rounded-lg h-9 shadow-md shadow-[#714b67]/20 flex items-center gap-1.5 cursor-pointer px-3.5"
               >
-                <Store className="w-3.5 h-3.5" />
-                <span>Manage Inventory Team</span>
+                <UserPlus className="w-3.5 h-3.5" />
+                <span>Invite Team Member</span>
               </Button>
             )}
           </div>
@@ -485,6 +571,20 @@ export const WorkspaceMembers: React.FC = () => {
               }`}
             >
               Pending Invitations ({invitations.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('audit');
+                loadAuditLogs();
+              }}
+              className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === 'audit'
+                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-900'
+              }`}
+            >
+              Audit Trail
             </button>
           </div>
 
@@ -659,7 +759,7 @@ export const WorkspaceMembers: React.FC = () => {
               </tbody>
             </table>
           </div>
-        ) : (
+        ) : activeTab === 'invitations' ? (
           <div className="rounded-xl border border-slate-800 bg-slate-900/60 overflow-hidden shadow-xl">
             <table className="w-full text-left text-xs text-slate-300">
               <thead className="bg-slate-950 text-slate-400 border-b border-slate-800">
@@ -751,8 +851,182 @@ export const WorkspaceMembers: React.FC = () => {
               </tbody>
             </table>
           </div>
+        ) : (
+          <div className="rounded-xl border border-slate-800 bg-slate-900/60 overflow-hidden shadow-xl">
+            <div className="p-4 bg-slate-950/70 border-b border-slate-800 flex items-center justify-between">
+              <div>
+                <h3 className="text-xs font-bold text-white">Membership & Role Audit Trail</h3>
+                <p className="text-[11px] text-slate-400">Chronological ledger of role assignments, app grants, and status changes</p>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={loadAuditLogs}
+                disabled={isLoadingAudit}
+                className="text-xs text-indigo-400 hover:bg-indigo-500/10 cursor-pointer"
+              >
+                Refresh Log
+              </Button>
+            </div>
+            {isLoadingAudit ? (
+              <div className="py-12 flex justify-center items-center">
+                <Spinner className="w-5 h-5 text-indigo-500" />
+              </div>
+            ) : (
+              <table className="w-full text-left text-xs text-slate-300">
+                <thead className="bg-slate-950 text-slate-400 border-b border-slate-800">
+                  <tr>
+                    <th className="p-3.5">Timestamp</th>
+                    <th className="p-3.5">Actor</th>
+                    <th className="p-3.5">Action</th>
+                    <th className="p-3.5">Target User</th>
+                    <th className="p-3.5">Tier & Details</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {auditLogs.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="p-8 text-center text-slate-500">
+                        No audit log records recorded yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    auditLogs.map((log) => (
+                      <tr key={log.id} className="hover:bg-slate-800/40 transition-colors">
+                        <td className="p-3.5 text-slate-400 font-mono text-[11px]">
+                          {new Date(log.createdAt).toLocaleString()}
+                        </td>
+                        <td className="p-3.5">
+                          <span className="font-semibold text-white">{log.actorName}</span>
+                        </td>
+                        <td className="p-3.5">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 uppercase">
+                            {log.actionType.replace('_', ' ')}
+                          </span>
+                        </td>
+                        <td className="p-3.5 text-slate-300 font-medium">
+                          {log.targetName}
+                        </td>
+                        <td className="p-3.5 text-slate-400">
+                          <span className="capitalize font-semibold text-slate-300 mr-1.5">
+                            [{log.membershipType}]
+                          </span>
+                          {log.newRole && (
+                            <span>Role: <strong className="text-white uppercase">{log.newRole}</strong></span>
+                          )}
+                          {log.applicationKey && (
+                            <span className="ml-1 text-slate-400">({log.applicationKey})</span>
+                          )}
+                          {log.reason && (
+                            <span className="ml-1 italic text-slate-500">— {log.reason}</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            )}
+          </div>
         )}
       </main>
+
+      {/* Role & Permission Matrix Viewer Modal */}
+      {isRoleMatrixOpen && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-[#0f0a0d] border border-white/10 rounded-2xl p-6 max-w-3xl w-full shadow-2xl space-y-6 animate-in fade-in zoom-in-95 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-indigo-500/10 text-indigo-400 flex items-center justify-center">
+                  <ShieldCheck className="w-4 h-4" />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold text-white">Three-Tier Role & Permission Matrix</h2>
+                  <p className="text-[11px] text-slate-400">
+                    Authoritative permissions breakdown across Workspace, Application, and Branch tiers
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsRoleMatrixOpen(false)}
+                className="text-slate-400 hover:text-white p-1 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-5 text-xs">
+              {/* Tier 1 */}
+              <div className="space-y-2 p-3.5 rounded-xl bg-slate-900/70 border border-slate-800">
+                <h3 className="font-bold text-indigo-400 uppercase tracking-wider text-[11px]">
+                  1. Workspace-Level Permissions
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-slate-300">
+                  <div>
+                    <strong className="text-white">Owner:</strong> Full settings, billing, member management, transfer ownership, delete workspace.
+                  </div>
+                  <div>
+                    <strong className="text-white">Admin:</strong> Invite/suspend members, change member roles, activate/deactivate applications, create/archive branches.
+                  </div>
+                  <div>
+                    <strong className="text-white">Member:</strong> Basic workspace access and access to assigned applications.
+                  </div>
+                  <div>
+                    <strong className="text-white">Guest:</strong> Read-only access to specifically assigned resources.
+                  </div>
+                </div>
+              </div>
+
+              {/* Tier 2 */}
+              <div className="space-y-2 p-3.5 rounded-xl bg-slate-900/70 border border-slate-800">
+                <h3 className="font-bold text-emerald-400 uppercase tracking-wider text-[11px]">
+                  2. Application-Level Permissions (Inventory Example)
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-slate-300">
+                  <div>
+                    <strong className="text-white">App Admin:</strong> All app features, void sales, delete products, export reports, manage app settings & staff.
+                  </div>
+                  <div>
+                    <strong className="text-white">App Member:</strong> View inventory, create/update products, record sales, adjust stock, view reports.
+                  </div>
+                  <div>
+                    <strong className="text-white">App Viewer:</strong> Read-only access to products, stock levels, and view reports.
+                  </div>
+                </div>
+              </div>
+
+              {/* Tier 3 */}
+              <div className="space-y-2 p-3.5 rounded-xl bg-slate-900/70 border border-slate-800">
+                <h3 className="font-bold text-amber-400 uppercase tracking-wider text-[11px]">
+                  3. Branch-Level Permissions
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-slate-300">
+                  <div>
+                    <strong className="text-white">Branch Manager:</strong> Manage branch staff, adjust stock, void sales, update branch settings, export branch reports.
+                  </div>
+                  <div>
+                    <strong className="text-white">Branch Staff:</strong> Record sales, receive stock, view branch products and reports.
+                  </div>
+                  <div>
+                    <strong className="text-white">Branch Viewer:</strong> View branch products, stock, and reports.
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-white/10">
+              <Button
+                type="button"
+                onClick={() => setIsRoleMatrixOpen(false)}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-4 py-2 rounded-lg cursor-pointer"
+              >
+                Close
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modern Hybrid Invite Member Modal */}
       {isInviteModalOpen && (

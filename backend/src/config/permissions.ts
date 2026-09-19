@@ -1,169 +1,237 @@
-export const PLATFORM_ROLES = {
-  OWNER: 'owner',
-  ADMIN: 'admin',
-  MEMBER: 'member',
-  VIEWER: 'viewer',
-} as const;
+/**
+ * permissions.ts
+ *
+ * Canonical permission constants and role-to-permission mappings
+ * for the workspace and inventory foundation.
+ */
 
-export type PlatformRole = (typeof PLATFORM_ROLES)[keyof typeof PLATFORM_ROLES] | 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER';
-
-export const INVENTORY_ROLES = {
-  OWNER: 'inventory_owner',
-  MANAGER: 'inventory_manager',
-  SALES_ATTENDANT: 'sales_attendant',
-  STOCK_MANAGER: 'stock_manager',
-  ACCOUNTANT: 'accountant',
-  VIEWER: 'inventory_viewer',
-} as const;
-
-export type InventoryRole = (typeof INVENTORY_ROLES)[keyof typeof INVENTORY_ROLES] | string;
-
-export const TASK_MANAGEMENT_ROLES = {
-  OWNER: 'task_owner',
-  PROJECT_MANAGER: 'project_manager',
-  CONTRIBUTOR: 'contributor',
-  VIEWER: 'viewer',
-} as const;
-
-export type TaskManagementRole = (typeof TASK_MANAGEMENT_ROLES)[keyof typeof TASK_MANAGEMENT_ROLES] | string;
-
-export const PERMISSIONS = {
-  // Platform / Workspace permissions
+export const WORKSPACE_PERMISSIONS = {
+  // Workspace Administration
   WORKSPACE_VIEW: 'workspace.view',
   WORKSPACE_UPDATE: 'workspace.update',
-  WORKSPACE_MANAGE_MEMBERS: 'workspace.manage_members',
-  WORKSPACE_MANAGE_ROLES: 'workspace.manage_roles',
-  WORKSPACE_MANAGE_PRODUCTS: 'workspace.manage_products',
-  WORKSPACE_MANAGE_BILLING: 'workspace.manage_billing',
-  WORKSPACE_DELETE: 'workspace.delete',
   WORKSPACE_ARCHIVE: 'workspace.archive',
+  WORKSPACE_RESTORE: 'workspace.restore',
+  WORKSPACE_SUSPEND: 'workspace.suspend',
+  WORKSPACE_DELETE: 'workspace.delete',
+  WORKSPACE_TRANSFER_OWNERSHIP: 'workspace.transfer_ownership',
 
-  // Inventory permissions
+  // Workspace Membership & Invitations
+  MEMBERS_VIEW: 'workspace.members.view',
+  MEMBERS_INVITE: 'workspace.members.invite',
+  MEMBERS_UPDATE_ROLE: 'workspace.members.update_role',
+  MEMBERS_SUSPEND: 'workspace.members.suspend',
+  MEMBERS_RESTORE: 'workspace.members.restore',
+  MEMBERS_REMOVE: 'workspace.members.remove',
+  INVITATIONS_VIEW: 'workspace.invitations.view',
+  INVITATIONS_MANAGE: 'workspace.invitations.manage',
+
+  // Workspace Applications & Settings
+  APPLICATIONS_VIEW: 'workspace.applications.view',
+  APPLICATIONS_MANAGE: 'workspace.applications.manage',
+  SETTINGS_VIEW: 'workspace.settings.view',
+  SETTINGS_MANAGE: 'workspace.settings.manage',
+  BILLING_VIEW: 'workspace.billing.view',
+  BILLING_MANAGE: 'workspace.billing.manage',
+  AUDIT_LOGS_VIEW: 'workspace.audit_logs.view',
+
+  // Inventory Application Permissions
   INVENTORY_VIEW: 'inventory.view',
-  INVENTORY_SELL: 'inventory.sell',
   INVENTORY_MANAGE_PRODUCTS: 'inventory.manage_products',
+  INVENTORY_VIEW_STOCK: 'inventory.view_stock',
   INVENTORY_RECEIVE_STOCK: 'inventory.receive_stock',
   INVENTORY_ADJUST_STOCK: 'inventory.adjust_stock',
+  INVENTORY_RECORD_SALES: 'inventory.record_sales',
+  INVENTORY_CANCEL_SALES: 'inventory.cancel_sales',
+  INVENTORY_PROCESS_RETURNS: 'inventory.process_returns',
+  INVENTORY_VIEW_COST: 'inventory.view_cost',
+  INVENTORY_VIEW_PROFIT: 'inventory.view_profit',
   INVENTORY_VIEW_REPORTS: 'inventory.view_reports',
   INVENTORY_EXPORT_DATA: 'inventory.export_data',
+  INVENTORY_MANAGE_MEMBERS: 'inventory.manage_members',
+  INVENTORY_MANAGE_BRANCH_ACCESS: 'inventory.manage_branch_access',
+  INVENTORY_MANAGE_SETTINGS: 'inventory.manage_settings',
 
-  // Task Management permissions
-  TASK_VIEW: 'task.view',
-  TASK_CREATE: 'task.create',
-  TASK_UPDATE: 'task.update',
-  TASK_DELETE: 'task.delete',
-  TASK_ASSIGN: 'task.assign',
-  TASK_MANAGE_PROJECTS: 'task.manage_projects',
+  // Branch Permissions
+  BRANCH_VIEW: 'branch.view',
+  BRANCH_CREATE: 'branch.create',
+  BRANCH_UPDATE: 'branch.update',
+  BRANCH_DELETE: 'branch.delete',
+  BRANCH_SET_PRIMARY: 'branch.set_primary',
+  BRANCH_SUSPEND: 'branch.suspend',
+  BRANCH_RESTORE: 'branch.restore',
+  BRANCH_ARCHIVE: 'branch.archive',
+  BRANCH_MANAGE_MEMBERS: 'branch.manage_members',
 } as const;
 
-export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS] | string;
+export type WorkspacePermission = (typeof WORKSPACE_PERMISSIONS)[keyof typeof WORKSPACE_PERMISSIONS];
 
-export const DEFAULT_PLATFORM_ROLE_PERMISSIONS: Record<string, string[]> = {
-  owner: ['*'],
+/** Role to Permissions map */
+export const ROLE_PERMISSIONS: Record<string, string[]> = {
   OWNER: ['*'],
-  admin: [
-    PERMISSIONS.WORKSPACE_VIEW,
-    PERMISSIONS.WORKSPACE_UPDATE,
-    PERMISSIONS.WORKSPACE_MANAGE_MEMBERS,
-    PERMISSIONS.WORKSPACE_MANAGE_ROLES,
-    PERMISSIONS.WORKSPACE_MANAGE_PRODUCTS,
-    PERMISSIONS.WORKSPACE_MANAGE_BILLING,
-    PERMISSIONS.WORKSPACE_ARCHIVE,
-  ],
   ADMIN: [
-    PERMISSIONS.WORKSPACE_VIEW,
-    PERMISSIONS.WORKSPACE_UPDATE,
-    PERMISSIONS.WORKSPACE_MANAGE_MEMBERS,
-    PERMISSIONS.WORKSPACE_MANAGE_ROLES,
-    PERMISSIONS.WORKSPACE_MANAGE_PRODUCTS,
-    PERMISSIONS.WORKSPACE_MANAGE_BILLING,
-    PERMISSIONS.WORKSPACE_ARCHIVE,
+    WORKSPACE_PERMISSIONS.WORKSPACE_VIEW,
+    WORKSPACE_PERMISSIONS.WORKSPACE_UPDATE,
+    WORKSPACE_PERMISSIONS.WORKSPACE_SUSPEND,
+    WORKSPACE_PERMISSIONS.MEMBERS_VIEW,
+    WORKSPACE_PERMISSIONS.MEMBERS_INVITE,
+    WORKSPACE_PERMISSIONS.MEMBERS_UPDATE_ROLE,
+    WORKSPACE_PERMISSIONS.MEMBERS_SUSPEND,
+    WORKSPACE_PERMISSIONS.MEMBERS_RESTORE,
+    WORKSPACE_PERMISSIONS.MEMBERS_REMOVE,
+    WORKSPACE_PERMISSIONS.INVITATIONS_VIEW,
+    WORKSPACE_PERMISSIONS.INVITATIONS_MANAGE,
+    WORKSPACE_PERMISSIONS.APPLICATIONS_VIEW,
+    WORKSPACE_PERMISSIONS.APPLICATIONS_MANAGE,
+    WORKSPACE_PERMISSIONS.SETTINGS_VIEW,
+    WORKSPACE_PERMISSIONS.SETTINGS_MANAGE,
+    WORKSPACE_PERMISSIONS.BILLING_VIEW,
+    WORKSPACE_PERMISSIONS.BILLING_MANAGE,
+    WORKSPACE_PERMISSIONS.AUDIT_LOGS_VIEW,
+    WORKSPACE_PERMISSIONS.INVENTORY_VIEW,
+    WORKSPACE_PERMISSIONS.INVENTORY_MANAGE_PRODUCTS,
+    WORKSPACE_PERMISSIONS.INVENTORY_VIEW_STOCK,
+    WORKSPACE_PERMISSIONS.INVENTORY_RECEIVE_STOCK,
+    WORKSPACE_PERMISSIONS.INVENTORY_ADJUST_STOCK,
+    WORKSPACE_PERMISSIONS.INVENTORY_RECORD_SALES,
+    WORKSPACE_PERMISSIONS.INVENTORY_CANCEL_SALES,
+    WORKSPACE_PERMISSIONS.INVENTORY_PROCESS_RETURNS,
+    WORKSPACE_PERMISSIONS.INVENTORY_VIEW_COST,
+    WORKSPACE_PERMISSIONS.INVENTORY_VIEW_PROFIT,
+    WORKSPACE_PERMISSIONS.INVENTORY_VIEW_REPORTS,
+    WORKSPACE_PERMISSIONS.INVENTORY_EXPORT_DATA,
+    WORKSPACE_PERMISSIONS.INVENTORY_MANAGE_MEMBERS,
+    WORKSPACE_PERMISSIONS.INVENTORY_MANAGE_BRANCH_ACCESS,
+    WORKSPACE_PERMISSIONS.INVENTORY_MANAGE_SETTINGS,
+    WORKSPACE_PERMISSIONS.BRANCH_VIEW,
+    WORKSPACE_PERMISSIONS.BRANCH_CREATE,
+    WORKSPACE_PERMISSIONS.BRANCH_UPDATE,
+    WORKSPACE_PERMISSIONS.BRANCH_DELETE,
+    WORKSPACE_PERMISSIONS.BRANCH_SET_PRIMARY,
+    WORKSPACE_PERMISSIONS.BRANCH_SUSPEND,
+    WORKSPACE_PERMISSIONS.BRANCH_RESTORE,
+    WORKSPACE_PERMISSIONS.BRANCH_ARCHIVE,
+    WORKSPACE_PERMISSIONS.BRANCH_MANAGE_MEMBERS,
   ],
-  member: [PERMISSIONS.WORKSPACE_VIEW],
-  MEMBER: [PERMISSIONS.WORKSPACE_VIEW],
-  viewer: [PERMISSIONS.WORKSPACE_VIEW],
-  VIEWER: [PERMISSIONS.WORKSPACE_VIEW],
-};
-
-export const DEFAULT_PRODUCT_ROLE_PERMISSIONS: Record<string, Record<string, string[]>> = {
-  inventory: {
-    inventory_owner: ['*'],
-    INVENTORY_OWNER: ['*'],
-    owner: ['*'],
-    OWNER: ['*'],
-    inventory_manager: [
-      PERMISSIONS.INVENTORY_VIEW,
-      PERMISSIONS.INVENTORY_SELL,
-      PERMISSIONS.INVENTORY_MANAGE_PRODUCTS,
-      PERMISSIONS.INVENTORY_RECEIVE_STOCK,
-      PERMISSIONS.INVENTORY_ADJUST_STOCK,
-      PERMISSIONS.INVENTORY_VIEW_REPORTS,
-      PERMISSIONS.INVENTORY_EXPORT_DATA,
-    ],
-    sales_attendant: [
-      PERMISSIONS.INVENTORY_VIEW,
-      PERMISSIONS.INVENTORY_SELL,
-    ],
-    stock_manager: [
-      PERMISSIONS.INVENTORY_VIEW,
-      PERMISSIONS.INVENTORY_MANAGE_PRODUCTS,
-      PERMISSIONS.INVENTORY_RECEIVE_STOCK,
-      PERMISSIONS.INVENTORY_ADJUST_STOCK,
-    ],
-    accountant: [
-      PERMISSIONS.INVENTORY_VIEW,
-      PERMISSIONS.INVENTORY_VIEW_REPORTS,
-      PERMISSIONS.INVENTORY_EXPORT_DATA,
-    ],
-    inventory_viewer: [
-      PERMISSIONS.INVENTORY_VIEW,
-    ],
-    viewer: [
-      PERMISSIONS.INVENTORY_VIEW,
-    ],
-  },
-  taskmanagement: {
-    task_owner: ['*'],
-    TASK_OWNER: ['*'],
-    owner: ['*'],
-    OWNER: ['*'],
-    project_manager: [
-      PERMISSIONS.TASK_VIEW,
-      PERMISSIONS.TASK_CREATE,
-      PERMISSIONS.TASK_UPDATE,
-      PERMISSIONS.TASK_DELETE,
-      PERMISSIONS.TASK_ASSIGN,
-      PERMISSIONS.TASK_MANAGE_PROJECTS,
-    ],
-    contributor: [
-      PERMISSIONS.TASK_VIEW,
-      PERMISSIONS.TASK_CREATE,
-      PERMISSIONS.TASK_UPDATE,
-    ],
-    viewer: [
-      PERMISSIONS.TASK_VIEW,
-    ],
-  },
+  MANAGER: [
+    WORKSPACE_PERMISSIONS.WORKSPACE_VIEW,
+    WORKSPACE_PERMISSIONS.MEMBERS_VIEW,
+    WORKSPACE_PERMISSIONS.INVITATIONS_VIEW,
+    WORKSPACE_PERMISSIONS.APPLICATIONS_VIEW,
+    WORKSPACE_PERMISSIONS.SETTINGS_VIEW,
+    WORKSPACE_PERMISSIONS.INVENTORY_VIEW,
+    WORKSPACE_PERMISSIONS.INVENTORY_MANAGE_PRODUCTS,
+    WORKSPACE_PERMISSIONS.INVENTORY_VIEW_STOCK,
+    WORKSPACE_PERMISSIONS.INVENTORY_RECEIVE_STOCK,
+    WORKSPACE_PERMISSIONS.INVENTORY_ADJUST_STOCK,
+    WORKSPACE_PERMISSIONS.INVENTORY_RECORD_SALES,
+    WORKSPACE_PERMISSIONS.INVENTORY_PROCESS_RETURNS,
+    WORKSPACE_PERMISSIONS.INVENTORY_VIEW_COST,
+    WORKSPACE_PERMISSIONS.INVENTORY_VIEW_PROFIT,
+    WORKSPACE_PERMISSIONS.INVENTORY_VIEW_REPORTS,
+    WORKSPACE_PERMISSIONS.INVENTORY_EXPORT_DATA,
+    WORKSPACE_PERMISSIONS.BRANCH_VIEW,
+    WORKSPACE_PERMISSIONS.BRANCH_UPDATE,
+  ],
+  MEMBER: [
+    WORKSPACE_PERMISSIONS.WORKSPACE_VIEW,
+    WORKSPACE_PERMISSIONS.MEMBERS_VIEW,
+    WORKSPACE_PERMISSIONS.APPLICATIONS_VIEW,
+    WORKSPACE_PERMISSIONS.INVENTORY_VIEW,
+    WORKSPACE_PERMISSIONS.INVENTORY_VIEW_STOCK,
+    WORKSPACE_PERMISSIONS.INVENTORY_RECORD_SALES,
+    WORKSPACE_PERMISSIONS.BRANCH_VIEW,
+  ],
+  VIEWER: [
+    WORKSPACE_PERMISSIONS.WORKSPACE_VIEW,
+    WORKSPACE_PERMISSIONS.APPLICATIONS_VIEW,
+    WORKSPACE_PERMISSIONS.INVENTORY_VIEW,
+    WORKSPACE_PERMISSIONS.INVENTORY_VIEW_STOCK,
+    WORKSPACE_PERMISSIONS.BRANCH_VIEW,
+  ],
 };
 
 /**
- * Resolves whether a given set of granted permissions (or roles) includes a target permission.
+ * Helper to check if a user with role/permissions has a given permission
  */
 export function hasPermission(
-  grantedPermissions: string[],
-  requiredPermission: string,
-  isOwnerOrAdmin: boolean = false
+  roleOrPermissions: string | string[],
+  permission: string,
+  isOwnerOrAdmin?: boolean
 ): boolean {
   if (isOwnerOrAdmin) return true;
-  if (grantedPermissions.includes('*')) return true;
-  return grantedPermissions.includes(requiredPermission);
+
+  if (Array.isArray(roleOrPermissions)) {
+    if (roleOrPermissions.includes('*')) return true;
+    return roleOrPermissions.includes(permission);
+  }
+
+  const normalizedRole = (roleOrPermissions || 'MEMBER').toUpperCase();
+  const permissions = ROLE_PERMISSIONS[normalizedRole] || [];
+  if (permissions.includes('*')) return true;
+  return permissions.includes(permission);
 }
 
 /**
- * Returns default permissions for a product role.
+ * Returns default permissions for a specific product role
  */
 export function getProductRoleDefaultPermissions(productKey: string, role: string): string[] {
-  const productRoles = DEFAULT_PRODUCT_ROLE_PERMISSIONS[productKey.toLowerCase()];
-  if (!productRoles) return [];
-  return productRoles[role] || productRoles[role.toLowerCase()] || [];
+  const normKey = (productKey || '').toLowerCase();
+  const normRole = (role || '').toLowerCase();
+
+  if (normKey === 'inventory') {
+    if (normRole === 'inventory_owner' || normRole === 'owner' || normRole === 'admin') {
+      return ['*'];
+    }
+    if (normRole === 'inventory_manager' || normRole === 'manager') {
+      return [
+        WORKSPACE_PERMISSIONS.INVENTORY_VIEW,
+        WORKSPACE_PERMISSIONS.INVENTORY_MANAGE_PRODUCTS,
+        WORKSPACE_PERMISSIONS.INVENTORY_VIEW_STOCK,
+        WORKSPACE_PERMISSIONS.INVENTORY_RECEIVE_STOCK,
+        WORKSPACE_PERMISSIONS.INVENTORY_ADJUST_STOCK,
+        WORKSPACE_PERMISSIONS.INVENTORY_RECORD_SALES,
+        WORKSPACE_PERMISSIONS.INVENTORY_PROCESS_RETURNS,
+        WORKSPACE_PERMISSIONS.INVENTORY_VIEW_COST,
+        WORKSPACE_PERMISSIONS.INVENTORY_VIEW_PROFIT,
+        WORKSPACE_PERMISSIONS.INVENTORY_VIEW_REPORTS,
+        WORKSPACE_PERMISSIONS.INVENTORY_EXPORT_DATA,
+        WORKSPACE_PERMISSIONS.BRANCH_VIEW,
+        WORKSPACE_PERMISSIONS.BRANCH_UPDATE,
+      ];
+    }
+    if (normRole === 'cashier' || normRole === 'sales_attendant') {
+      return [
+        WORKSPACE_PERMISSIONS.INVENTORY_VIEW,
+        WORKSPACE_PERMISSIONS.INVENTORY_RECORD_SALES,
+        WORKSPACE_PERMISSIONS.INVENTORY_VIEW_STOCK,
+      ];
+    }
+    if (normRole === 'stock_manager') {
+      return [
+        WORKSPACE_PERMISSIONS.INVENTORY_VIEW,
+        WORKSPACE_PERMISSIONS.INVENTORY_VIEW_STOCK,
+        WORKSPACE_PERMISSIONS.INVENTORY_RECEIVE_STOCK,
+        WORKSPACE_PERMISSIONS.INVENTORY_ADJUST_STOCK,
+        WORKSPACE_PERMISSIONS.INVENTORY_MANAGE_PRODUCTS,
+      ];
+    }
+    if (normRole === 'accountant') {
+      return [
+        WORKSPACE_PERMISSIONS.INVENTORY_VIEW,
+        WORKSPACE_PERMISSIONS.INVENTORY_VIEW_STOCK,
+        WORKSPACE_PERMISSIONS.INVENTORY_VIEW_COST,
+        WORKSPACE_PERMISSIONS.INVENTORY_VIEW_PROFIT,
+        WORKSPACE_PERMISSIONS.INVENTORY_VIEW_REPORTS,
+        WORKSPACE_PERMISSIONS.INVENTORY_EXPORT_DATA,
+      ];
+    }
+    // Default inventory viewer
+    return [
+      WORKSPACE_PERMISSIONS.INVENTORY_VIEW,
+      WORKSPACE_PERMISSIONS.INVENTORY_VIEW_STOCK,
+    ];
+  }
+
+  return ['*'];
 }
+

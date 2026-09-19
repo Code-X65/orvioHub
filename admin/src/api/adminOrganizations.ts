@@ -135,4 +135,19 @@ export const adminOrganizationsApi = {
       ticketNumber,
     });
   },
+
+  async toggleBranchStatus(
+    sessionToken: string,
+    branchId: string,
+    targetStatus: "active" | "suspended" | "archived",
+    reason?: string
+  ) {
+    return await convex.mutation(anyApi.adminOrganizations.toggleBranchStatus, {
+      sessionToken,
+      branchId: branchId as any,
+      targetStatus,
+      reason,
+    });
+  },
 };
+

@@ -42,14 +42,32 @@ export const BillingCallbackPage: React.FC = () => {
 
       try {
         const apiUrl = getApiUrl(env).replace(/\/$/, '');
-        const res = await fetch(
-          `${apiUrl}/api/v1/billing/verify?reference=${encodeURIComponent(reference)}&gateway=${gateway}`,
-          {
-            headers: {
-              ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            },
-          }
-        );
+        const verifyIdempotencyKey = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `cb_verify_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+        let res = await fetch(`${apiUrl}/api/v1/billing/verify`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'idempotency-key': verifyIdempotencyKey,
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({
+            reference,
+            gateway,
+          }),
+        });
+
+        if (!res.ok) {
+          // Fallback to GET query route
+          res = await fetch(
+            `${apiUrl}/api/v1/billing/verify?reference=${encodeURIComponent(reference)}&gateway=${gateway}`,
+            {
+              headers: {
+                ...(token ? { Authorization: `Bearer ${token}` } : {}),
+              },
+            }
+          );
+        }
 
         const data = await res.json().catch(() => ({}));
 

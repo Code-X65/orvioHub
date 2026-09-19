@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { OAuth2Client } from 'google-auth-library';
 import { env } from '../config/env.js';
 import { ERROR_CODES } from '../config/constants.js';
+import { dataService } from './dataService.js';
 
 export interface VerifiedSocialProfile {
   provider: 'google' | 'facebook';
@@ -12,17 +13,25 @@ export interface VerifiedSocialProfile {
   picture?: string;
 }
 
-interface OAuthStateRecord {
-  state: string;
+export interface OAuthFlowRecord {
+  flowId: string;
   provider: 'google' | 'facebook';
-  createdAt: number;
-  expiresAt: number;
+  state: string;
+  stateHash: string;
+  nonce?: string;
+  nonceHash?: string;
+  pkceChallenge?: string;
+  pkceVerifier?: string;
   returnTo?: string;
   product?: string;
+  status: 'pending' | 'completed' | 'failed' | 'replayed';
+  createdAt: number;
+  expiresAt: number;
+  usedAt?: number;
 }
 
 export class OAuthService {
-  private states = new Map<string, OAuthStateRecord>();
+  private states = new Map<string, OAuthFlowRecord>();
   private googleClient: OAuth2Client | null = null;
 
   constructor() {
@@ -39,39 +48,160 @@ export class OAuthService {
     }
   }
 
-  // --- State Management ---
-  public generateState(
+  // --- Flow Initialization (State + Nonce + PKCE) ---
+  public async initiateOAuthFlow(
     provider: 'google' | 'facebook',
     returnTo?: string,
     product?: string
-  ): string {
+  ): Promise<{ flowId: string; state: string; nonce: string; authUrl: string; pkceVerifier: string }> {
     const state = crypto.randomBytes(32).toString('hex');
+    const stateHash = crypto.createHash('sha256').update(state).digest('hex');
+
+    const nonce = crypto.randomBytes(32).toString('hex');
+    const nonceHash = crypto.createHash('sha256').update(nonce).digest('hex');
+
+    // RFC 7636 PKCE S256
+    const pkceVerifier = crypto.randomBytes(32).toString('base64url');
+    const pkceChallenge = crypto.createHash('sha256').update(pkceVerifier).digest('base64url');
+
+    const flowId = `flow_${crypto.randomUUID()}`;
     const now = Date.now();
     const expiresAt = now + 10 * 60 * 1000; // 10 minutes
 
-    this.states.set(state, {
-      state,
+    const flowRecord: OAuthFlowRecord = {
+      flowId,
       provider,
-      createdAt: now,
-      expiresAt,
+      state,
+      stateHash,
+      nonce,
+      nonceHash,
+      pkceChallenge,
+      pkceVerifier,
       returnTo,
       product,
-    });
+      status: 'pending',
+      createdAt: now,
+      expiresAt,
+    };
 
-    // Cleanup expired states
+    this.states.set(state, flowRecord);
+    await dataService.createOAuthFlow(flowRecord);
+
+    // Cleanup expired states in memory
     for (const [key, val] of this.states.entries()) {
       if (val.expiresAt < now) {
         this.states.delete(key);
       }
     }
 
+    const authUrl =
+      provider === 'google'
+        ? this.getGoogleAuthUrl({ state, nonce, pkceChallenge })
+        : this.getFacebookAuthUrl({ state, nonce, pkceChallenge });
+
+    return {
+      flowId,
+      state,
+      nonce,
+      authUrl,
+      pkceVerifier,
+    };
+  }
+
+  // Backwards compatible generateState
+  public generateState(
+    provider: 'google' | 'facebook',
+    returnTo?: string,
+    product?: string
+  ): string {
+    const state = crypto.randomBytes(32).toString('hex');
+    const stateHash = crypto.createHash('sha256').update(state).digest('hex');
+    const now = Date.now();
+    const expiresAt = now + 10 * 60 * 1000;
+
+    const record: OAuthFlowRecord = {
+      flowId: `flow_${crypto.randomUUID()}`,
+      provider,
+      state,
+      stateHash,
+      returnTo,
+      product,
+      status: 'pending',
+      createdAt: now,
+      expiresAt,
+    };
+
+    this.states.set(state, record);
+    dataService.createOAuthFlow(record).catch(() => {});
+
     return state;
   }
 
+  // Authoritative consumption with replay and expiry detection
+  public async consumeOAuthFlow(
+    state: string,
+    expectedProvider: 'google' | 'facebook'
+  ): Promise<{ status: 'valid' | 'replayed'; flow: OAuthFlowRecord }> {
+    if (!state) {
+      const err: any = new Error('OAuth state parameter is missing.');
+      err.code = ERROR_CODES.OAUTH_STATE_INVALID;
+      throw err;
+    }
+
+    const stateHash = crypto.createHash('sha256').update(state).digest('hex');
+    let flow = (await dataService.getOAuthFlowByStateHash(stateHash)) as OAuthFlowRecord | null;
+
+    if (!flow) {
+      flow = this.states.get(state) || null;
+    }
+
+    if (!flow) {
+      const err: any = new Error('OAuth state is invalid or flow was not found.');
+      err.code = ERROR_CODES.OAUTH_STATE_INVALID;
+      throw err;
+    }
+
+    if (flow.provider !== expectedProvider) {
+      const err: any = new Error('OAuth state provider mismatch.');
+      err.code = ERROR_CODES.OAUTH_STATE_MISMATCH;
+      throw err;
+    }
+
+    if (Date.now() > flow.expiresAt) {
+      const err: any = new Error('OAuth flow has expired.');
+      err.code = ERROR_CODES.OAUTH_FLOW_EXPIRED;
+      throw err;
+    }
+
+    // Check if flow was already completed (Callback Replay)
+    if (flow.status === 'completed' || flow.status === 'replayed' || flow.usedAt) {
+      await dataService.markOAuthFlowReplayed(stateHash);
+      if (this.states.has(state)) {
+        const mem = this.states.get(state)!;
+        mem.status = 'replayed';
+      }
+      return { status: 'replayed', flow };
+    }
+
+    // Mark completed atomically
+    await dataService.markOAuthFlowCompleted(stateHash);
+    flow.status = 'completed';
+    flow.usedAt = Date.now();
+
+    if (this.states.has(state)) {
+      const mem = this.states.get(state)!;
+      mem.status = 'completed';
+      mem.usedAt = flow.usedAt;
+    }
+
+    return { status: 'valid', flow };
+  }
+
+  // Backwards compatible sync validation
   public validateAndConsumeState(
     state: string,
     expectedProvider: 'google' | 'facebook'
-  ): OAuthStateRecord {
+  ): OAuthFlowRecord {
     if (!state) {
       const err: any = new Error('OAuth state parameter is missing.');
       err.code = ERROR_CODES.OAUTH_STATE_INVALID;
@@ -85,8 +215,14 @@ export class OAuthService {
       throw err;
     }
 
-    // Single use invalidation
-    this.states.delete(state);
+    if (record.status === 'completed' || record.status === 'replayed') {
+      const err: any = new Error('OAuth callback has already been used.');
+      err.code = ERROR_CODES.OAUTH_CALLBACK_ALREADY_USED;
+      throw err;
+    }
+
+    record.status = 'completed';
+    record.usedAt = Date.now();
 
     if (record.provider !== expectedProvider) {
       const err: any = new Error('OAuth state provider mismatch.');
@@ -104,18 +240,27 @@ export class OAuthService {
   }
 
   // --- Google OAuth ---
-  public getGoogleAuthUrl(state: string): string {
+  public getGoogleAuthUrl(paramsOrState: string | { state: string; nonce?: string; pkceChallenge?: string }): string {
+    const state = typeof paramsOrState === 'string' ? paramsOrState : paramsOrState.state;
+    const nonce = typeof paramsOrState === 'object' ? paramsOrState.nonce : undefined;
+    const pkceChallenge = typeof paramsOrState === 'object' ? paramsOrState.pkceChallenge : undefined;
+
     const redirectUri =
       env.GOOGLE_REDIRECT_URI || 'http://localhost:3000/api/v1/auth/google/callback';
 
     if (this.googleClient && env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
-      return this.googleClient.generateAuthUrl({
+      const opts: any = {
         access_type: 'online',
         scope: ['openid', 'email', 'profile'],
         state,
         redirect_uri: redirectUri,
         prompt: 'select_account',
-      });
+      };
+      if (pkceChallenge) {
+        opts.code_challenge = pkceChallenge;
+        opts.code_challenge_method = 'S256';
+      }
+      return this.googleClient.generateAuthUrl(opts);
     }
 
     // Development sandbox fallback when live Google Cloud ID is not yet placed in .env
@@ -124,7 +269,7 @@ export class OAuthService {
       return `/api/v1/auth/google/callback?code=${mockCode}&state=${state}`;
     }
 
-    const params = new URLSearchParams({
+    const queryParams: Record<string, string> = {
       client_id: env.GOOGLE_CLIENT_ID || 'mock-google-client-id',
       redirect_uri: redirectUri,
       response_type: 'code',
@@ -132,12 +277,19 @@ export class OAuthService {
       state,
       access_type: 'online',
       prompt: 'select_account',
-    });
+    };
 
-    return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+    if (nonce) queryParams.nonce = nonce;
+    if (pkceChallenge) {
+      queryParams.code_challenge = pkceChallenge;
+      queryParams.code_challenge_method = 'S256';
+    }
+
+    const search = new URLSearchParams(queryParams);
+    return `https://accounts.google.com/o/oauth2/v2/auth?${search.toString()}`;
   }
 
-  public async exchangeGoogleCode(code: string): Promise<VerifiedSocialProfile> {
+  public async exchangeGoogleCode(code: string, codeVerifier?: string): Promise<VerifiedSocialProfile> {
     if (!code) {
       const err: any = new Error('Authorization code is missing.');
       err.code = ERROR_CODES.OAUTH_CODE_INVALID;
@@ -163,6 +315,7 @@ export class OAuthService {
       try {
         const { tokens } = await this.googleClient.getToken({
           code,
+          codeVerifier,
           redirect_uri:
             env.GOOGLE_REDIRECT_URI || 'http://localhost:3000/api/v1/auth/google/callback',
         });
@@ -208,7 +361,8 @@ export class OAuthService {
   }
 
   // --- Facebook OAuth ---
-  public getFacebookAuthUrl(state: string): string {
+  public getFacebookAuthUrl(paramsOrState: string | { state: string; nonce?: string; pkceChallenge?: string }): string {
+    const state = typeof paramsOrState === 'string' ? paramsOrState : paramsOrState.state;
     const redirectUri =
       env.FACEBOOK_REDIRECT_URI || 'http://localhost:3000/api/v1/auth/facebook/callback';
     const appId = env.FACEBOOK_APP_ID;
@@ -218,18 +372,23 @@ export class OAuthService {
       return `/api/v1/auth/facebook/callback?code=${mockCode}&state=${state}`;
     }
 
-    const params = new URLSearchParams({
+    const queryParams: Record<string, string> = {
       client_id: appId || 'mock-facebook-app-id',
       redirect_uri: redirectUri,
       state,
       scope: 'email,public_profile',
       response_type: 'code',
-    });
+    };
 
+    if (typeof paramsOrState === 'object' && paramsOrState.nonce) {
+      queryParams.nonce = paramsOrState.nonce;
+    }
+
+    const params = new URLSearchParams(queryParams);
     return `https://www.facebook.com/v19.0/dialog/oauth?${params.toString()}`;
   }
 
-  public async exchangeFacebookCode(code: string): Promise<VerifiedSocialProfile> {
+  public async exchangeFacebookCode(code: string, codeVerifier?: string): Promise<VerifiedSocialProfile> {
     if (!code) {
       const err: any = new Error('Authorization code is missing.');
       err.code = ERROR_CODES.OAUTH_CODE_INVALID;
@@ -254,14 +413,19 @@ export class OAuthService {
         const redirectUri =
           env.FACEBOOK_REDIRECT_URI || 'http://localhost:3000/api/v1/auth/facebook/callback';
 
+        const tokenParams: Record<string, string> = {
+          client_id: env.FACEBOOK_APP_ID,
+          client_secret: env.FACEBOOK_APP_SECRET,
+          redirect_uri: redirectUri,
+          code,
+        };
+        if (codeVerifier) {
+          tokenParams.code_verifier = codeVerifier;
+        }
+
         const tokenUrl =
           `https://graph.facebook.com/v19.0/oauth/access_token?` +
-          new URLSearchParams({
-            client_id: env.FACEBOOK_APP_ID,
-            client_secret: env.FACEBOOK_APP_SECRET,
-            redirect_uri: redirectUri,
-            code,
-          }).toString();
+          new URLSearchParams(tokenParams).toString();
 
         const tokenRes = await fetch(tokenUrl);
         const tokenData: any = await tokenRes.json();
@@ -318,4 +482,3 @@ export class OAuthService {
 }
 
 export const oauthService = new OAuthService();
-

@@ -58,6 +58,7 @@ export const AcceptInvite: React.FC = () => {
   const [details, setDetails] = useState<InvitationDetails | null>(null);
   const [fetchState, setFetchState] = useState<'LOADING' | 'SUCCESS' | 'ERROR'>('LOADING');
   const [errorMessage, setErrorMessage] = useState('');
+  const [capacityError, setCapacityError] = useState<string | null>(null);
   const [isAccepting, setIsAccepting] = useState(false);
   const [isDeclining, setIsDeclining] = useState(false);
 
@@ -102,7 +103,12 @@ export const AcceptInvite: React.FC = () => {
         navigate('/inventory/dashboard');
       }
     } catch (error: any) {
-      toast.error(error.message || 'Failed to accept invitation');
+      if (error.code === 'PLAN_MEMBER_LIMIT_REACHED' || error.message?.includes('PLAN_MEMBER_LIMIT_REACHED') || error.message?.includes('seat limit reached') || error.message?.includes('Plan limit reached')) {
+        setCapacityError(error.message?.replace('PLAN_MEMBER_LIMIT_REACHED:', '').trim() || 'This team has reached its member limit for their current plan. Please contact the administrator who invited you to upgrade.');
+        toast.error('Workspace seat limit reached.');
+      } else {
+        toast.error(error.message || 'Failed to accept invitation');
+      }
       if (error.code === 'UNAUTHENTICATED') {
         navigate(`/login?returnTo=${encodeURIComponent(`/invitations/${token}`)}`);
       }
@@ -127,9 +133,12 @@ export const AcceptInvite: React.FC = () => {
   if (fetchState === 'LOADING') {
     return (
       <AuthLayout>
-        <div className="flex flex-col items-center justify-center space-y-4 py-12">
-          <Spinner size="lg" />
-          <p className="text-slate-400">Loading invitation...</p>
+        <div className="space-y-4 py-4 animate-pulse">
+          <div className="w-12 h-12 rounded-xl bg-white/10 mx-auto" />
+          <div className="w-48 h-6 rounded-xs bg-white/10 mx-auto" />
+          <div className="w-64 h-4 rounded-xs bg-white/5 mx-auto" />
+          <div className="h-28 rounded-xl bg-white/[0.03] border border-white/5" />
+          <div className="h-10 rounded-xl bg-white/10" />
         </div>
       </AuthLayout>
     );
@@ -282,6 +291,12 @@ export const AcceptInvite: React.FC = () => {
           </div>
         ) : (
           <div className="pt-4 space-y-3">
+            {capacityError && (
+              <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-left text-xs text-amber-300 space-y-1">
+                <p className="font-bold text-amber-200">Team Seat Limit Reached</p>
+                <p>{capacityError}</p>
+              </div>
+            )}
             <Button
               onClick={handleAccept}
               className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold h-11 cursor-pointer"

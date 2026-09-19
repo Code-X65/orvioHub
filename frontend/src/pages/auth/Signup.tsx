@@ -4,6 +4,12 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { api, API_BASE_URL } from '@/lib/api';
+import {
+  getPendingSignup,
+  setPendingSignup,
+  clearPendingSignup,
+  generateIdempotencyKey,
+} from '@/lib/pendingSignup';
 import { AuthLayout } from './AuthLayout';
 import { PasswordStrength } from '@/components/auth/PasswordStrength';
 import { Button } from '@/components/ui/button';
@@ -64,6 +70,8 @@ export const Signup: React.FC = () => {
   const [socialLoading, setSocialLoading] = useState<'google' | 'facebook' | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [existingPending, setExistingPending] = useState(() => getPendingSignup());
+  const [networkRecovery, setNetworkRecovery] = useState<{ email: string } | null>(null);
 
   const {
     register,
@@ -86,9 +94,26 @@ export const Signup: React.FC = () => {
 
   const onSubmit = async (data: SignupFormData) => {
     setIsLoading(true);
-    try {
-      const name = `${data.firstName.trim()} ${data.lastName.trim()}`;
+    setNetworkRecovery(null);
+    const normEmail = data.email.trim().toLowerCase();
+    const name = `${data.firstName.trim()} ${data.lastName.trim()}`;
 
+    // Compute or reuse idempotency key for this email
+    const idempotencyKey =
+      existingPending?.email === normEmail ? existingPending.idempotencyKey : generateIdempotencyKey();
+
+    // Store non-sensitive pending info before network transmission (never stores password)
+    setPendingSignup({
+      email: normEmail,
+      name,
+      firstName: data.firstName.trim(),
+      lastName: data.lastName.trim(),
+      idempotencyKey,
+      selectedProduct,
+      returnTo,
+    });
+
+    try {
       let formattedPhone: string | undefined = undefined;
       if (data.phone?.trim()) {
         const rawDigits = data.phone.trim().replace(/\D/g, '');
@@ -103,28 +128,46 @@ export const Signup: React.FC = () => {
         }
       }
 
-      await api.post('/auth/signup', {
-        name,
-        firstName: data.firstName.trim(),
-        lastName: data.lastName.trim(),
-        displayName: name,
-        email: data.email.trim().toLowerCase(),
-        country: data.country || 'Nigeria',
-        phone: formattedPhone,
-        password: data.password,
-        passwordConfirmation: data.passwordConfirmation,
-        acceptTerms: data.agreeTerms,
-        acceptPrivacy: data.acknowledgePrivacy,
-        marketingConsent: data.marketingConsent ?? false,
-        selectedProduct,
-      });
+      const res: any = await api.post(
+        '/auth/signup',
+        {
+          name,
+          firstName: data.firstName.trim(),
+          lastName: data.lastName.trim(),
+          displayName: name,
+          email: normEmail,
+          country: data.country || 'Nigeria',
+          phone: formattedPhone,
+          password: data.password,
+          passwordConfirmation: data.passwordConfirmation,
+          acceptTerms: data.agreeTerms,
+          acceptPrivacy: data.acknowledgePrivacy,
+          marketingConsent: data.marketingConsent ?? false,
+          selectedProduct,
+        },
+        {
+          headers: {
+            'Idempotency-Key': idempotencyKey,
+          },
+        }
+      );
 
-      toast.success('Account created! Please verify your email.');
+      if (res?.action === 'CONTINUE_VERIFICATION') {
+        toast.info(res.message || 'Account already registered and awaiting verification. A new code has been sent!');
+      } else {
+        toast.success('Account created! Please verify your email.');
+      }
+
       navigate('/verify-email', {
-        state: { email: data.email, returnTo, product: selectedProduct },
+        state: { email: normEmail, returnTo, product: selectedProduct },
       });
     } catch (error: any) {
-      toast.error(error.message || 'Failed to create account. Please try again.');
+      if (error?.status === 409 || error?.code === 'USER_ALREADY_EXISTS') {
+        toast.error('An account with this email already exists and is active. Please sign in instead.');
+      } else {
+        setNetworkRecovery({ email: normEmail });
+        toast.error(error.message || 'Network error occurred. If your account was already created, you can proceed to email verification.');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -148,6 +191,68 @@ export const Signup: React.FC = () => {
             Your account lets you securely sign in, manage your profile, and access Orviohub applications. You can create an organization, join one by invitation, or continue without an organization and decide later.
           </p>
         </div>
+
+        {/* Existing Pending Signup Recovery Banner */}
+        {existingPending && (
+          <div className="p-3.5 rounded-sm bg-[#22151e] border border-[#714b67]/40 text-left space-y-2">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-xs font-semibold text-white">Pending verification detected</p>
+                <p className="text-[11px] text-slate-300">
+                  You previously registered <span className="text-[#e2b9d8] font-medium">{existingPending.email}</span>.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  clearPendingSignup();
+                  setExistingPending(null);
+                }}
+                className="text-[11px] text-slate-400 hover:text-white underline cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
+            <div className="flex gap-2 pt-1">
+              <Button
+                type="button"
+                size="sm"
+                onClick={() =>
+                  navigate('/verify-email', {
+                    state: { email: existingPending.email, returnTo: existingPending.returnTo, product: existingPending.selectedProduct },
+                  })
+                }
+                className="h-7 bg-[#714b67] hover:bg-[#86597a] text-white text-[11px] rounded-xs font-medium cursor-pointer"
+              >
+                Continue to Verification
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Network Error Recovery Banner */}
+        {networkRecovery && (
+          <div className="p-3.5 rounded-sm bg-amber-950/40 border border-amber-500/30 text-left space-y-2">
+            <p className="text-xs font-semibold text-amber-200">Network connection interrupted</p>
+            <p className="text-[11px] text-amber-300/80">
+              Your signup request for <span className="font-medium text-amber-100">{networkRecovery.email}</span> may have completed. You can verify your email directly or retry below.
+            </p>
+            <div className="flex gap-2 pt-1">
+              <Button
+                type="button"
+                size="sm"
+                onClick={() =>
+                  navigate('/verify-email', {
+                    state: { email: networkRecovery.email, returnTo, product: selectedProduct },
+                  })
+                }
+                className="h-7 bg-amber-600 hover:bg-amber-500 text-white text-[11px] rounded-xs font-medium cursor-pointer"
+              >
+                Check / Verify Email
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* Social Authentication: Google, Facebook */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">

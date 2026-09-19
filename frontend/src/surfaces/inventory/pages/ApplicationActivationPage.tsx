@@ -148,9 +148,13 @@ export const ApplicationActivationPage: React.FC = () => {
 
   if (isCheckingOrg) {
     return (
-      <div className="min-h-screen bg-black text-slate-100 flex flex-col items-center justify-center space-y-3">
-        <Spinner size="lg" className="text-[#714b67]" />
-        <p className="text-xs text-slate-400">Verifying organization subscription entitlements...</p>
+      <div className="min-h-screen bg-black text-slate-100 flex flex-col justify-between animate-pulse">
+        <Header />
+        <main className="flex-1 max-w-4xl w-full mx-auto px-6 py-12 space-y-6">
+          <div className="w-48 h-7 rounded-xs bg-white/10" />
+          <div className="w-80 h-4 rounded-xs bg-white/5" />
+          <div className="h-64 rounded-2xl bg-white/[0.02] border border-white/5" />
+        </main>
       </div>
     );
   }

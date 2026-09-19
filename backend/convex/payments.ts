@@ -1,6 +1,23 @@
 import { query, mutation } from "./_generated/server.js";
 import { v } from "convex/values";
 
+export const getByReference = query({
+  args: { reference: v.string() },
+  handler: async (ctx, args) => {
+    const payment = await ctx.db
+      .query("payments")
+      .withIndex("by_reference", (q) => q.eq("reference", args.reference))
+      .first();
+    if (payment) return payment;
+
+    const paymentByProvider = await ctx.db
+      .query("payments")
+      .filter((q) => q.eq(q.field("providerReference"), args.reference))
+      .first();
+    return paymentByProvider;
+  },
+});
+
 export const getByWorkspace = query({
   args: { workspaceId: v.id("workspaces") },
   handler: async (ctx, args) => {
@@ -63,8 +80,8 @@ export const getPending = query({
 
     return await Promise.all(
       pending.map(async (payment) => {
-        const workspace = payment.workspaceId ? await ctx.db.get(payment.workspaceId) : null;
-        const invoice = payment.invoiceId ? await ctx.db.get(payment.invoiceId) : null;
+        const workspace = payment.workspaceId ? await ctx.db.get(payment.workspaceId as any) : null;
+        const invoice = payment.invoiceId ? await ctx.db.get(payment.invoiceId as any) : null;
         return {
           ...payment,
           workspace: workspace || { name: "Unknown Workspace" },
@@ -184,7 +201,7 @@ export const verifyBankTransfer = mutation({
 
       // 2. Update Invoice
       if (payment.invoiceId) {
-        await ctx.db.patch(payment.invoiceId, {
+        await ctx.db.patch(payment.invoiceId as any, {
           status: "paid",
           paidAt: now,
         });
@@ -192,7 +209,7 @@ export const verifyBankTransfer = mutation({
 
       // 3. Upgrade / Renew Subscription
       if (payment.subscriptionId) {
-        const subscription: any = await ctx.db.get(payment.subscriptionId);
+        const subscription: any = await ctx.db.get(payment.subscriptionId as any);
         if (subscription) {
           const interval = subscription.billingInterval || "monthly";
           const periodDays = interval === "annual" ? 365 : 30;

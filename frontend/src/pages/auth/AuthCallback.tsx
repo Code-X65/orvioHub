@@ -42,7 +42,7 @@ export const AuthCallback: React.FC = () => {
 
       if (tokenParam) {
         try {
-          // Set access & refresh tokens for initial hydration
+          // Set access & refresh tokens for initial hydration if query params provided
           localStorage.setItem('orvio_auth_token', tokenParam);
           if (refreshTokenParam) {
             localStorage.setItem('orvio_refresh_token', refreshTokenParam);
@@ -73,29 +73,40 @@ export const AuthCallback: React.FC = () => {
             navigate('/inventory/dashboard', { replace: true });
             return;
           } else {
-            const step = meResponse.onboarding?.currentStep;
-            if (step === 'ORGANIZATION_CREATION' || step === 'ACCOUNT_CREATED' || step === 'EMAIL_VERIFIED') {
-              navigate('/onboarding', { replace: true });
-            } else if (step === 'ORGANIZATION_CONFIGURED' || step === 'MODULE_SELECTION') {
-              navigate('/onboarding/modules', { replace: true });
-            } else if (step === 'WORKSPACE_INITIALIZATION') {
-              navigate('/onboarding/workspace', { replace: true });
-            } else if (step === 'WORKSPACE_READY' || step === 'TEAM_INVITATION') {
-              navigate('/onboarding/team', { replace: true });
-            } else {
-              navigate('/onboarding', { replace: true });
-            }
+            navigate('/onboarding', { replace: true });
+            return;
           }
         } catch (err: any) {
           const msg = err.message || 'Failed to complete social login session.';
           setErrorMessage(msg);
           toast.error(msg);
           setTimeout(() => navigate('/login', { replace: true }), 2500);
+          return;
         }
-        return;
       }
 
-      // No token and no error
+      // Cookie-first flow: No token in URL, hydrate via session check
+      try {
+        await refreshSession();
+        const currentAuth = useAuthStore.getState();
+        if (currentAuth.isAuthenticated && currentAuth.user) {
+          toast.success(`Welcome back, ${currentAuth.user.name || 'there'}!`);
+          if (currentAuth.isEmailVerified === false || currentAuth.accessLevel === 'verification_required') {
+            navigate('/verify-email', { replace: true });
+            return;
+          }
+          if (currentAuth.onboardingStatus?.status === 'COMPLETED') {
+            navigate('/inventory/dashboard', { replace: true });
+            return;
+          }
+          navigate('/onboarding', { replace: true });
+          return;
+        }
+      } catch {
+        // Fall through to login
+      }
+
+      // If still not authenticated, redirect to login
       navigate('/login', { replace: true });
     };
 

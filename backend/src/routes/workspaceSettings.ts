@@ -58,8 +58,40 @@ const updateNotificationsSchema = z.object({
   defaultNotificationMode: z.string().optional(),
 });
 
+async function verifyWorkspaceAccess(request: any, reply: any) {
+  const workspaceId = (request.params as any)?.workspaceId;
+  if (!workspaceId) return;
+
+  const userId = request.user?.id;
+  if (!userId) {
+    return reply.status(401).send({
+      success: false,
+      error: { code: ERROR_CODES.UNAUTHENTICATED, message: 'Authentication required.' },
+    });
+  }
+
+  const ws: any = await dataService.getWorkspaceById(workspaceId);
+  if (!ws) {
+    return reply.status(404).send({
+      success: false,
+      error: { code: ERROR_CODES.WORKSPACE_NOT_FOUND, message: 'Workspace not found.' },
+    });
+  }
+
+  const membership: any = await dataService.getWorkspaceMembership(workspaceId, userId);
+  const memStatus = membership?.status?.toLowerCase();
+
+  if (!membership || memStatus !== 'active') {
+    return reply.status(403).send({
+      success: false,
+      error: { code: ERROR_CODES.WORKSPACE_ACCESS_DENIED, message: 'You do not have active access to this workspace.' },
+    });
+  }
+}
+
 export const workspaceSettingsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.addHook('preHandler', fastify.authenticate);
+  fastify.addHook('preHandler', verifyWorkspaceAccess);
 
   // 1. GET Full settings
   fastify.get('/workspaces/:workspaceId/settings', async (request, reply) => {

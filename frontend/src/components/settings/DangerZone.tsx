@@ -129,6 +129,7 @@ export const DangerZone: React.FC<DangerZoneProps> = ({
         description={`Archiving "${organizationName}" will put all applications in read-only mode.`}
         confirmationPhrase={`archive ${organizationName.toLowerCase().replace(/[^a-z0-9]/g, '')}`}
         requireReason
+        requirePassword
         confirmButtonText="Archive Workspace"
         onConfirm={async (reason) => {
           if (onArchive) await onArchive(reason);
@@ -143,6 +144,7 @@ export const DangerZone: React.FC<DangerZoneProps> = ({
         description={`This will initiate the 30-day grace period for permanent deletion of "${organizationName}".`}
         confirmationPhrase={`delete ${organizationName.toLowerCase().replace(/[^a-z0-9]/g, '')}`}
         requireReason
+        requirePassword
         isDangerous
         confirmButtonText="Schedule Permanent Deletion"
         onConfirm={async (reason) => {

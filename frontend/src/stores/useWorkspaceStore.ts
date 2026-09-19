@@ -5,6 +5,7 @@ import {
   setCrossSubdomainItem,
   removeCrossSubdomainItem,
 } from '@/lib/cookieStorage';
+import { useBranchStore } from './useBranchStore';
 
 export interface WorkspaceItem {
   id: string;
@@ -172,6 +173,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           }
         : null;
 
+      if (!isAlreadyActive) {
+        useBranchStore.getState().clearBranches();
+      }
+
       set({
         currentWorkspace: ws,
         currentOrganization: ws,
@@ -221,6 +226,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   clearWorkspace: () => {
     removeCrossSubdomainItem(ACTIVE_WS_STORAGE_KEY);
+    useBranchStore.getState().clearBranches();
     set({
       currentWorkspace: null,
       currentOrganization: null,

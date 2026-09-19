@@ -8,15 +8,22 @@ import {
   CheckCircle2,
   FileText,
   ShieldCheck,
+  Download,
+  Receipt,
+  RotateCcw,
 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { toast } from 'sonner';
 
 export const InvoiceDetailPage: React.FC = () => {
   const { invoiceId } = useParams<{ invoiceId: string }>();
   const navigate = useNavigate();
 
   const [invoice, setInvoice] = useState<any>(null);
+  const [receipt, setReceipt] = useState<any>(null);
+  const [viewMode, setViewMode] = useState<'invoice' | 'receipt'>('invoice');
   const [isLoading, setIsLoading] = useState(true);
+  const [isDownloading, setIsDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -26,16 +33,22 @@ export const InvoiceDetailPage: React.FC = () => {
       setError(null);
       try {
         const res: any = await api.get(`/billing/invoices/${invoiceId}`);
-        if (res?.data) {
-          setInvoice(res.data);
-        } else if (res?.success && res?.invoice) {
-          setInvoice(res.invoice);
-        } else {
-          setInvoice(res);
+        const invData = res?.data || (res?.success && res?.invoice ? res.invoice : res);
+        setInvoice(invData);
+
+        // Also attempt to load linked receipt
+        try {
+          const recRes: any = await api.get(`/billing/invoices/${invoiceId}/receipt`);
+          if (recRes?.data) {
+            setReceipt(recRes.data);
+          }
+        } catch {
+          if (invData?.receipt) {
+            setReceipt(invData.receipt);
+          }
         }
       } catch (err: any) {
         console.warn('Failed to load invoice from API, checking fallback:', err);
-        // Fallback mockup for smooth offline / direct preview if API fails
         setError(err?.message || 'Invoice could not be loaded.');
       } finally {
         setIsLoading(false);
@@ -46,6 +59,23 @@ export const InvoiceDetailPage: React.FC = () => {
 
   const handlePrint = () => {
     window.print();
+  };
+
+  const handleDownloadPdf = async () => {
+    if (!invoiceId) return;
+    setIsDownloading(true);
+    try {
+      if (viewMode === 'receipt') {
+        window.open(`/billing/invoices/${invoiceId}/receipt?format=pdf`, '_blank');
+      } else {
+        window.open(`/billing/invoices/${invoiceId}/download`, '_blank');
+      }
+      toast.success('Document download started.');
+    } catch {
+      toast.error('Failed to initiate PDF download.');
+    } finally {
+      setIsDownloading(false);
+    }
   };
 
   const formattedDate = (timestamp?: number) => {
@@ -90,22 +120,30 @@ export const InvoiceDetailPage: React.FC = () => {
     );
   }
 
-  const invoiceNumber = invoice?.invoiceNumber || (invoiceId?.startsWith('INV-') ? invoiceId : `INV-${(invoiceId || '000001').slice(-6).toUpperCase()}`);
-  const orgName = invoice?.organization?.name || invoice?.organizationName || 'Orviohub Organization';
-  const orgAddress = invoice?.organization?.address || invoice?.organizationAddress || 'Nigeria';
-  const orgPhone = invoice?.organization?.phone || invoice?.organizationPhone || '';
-  const amount = invoice?.amount || 7500;
+  // Authoritative historical snapshot resolution
+  const invoiceNumber = invoice?.invoiceNumber || (invoiceId?.startsWith('ORV-') || invoiceId?.startsWith('INV-') ? invoiceId : `ORV-${new Date().getFullYear()}-000001`);
+  const snapshot = invoice?.billingSnapshot || {};
+  const orgName = snapshot.organizationName || invoice?.organization?.name || invoice?.organizationName || 'Orviohub Organization';
+  const orgAddress = snapshot.organizationAddress || invoice?.organization?.address || invoice?.organizationAddress || 'Nigeria';
+  const billingEmail = snapshot.billingEmail || invoice?.organization?.billingEmail || invoice?.billingEmail || 'billing@orviohub.com';
+  const orgPhone = snapshot.billingPhone || invoice?.organization?.phone || invoice?.organizationPhone || '';
+  const amount = invoice?.totalAmount || invoice?.amount || 7500;
+  const subtotal = invoice?.amountSubtotal || amount;
+  const taxAmount = invoice?.taxAmount || 0;
+  const discountAmount = invoice?.discountAmount || 0;
   const currency = invoice?.currency || 'NGN';
-  const paymentRef = invoice?.paymentReference || invoice?.payment?.reference || 'N/A';
-  const issuedDate = formattedDate(invoice?.issuedAt || invoice?.createdAt);
-  const periodStart = formattedDate(invoice?.periodStart || invoice?.createdAt);
-  const periodEnd = formattedDate(invoice?.periodEnd || (invoice?.createdAt ? invoice.createdAt + 30 * 86_400_000 : Date.now() + 30 * 86_400_000));
-  const items = invoice?.items && invoice.items.length > 0 ? invoice.items : [
+  const paymentRef = invoice?.providerReference || invoice?.paymentReference || invoice?.payment?.reference || 'N/A';
+  const issuedDate = formattedDate(invoice?.issueDate || invoice?.issuedAt || invoice?.createdAt);
+  const periodStart = formattedDate(invoice?.billingPeriodStart || invoice?.periodStart || invoice?.createdAt);
+  const periodEnd = formattedDate(invoice?.billingPeriodEnd || invoice?.periodEnd || (invoice?.createdAt ? invoice.createdAt + 30 * 86_400_000 : Date.now() + 30 * 86_400_000));
+  
+  const rawItems = invoice?.lineItems || invoice?.items;
+  const items = rawItems && rawItems.length > 0 ? rawItems : [
     {
       description: `Orviohub Standard Plan Subscription (${periodStart} – ${periodEnd})`,
       quantity: 1,
-      unitPrice: amount,
-      total: amount,
+      unitPrice: subtotal,
+      total: subtotal,
     },
   ];
 
@@ -123,19 +161,56 @@ export const InvoiceDetailPage: React.FC = () => {
           <span>Back</span>
         </Button>
 
+        {/* Document Switcher Toggle */}
+        <div className="inline-flex rounded-lg bg-white/5 p-0.5 border border-white/10">
+          <button
+            onClick={() => setViewMode('invoice')}
+            className={`px-3 py-1 text-xs font-semibold rounded-md transition cursor-pointer flex items-center gap-1.5 ${
+              viewMode === 'invoice'
+                ? 'bg-[#714b67] text-white shadow'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <FileText className="w-3.5 h-3.5" />
+            <span>Subscription Invoice</span>
+          </button>
+          <button
+            onClick={() => setViewMode('receipt')}
+            className={`px-3 py-1 text-xs font-semibold rounded-md transition cursor-pointer flex items-center gap-1.5 ${
+              viewMode === 'receipt'
+                ? 'bg-[#714b67] text-white shadow'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Receipt className="w-3.5 h-3.5" />
+            <span>Payment Receipt</span>
+          </button>
+        </div>
+
         <div className="flex items-center gap-2">
+          <Button
+            onClick={handleDownloadPdf}
+            disabled={isDownloading}
+            size="sm"
+            variant="outline"
+            className="border-white/10 text-xs text-slate-200 hover:bg-white/5 cursor-pointer"
+          >
+            <Download className="w-3.5 h-3.5 mr-1.5 text-[#FDB02F]" />
+            <span>Download PDF</span>
+          </Button>
+
           <Button
             onClick={handlePrint}
             size="sm"
             className="bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-semibold cursor-pointer shadow-md shadow-[#714b67]/20"
           >
             <Printer className="w-3.5 h-3.5 mr-1.5" />
-            <span>Print / Save as PDF</span>
+            <span>Print</span>
           </Button>
         </div>
       </div>
 
-      {/* Printable Invoice Container */}
+      {/* Printable Invoice / Receipt Container */}
       <div
         id="invoice-document"
         className="max-w-3xl mx-auto bg-[#140e13] border border-white/10 rounded-2xl p-6 sm:p-10 shadow-2xl relative overflow-hidden print:bg-white print:text-black print:border-none print:shadow-none print:p-0 print:m-0 print:max-w-full"
@@ -158,16 +233,16 @@ export const InvoiceDetailPage: React.FC = () => {
 
           <div className="text-left sm:text-right">
             <span className="inline-block text-xs font-mono font-bold tracking-wider px-2.5 py-0.5 rounded bg-[#FDB02F]/10 text-[#FDB02F] border border-[#FDB02F]/30 print:border-amber-600 print:text-amber-800">
-              {invoiceNumber}
+              {viewMode === 'receipt' ? (receipt?.receiptNumber || `REC-${invoiceNumber.replace(/^ORV-/, '')}`) : invoiceNumber}
             </span>
             <div className="mt-2 flex items-center sm:justify-end gap-1.5">
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 print:bg-emerald-100 print:text-emerald-800 print:border-emerald-300">
                 <CheckCircle2 className="w-3 h-3" />
-                <span>PAID</span>
+                <span>{invoice?.status ? String(invoice.status).toUpperCase() : 'PAID'}</span>
               </span>
             </div>
             <p className="text-[11px] text-slate-400 print:text-neutral-600 mt-1">
-              Issued: {issuedDate}
+              {viewMode === 'receipt' ? `Paid: ${formattedDate(receipt?.paidAt || invoice?.paidAt || invoice?.createdAt)}` : `Issued: ${issuedDate}`}
             </p>
           </div>
         </div>
@@ -176,11 +251,14 @@ export const InvoiceDetailPage: React.FC = () => {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 py-6 border-b border-white/10 print:border-neutral-300">
           <div>
             <p className="text-[10px] font-bold text-slate-400 print:text-neutral-500 uppercase tracking-wider mb-1">
-              Billed To
+              {viewMode === 'receipt' ? 'Received From' : 'Billed To (Historical Snapshot)'}
             </p>
             <h3 className="text-sm font-bold text-white print:text-black">{orgName}</h3>
             {orgAddress && (
               <p className="text-xs text-slate-300 print:text-neutral-700 mt-0.5">{orgAddress}</p>
+            )}
+            {billingEmail && (
+              <p className="text-xs text-slate-400 print:text-neutral-600 mt-0.5">{billingEmail}</p>
             )}
             {orgPhone && (
               <p className="text-xs text-slate-400 print:text-neutral-600 mt-0.5">{orgPhone}</p>
@@ -193,14 +271,14 @@ export const InvoiceDetailPage: React.FC = () => {
             </p>
             <p className="text-xs text-slate-300 print:text-neutral-700">
               <span className="text-slate-400 print:text-neutral-500">Method: </span>
-              {invoice?.paymentMethod ? invoice.paymentMethod.replace('_', ' ').toUpperCase() : 'PAYSTACK / DIRECT'}
+              {invoice?.paymentMethod ? invoice.paymentMethod.replace('_', ' ').toUpperCase() : 'PAYSTACK / DIRECT DEBIT'}
             </p>
             <p className="text-xs text-slate-300 print:text-neutral-700 font-mono mt-0.5">
               <span className="text-slate-400 print:text-neutral-500 font-sans">Reference: </span>
               {paymentRef}
             </p>
             <p className="text-xs text-slate-300 print:text-neutral-700 mt-0.5">
-              <span className="text-slate-400 print:text-neutral-500">Period: </span>
+              <span className="text-slate-400 print:text-neutral-500">Billing Period: </span>
               {periodStart} – {periodEnd}
             </p>
           </div>
@@ -213,8 +291,8 @@ export const InvoiceDetailPage: React.FC = () => {
               <tr className="border-b border-white/10 print:border-neutral-300 text-[11px] uppercase tracking-wider text-slate-400 print:text-neutral-600">
                 <th className="pb-2 font-semibold">Description</th>
                 <th className="pb-2 text-center font-semibold">Qty</th>
-                <th className="pb-2 text-right font-semibold">Rate</th>
-                <th className="pb-2 text-right font-semibold">Amount</th>
+                <th className="pb-2 text-right font-semibold">Unit Price</th>
+                <th className="pb-2 text-right font-semibold">Total</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5 print:divide-neutral-200 text-xs">
@@ -240,55 +318,44 @@ export const InvoiceDetailPage: React.FC = () => {
 
         {/* Totals Section */}
         <div className="py-6 flex justify-end">
-          <div className="w-full sm:w-64 space-y-2 text-xs">
+          <div className="w-full sm:w-72 space-y-2 text-xs">
             <div className="flex justify-between text-slate-300 print:text-neutral-700">
               <span>Subtotal</span>
-              <span>₦{Number(amount).toLocaleString('en-NG')}</span>
+              <span>₦{Number(subtotal).toLocaleString('en-NG')}</span>
             </div>
+            {discountAmount > 0 && (
+              <div className="flex justify-between text-emerald-400 print:text-emerald-700">
+                <span>Discount</span>
+                <span>-₦{Number(discountAmount).toLocaleString('en-NG')}</span>
+              </div>
+            )}
             <div className="flex justify-between text-slate-400 print:text-neutral-600">
-              <span>VAT (0% Included)</span>
-              <span>₦0.00</span>
+              <span>Tax / VAT</span>
+              <span>₦{Number(taxAmount).toLocaleString('en-NG')} (Not Configured)</span>
             </div>
-            <div className="pt-2 border-t border-white/10 print:border-neutral-300 flex justify-between text-sm font-bold text-white print:text-black">
+            <div className="pt-2 border-t border-white/10 print:border-neutral-300 flex justify-between font-bold text-sm text-white print:text-black">
               <span>Total Paid ({currency})</span>
-              <span className="text-[#FDB02F] print:text-amber-700 font-mono">
+              <span className="text-[#FDB02F] print:text-black">
                 ₦{Number(amount).toLocaleString('en-NG')}
               </span>
             </div>
           </div>
         </div>
 
-        {/* Footer Notes */}
-        <div className="pt-6 border-t border-white/10 print:border-neutral-300 flex flex-col sm:flex-row justify-between items-center text-[10px] text-slate-400 print:text-neutral-600 gap-4">
-          <div className="flex items-center gap-1.5">
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 print:text-emerald-700" />
-            <span>Official digital invoice issued by Orvio Technologies Nigeria.</span>
+        {/* Footer Disclaimers */}
+        <div className="pt-6 border-t border-white/10 print:border-neutral-300 text-[11px] text-slate-400 print:text-neutral-600 space-y-1">
+          <div className="flex items-center gap-1.5 text-slate-300 print:text-neutral-700 font-medium">
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Official Organization Subscription Document</span>
           </div>
-          <div>Thank you for doing business with Orviohub.</div>
+          <p>
+            This document confirms subscription plan charges for {orgName}. Historical billing snapshots are preserved and immutable.
+          </p>
+          <p>
+            For any billing inquiries or corrections, please contact support@orviohub.com quoting reference <span className="font-mono">{paymentRef}</span>.
+          </p>
         </div>
       </div>
-
-      {/* Print Specific CSS */}
-      <style>{`
-        @media print {
-          body {
-            background-color: #ffffff !important;
-            color: #000000 !important;
-          }
-          nav, header, footer, .print\\:hidden {
-            display: none !important;
-          }
-          #invoice-document {
-            background: #ffffff !important;
-            color: #000000 !important;
-            border: none !important;
-            box-shadow: none !important;
-            width: 100% !important;
-            max-width: 100% !important;
-            padding: 0 !important;
-          }
-        }
-      `}</style>
     </div>
   );
 };

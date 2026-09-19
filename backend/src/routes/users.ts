@@ -11,22 +11,22 @@ import { toPublicUser } from '../utils/userSerializer.js';
 import { parseUserAgent } from '../utils/userAgentParser.js';
 
 const updateProfileSchema = z.object({
-  name: z.string().min(1).optional(),
-  firstName: z.string().min(1, 'First name is required').optional(),
-  lastName: z.string().min(1, 'Last name is required').optional(),
-  displayName: z.string().optional(),
-  preferredName: z.string().optional(),
-  jobTitle: z.string().optional(),
-  department: z.string().optional(),
-  bio: z.string().max(500, 'Bio must be under 500 characters').optional(),
+  name: z.string().trim().optional(),
+  firstName: z.string().trim().min(1, 'First name is required').max(100, 'First name must be under 100 characters').optional(),
+  lastName: z.string().trim().min(1, 'Last name is required').max(100, 'Last name must be under 100 characters').optional(),
+  displayName: z.string().trim().max(100, 'Display name must be under 100 characters').optional().nullable(),
+  preferredName: z.string().trim().optional().nullable(),
+  jobTitle: z.string().trim().max(100, 'Job title must be under 100 characters').optional().nullable(),
+  department: z.string().trim().max(100, 'Department must be under 100 characters').optional().nullable(),
+  bio: z.string().trim().max(500, 'Bio must be under 500 characters').optional().nullable(),
   avatar: z.string().optional().nullable(),
   avatarUrl: z.string().optional().nullable(),
-  phone: z.string().optional(),
-  country: z.string().optional(),
-  state: z.string().optional(),
-  city: z.string().optional(),
-  timezone: z.string().optional(),
-  locale: z.string().optional(),
+  phone: z.string().trim().optional().nullable(),
+  country: z.string().trim().optional().nullable(),
+  state: z.string().trim().optional().nullable(),
+  city: z.string().trim().optional().nullable(),
+  timezone: z.string().trim().optional().nullable(),
+  locale: z.string().trim().optional().nullable(),
 });
 
 const updateContactSchema = z.object({
@@ -86,6 +86,7 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
           consents: profileData?.consents || [],
           activeDeletionRequest: profileData?.activeDeletionRequest || null,
         },
+        requestId: request.id,
       });
     }
   );
@@ -215,6 +216,38 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
+      // 1. Regional validation checks
+      const rawBody = (request.body && typeof request.body === 'object') ? (request.body as Record<string, any>) : {};
+
+      if (rawBody.country !== undefined && rawBody.country !== null && String(rawBody.country).trim() !== '') {
+        const c = String(rawBody.country).trim().toUpperCase();
+        if (c !== 'NG' && c !== 'NIGERIA') {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.PROFILE_REGIONAL_VALUE_NOT_SUPPORTED,
+              message: 'Only Nigeria and West Africa Time are currently supported.',
+            },
+            requestId: request.id,
+          });
+        }
+      }
+
+      if (rawBody.timezone !== undefined && rawBody.timezone !== null && String(rawBody.timezone).trim() !== '') {
+        const tz = String(rawBody.timezone).trim();
+        if (tz !== 'Africa/Lagos' && tz !== 'West Africa Time (WAT)' && tz !== 'WAT') {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.PROFILE_REGIONAL_VALUE_NOT_SUPPORTED,
+              message: 'Only Nigeria and West Africa Time are currently supported.',
+            },
+            requestId: request.id,
+          });
+        }
+      }
+
+      // 2. Schema validation
       const parsed = updateProfileSchema.safeParse(request.body);
       if (!parsed.success) {
         const fields: Record<string, string> = {};
@@ -228,22 +261,164 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
             message: 'Validation failed for profile updates.',
             fields,
           },
+          requestId: request.id,
         });
       }
 
-      const updatedUser = await dataService.updateProfile(request.user.id, parsed.data);
-      await dataService.logAudit({
-        actorUserId: request.user.id,
-        eventType: AUDIT_EVENTS.USER_PROFILE_UPDATED,
+      // 3. Nigerian phone validation and normalization
+      let normalizedPhone: string | null | undefined = undefined;
+      let phoneNormalizedDigits: string | undefined = undefined;
+      if (parsed.data.phone !== undefined) {
+        if (parsed.data.phone === null || parsed.data.phone.trim() === '') {
+          normalizedPhone = null;
+          phoneNormalizedDigits = '';
+        } else {
+          const phoneRes = validateNigerianPhone(parsed.data.phone);
+          if (!phoneRes.valid || !phoneRes.normalized) {
+            return reply.status(400).send({
+              success: false,
+              error: {
+                code: ERROR_CODES.VALIDATION_ERROR,
+                message: phoneRes.error || 'Invalid Nigerian phone number format.',
+                fields: { phone: phoneRes.error || 'Invalid Nigerian phone number.' },
+              },
+              requestId: request.id,
+            });
+          }
+          normalizedPhone = `+${phoneRes.normalized}`;
+          phoneNormalizedDigits = phoneRes.normalized;
+        }
+      }
+
+      // 4. Fetch current user to compute exact diff for audit logging
+      const currentUser = await dataService.getUserById(request.user.id);
+      if (!currentUser) {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.USER_NOT_FOUND,
+            message: 'User account not found.',
+          },
+          requestId: request.id,
+        });
+      }
+
+      // 5. Compute actual changed fields
+      const changedFields: string[] = [];
+      const specificAuditEvents: string[] = [];
+
+      let nameChanged = false;
+      if (parsed.data.firstName !== undefined && parsed.data.firstName !== (currentUser.firstName || '')) {
+        changedFields.push('firstName');
+        nameChanged = true;
+      }
+      if (parsed.data.lastName !== undefined && parsed.data.lastName !== (currentUser.lastName || '')) {
+        changedFields.push('lastName');
+        nameChanged = true;
+      }
+      if (nameChanged) {
+        specificAuditEvents.push(AUDIT_EVENTS.PROFILE_NAME_UPDATED);
+      }
+
+      if (parsed.data.displayName !== undefined && (parsed.data.displayName || '') !== (currentUser.displayName || '')) {
+        changedFields.push('displayName');
+        specificAuditEvents.push(AUDIT_EVENTS.PROFILE_DISPLAY_NAME_UPDATED);
+      }
+
+      if (parsed.data.jobTitle !== undefined && (parsed.data.jobTitle || '') !== (currentUser.jobTitle || '')) {
+        changedFields.push('jobTitle');
+        specificAuditEvents.push(AUDIT_EVENTS.PROFILE_JOB_TITLE_UPDATED);
+      }
+
+      if (parsed.data.department !== undefined && (parsed.data.department || '') !== (currentUser.department || '')) {
+        changedFields.push('department');
+        specificAuditEvents.push(AUDIT_EVENTS.PROFILE_DEPARTMENT_UPDATED);
+      }
+
+      if (normalizedPhone !== undefined) {
+        const currentPhone = currentUser.phone || null;
+        if (normalizedPhone === null) {
+          if (currentPhone) {
+            changedFields.push('phone');
+            specificAuditEvents.push(AUDIT_EVENTS.PROFILE_PHONE_REMOVED);
+          }
+        } else if (!currentPhone) {
+          changedFields.push('phone');
+          specificAuditEvents.push(AUDIT_EVENTS.PROFILE_PHONE_ADDED);
+        } else if (currentPhone !== normalizedPhone && currentUser.phoneNormalized !== phoneNormalizedDigits) {
+          changedFields.push('phone');
+          specificAuditEvents.push(AUDIT_EVENTS.PROFILE_PHONE_UPDATED);
+        }
+      }
+
+      const targetAvatar = parsed.data.avatarUrl ?? parsed.data.avatar;
+      if (targetAvatar !== undefined) {
+        const currentAvatar = currentUser.avatarUrl || currentUser.avatar || null;
+        if (!targetAvatar && currentAvatar) {
+          changedFields.push('avatar');
+          specificAuditEvents.push(AUDIT_EVENTS.PROFILE_AVATAR_REMOVED);
+        } else if (targetAvatar && targetAvatar !== currentAvatar) {
+          changedFields.push('avatar');
+          specificAuditEvents.push(AUDIT_EVENTS.PROFILE_AVATAR_UPLOADED);
+        }
+      }
+
+      // 6. Handle no-op update: if nothing changed, do not emit audit events
+      if (changedFields.length === 0) {
+        return reply.send({
+          success: true,
+          data: { user: toPublicUser(currentUser) },
+          message: 'Personal profile is already up to date.',
+          requestId: request.id,
+        });
+      }
+
+      // 7. Apply updates
+      const updateData: any = {
+        ...parsed.data,
+        country: 'NG',
+        timezone: 'Africa/Lagos',
+      };
+      if (normalizedPhone !== undefined) {
+        updateData.phone = normalizedPhone === null ? '' : normalizedPhone;
+        updateData.phoneNormalized = phoneNormalizedDigits || '';
+      }
+
+      const updatedUser = await dataService.updateProfile(request.user.id, updateData);
+
+      // 8. Log audit events for actual changes only
+      const auditMeta = {
+        userId: request.user.id,
+        changedFields,
+        requestId: request.id,
         ipAddress: request.ip,
         userAgent: request.headers['user-agent'],
-        metadata: { updatedFields: Object.keys(parsed.data) },
+        createdAt: Date.now(),
+      };
+
+      for (const eventType of specificAuditEvents) {
+        await dataService.logAudit({
+          actorUserId: request.user.id,
+          eventType,
+          ipAddress: request.ip,
+          userAgent: request.headers['user-agent'],
+          metadata: auditMeta,
+        });
+      }
+
+      await dataService.logAudit({
+        actorUserId: request.user.id,
+        eventType: AUDIT_EVENTS.PROFILE_UPDATED,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+        metadata: auditMeta,
       });
 
       return reply.send({
         success: true,
         data: { user: toPublicUser(updatedUser) },
         message: 'Personal profile updated successfully.',
+        requestId: request.id,
       });
     }
   );

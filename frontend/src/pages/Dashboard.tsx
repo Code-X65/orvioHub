@@ -236,14 +236,34 @@ export const Dashboard: React.FC = () => {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-black text-slate-100 flex flex-col selection:bg-[#714b67] selection:text-white">
+      <div className="min-h-screen bg-black text-slate-100 flex flex-col selection:bg-[#714b67] selection:text-white animate-pulse">
         <Header />
-        <div className="flex-1 flex flex-col items-center justify-center space-y-4 py-20">
-          <Spinner size="lg" className="text-[#714b67]" />
-          <p className="text-xs text-slate-400 font-medium tracking-wide">
-            Loading your workspaces...
-          </p>
-        </div>
+        <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+          <div className="space-y-3 pb-6 border-b border-white/5">
+            <div className="w-24 h-4 rounded-xs bg-white/10" />
+            <div className="w-64 h-8 rounded-xs bg-white/10" />
+            <div className="w-96 h-4 rounded-xs bg-white/5" />
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {[1, 2, 3, 4, 5, 6].map((i) => (
+              <div key={i} className="p-5 rounded-2xl border border-white/5 bg-[#120b10]/60 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="w-10 h-10 rounded-xl bg-white/10" />
+                  <div className="w-16 h-5 rounded-full bg-white/5" />
+                </div>
+                <div className="space-y-2">
+                  <div className="w-36 h-4 rounded-xs bg-white/10" />
+                  <div className="w-24 h-3 rounded-xs bg-white/5" />
+                </div>
+                <div className="pt-3 border-t border-white/5 flex justify-between items-center">
+                  <div className="w-20 h-3 rounded-xs bg-white/5" />
+                  <div className="w-16 h-7 rounded-lg bg-white/10" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </main>
       </div>
     );
   }

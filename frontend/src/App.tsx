@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import { useHost } from "./host/useHost";
 import { useSessionTracker } from "./hooks/useSessionTracker";
+import { useRealtimeNotifications } from "./hooks/useRealtimeNotifications";
 import { ErrorBoundary } from "./components/common/ErrorBoundary";
 
 const MarketingApp = lazy(() => import("./surfaces/marketing/App"));
@@ -11,16 +12,9 @@ const InventoryApp = lazy(() => import("./surfaces/inventory/App"));
 const TaskManagementApp = lazy(() => import("./surfaces/taskmanagement/App"));
 const FallbackRoutes = lazy(() => import("./FallbackRoutes"));
 
-function SurfaceFallback() {
-  return (
-    <div className="min-h-screen bg-black flex items-center justify-center">
-      <div className="w-6 h-6 border-2 border-[#714b67] border-t-transparent rounded-full animate-spin" />
-    </div>
-  );
-}
-
 export function App() {
   useSessionTracker();
+  useRealtimeNotifications();
   const host = useHost();
 
   const renderSurface = () => {
@@ -44,7 +38,7 @@ export function App() {
 
   return (
     <ErrorBoundary>
-      <Suspense fallback={<SurfaceFallback />}>
+      <Suspense fallback={null}>
         {renderSurface()}
       </Suspense>
     </ErrorBoundary>

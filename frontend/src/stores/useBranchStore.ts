@@ -95,6 +95,7 @@ interface BranchState {
 
   setActiveBranch: (branch: Branch | null) => void;
   loadBranches: (workspaceOrOrgId: string, productKey?: string, forceReload?: boolean) => Promise<Branch[]>;
+  fetchBranches: (workspaceOrOrgId?: string, productKey?: string, forceReload?: boolean) => Promise<Branch[]>;
   createBranch: (data: CreateBranchInput) => Promise<Branch>;
   updateBranch: (branchId: string, data: UpdateBranchInput) => Promise<Branch>;
   deactivateBranch: (branchId: string, orgId?: string) => Promise<void>;
@@ -167,8 +168,13 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           list = wsRes.branches || wsRes.data?.branches || [];
         }
 
+        // Filter active branches to exclude suspended/archived
+        const activeOnly = list.filter(
+          (b) => b.status !== 'archived' && b.status !== 'suspended' && b.status !== 'deleted'
+        );
+
         // Sort: primary branch first, then alphabetically
-        const sorted = [...list].sort((a, b) => {
+        const sorted = [...activeOnly].sort((a, b) => {
           if (a.isPrimary && !b.isPrimary) return -1;
           if (!a.isPrimary && b.isPrimary) return 1;
           return a.name.localeCompare(b.name);
@@ -196,6 +202,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           if (branchId) {
             setCrossSubdomainItem('orvio_active_branch_id', branchId);
           }
+        } else {
+          removeCrossSubdomainItem('orvio_active_branch_id');
         }
 
         lastFetchedBranches.set(cacheKey, Date.now());
@@ -211,7 +219,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
         return sorted;
       } catch (err: any) {
-        set({ error: err.message || 'Failed to load branches', isLoading: false });
+        removeCrossSubdomainItem('orvio_active_branch_id');
+        set({ activeBranch: null, branches: [], error: err.message || 'Failed to load branches', isLoading: false });
         return [];
       } finally {
         inFlightBranchFetches.delete(cacheKey);
@@ -220,6 +229,12 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
     inFlightBranchFetches.set(cacheKey, fetchPromise);
     return fetchPromise;
+  },
+
+  fetchBranches: async (workspaceOrOrgId?: string, productKey?: string, forceReload = false) => {
+    const id = workspaceOrOrgId || getCrossSubdomainItem('orvio_active_workspace_id') || '';
+    if (!id) return get().branches;
+    return get().loadBranches(id, productKey, forceReload);
   },
 
   createBranch: async (data: CreateBranchInput) => {

@@ -178,6 +178,15 @@ export const invitationRoutes: FastifyPluginAsync = async (fastify) => {
             },
           });
         }
+        if (err.message?.includes('PLAN_MEMBER_LIMIT_REACHED') || err.code === 'PLAN_MEMBER_LIMIT_REACHED') {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: 'PLAN_MEMBER_LIMIT_REACHED',
+              message: err.message.replace('PLAN_MEMBER_LIMIT_REACHED:', '').trim(),
+            },
+          });
+        }
         throw err;
       }
     }
@@ -290,6 +299,15 @@ export const invitationRoutes: FastifyPluginAsync = async (fastify) => {
             error: {
               code: ERROR_CODES.INVITATION_EMAIL_MISMATCH,
               message: err.message,
+            },
+          });
+        }
+        if (err.code === 'PLAN_MEMBER_LIMIT_REACHED' || err.message?.includes('PLAN_MEMBER_LIMIT_REACHED')) {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: 'PLAN_MEMBER_LIMIT_REACHED',
+              message: err.message.replace('PLAN_MEMBER_LIMIT_REACHED:', '').trim(),
             },
           });
         }

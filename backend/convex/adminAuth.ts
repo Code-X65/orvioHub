@@ -131,7 +131,7 @@ export const createAdmin = mutation({
       email: normalizedEmail,
       passwordHash,
       name: args.name.trim(),
-      role,
+      role: role as any,
       isActive: true,
       failedLoginAttempts: 0,
       createdAt: now,
@@ -686,4 +686,109 @@ export const verifyAdminPassword = mutation({
     return { verified: true, adminId: admin._id };
   },
 });
+
+/**
+ * issueHighRiskStepUpToken
+ * Issues a single-use token with 5-minute TTL after password verification.
+ */
+export const issueHighRiskStepUpToken = mutation({
+  args: {
+    sessionToken: v.string(),
+    password: v.string(),
+    targetAction: v.string(), // "delete_organization" | "transfer_ownership" | "adjust_subscription" | "limit_override"
+    targetId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const session = await ctx.db
+      .query("adminSessions")
+      .withIndex("by_token", (q: any) => q.eq("sessionToken", args.sessionToken))
+      .first();
+
+    if (!session || session.expiresAt < now) {
+      throw new Error("Invalid or expired session.");
+    }
+
+    const admin = await ctx.db.get(session.adminId);
+    if (!admin || !admin.isActive) {
+      throw new Error("Admin account is inactive or unauthorized.");
+    }
+
+    const isMatch = bcrypt.compareSync(args.password, admin.passwordHash);
+    if (!isMatch) {
+      await logAudit(ctx, {
+        adminId: admin._id,
+        action: "HIGH_RISK_TOKEN_REQUEST_REJECTED",
+        resourceType: args.targetAction,
+        resourceId: args.targetId,
+      });
+      throw new Error("Invalid administrator password.");
+    }
+
+    const token = generateSecureToken();
+    const expiresAt = now + 5 * 60 * 1000; // 5 minutes
+
+    await ctx.db.insert("adminStepUpTokens", {
+      adminId: admin._id,
+      tokenHash: token,
+      targetAction: args.targetAction,
+      targetId: args.targetId,
+      expiresAt,
+      createdAt: now,
+    });
+
+    await logAudit(ctx, {
+      adminId: admin._id,
+      action: "HIGH_RISK_TOKEN_ISSUED",
+      resourceType: args.targetAction,
+      resourceId: args.targetId,
+      details: { expiresAt },
+    });
+
+    return {
+      stepUpToken: token,
+      expiresAt,
+    };
+  },
+});
+
+/**
+ * Helper to verify and immediately consume a single-use step-up token
+ */
+export async function verifyAndConsumeStepUpToken(
+  ctx: any,
+  adminId: any,
+  token: string,
+  targetAction: string,
+  targetId: string
+) {
+  const now = Date.now();
+  const tokenDoc = await ctx.db
+    .query("adminStepUpTokens")
+    .withIndex("by_token_hash", (q: any) => q.eq("tokenHash", token))
+    .first();
+
+  if (!tokenDoc) {
+    throw new Error("STEP_UP_TOKEN_REQUIRED: A valid step-up verification token is required for this high-risk action.");
+  }
+
+  if (tokenDoc.adminId !== adminId) {
+    throw new Error("STEP_UP_TOKEN_INVALID: Token does not belong to the authenticated administrator.");
+  }
+
+  if (tokenDoc.expiresAt < now) {
+    await ctx.db.delete(tokenDoc._id);
+    throw new Error("STEP_UP_TOKEN_EXPIRED: Step-up verification token has expired. Please re-authenticate.");
+  }
+
+  if (tokenDoc.targetAction !== targetAction || tokenDoc.targetId !== targetId) {
+    await ctx.db.delete(tokenDoc._id);
+    throw new Error("STEP_UP_TOKEN_MISMATCH: Step-up token was issued for a different action or target entity.");
+  }
+
+  // Single-use: immediately delete
+  await ctx.db.delete(tokenDoc._id);
+  return true;
+}
+
 

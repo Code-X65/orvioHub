@@ -114,6 +114,15 @@ export const seedApplications = mutation({
         isActivatable: false,
         enabled: false,
       },
+      {
+        key: "pos",
+        name: "Point of Sale",
+        description: "POS Retail & Register",
+        status: "coming_soon" as const,
+        isVisibleToUsers: false,
+        isActivatable: false,
+        enabled: false,
+      },
     ];
 
     const results = [];

@@ -1,5 +1,6 @@
 import { mutation, query } from "./_generated/server.js";
 import { v } from "convex/values";
+import { verifyAndConsumeStepUpToken } from "./adminAuth.js";
 
 // Helper to authenticate admin
 async function verifyAdminSession(ctx: any, sessionToken?: string) {
@@ -353,7 +354,7 @@ export const getOrganizationDetails = query({
 
     const branchMap = new Map<string, any>();
     for (const b of [...branchesByWs, ...branchesByOrg]) {
-      if (b.status !== "deleted" && b.status !== "archived") {
+      if (b.status !== "deleted") {
         branchMap.set(String(b._id), b);
       }
     }
@@ -771,6 +772,7 @@ export const deleteOrganization = mutation({
     cancelSubscriptions: v.optional(v.boolean()),
     adminForceDelete: v.optional(v.boolean()),
     confirmationPhrase: v.optional(v.string()),
+    stepUpToken: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const { admin } = await verifyAdminSession(ctx, args.sessionToken);
@@ -779,8 +781,18 @@ export const deleteOrganization = mutation({
     if (!ws) throw new Error("Organization not found.");
     const targetWorkspaceId = ws._id;
 
-    // High Risk Verification: If force delete, require confirmation phrase match
+    // High Risk Verification: If force delete, verify step-up token and confirmation phrase
     if (args.adminForceDelete) {
+      if (args.stepUpToken) {
+        await verifyAndConsumeStepUpToken(
+          ctx,
+          admin._id,
+          args.stepUpToken,
+          "delete_organization",
+          String(targetWorkspaceId)
+        );
+      }
+
       const expectedPhrase = ws.slug || "DELETE";
       if (!args.confirmationPhrase || (args.confirmationPhrase !== expectedPhrase && args.confirmationPhrase !== "DELETE")) {
         throw new Error(
@@ -790,6 +802,7 @@ export const deleteOrganization = mutation({
     }
 
     const now = Date.now();
+
 
 
     // 1. Check subscriptions
@@ -1336,6 +1349,7 @@ export const adminTransferOrganizationOwnership = mutation({
     reason: v.string(),
     ticketNumber: v.optional(v.string()),
     sessionToken: v.optional(v.string()),
+    stepUpToken: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const { admin } = await verifyAdminSession(ctx, args.sessionToken);
@@ -1343,8 +1357,19 @@ export const adminTransferOrganizationOwnership = mutation({
     const ws = await resolveWorkspace(ctx, args.workspaceId);
     if (!ws) throw new Error("Workspace not found");
 
+    if (args.stepUpToken) {
+      await verifyAndConsumeStepUpToken(
+        ctx,
+        admin._id,
+        args.stepUpToken,
+        "transfer_ownership",
+        String(ws._id)
+      );
+    }
+
     const newOwner: any = await ctx.db.get(args.newOwnerUserId as any);
     if (!newOwner) throw new Error("Target user does not exist");
+
 
     const now = Date.now();
     const previousOwnerId = ws.ownerId;
@@ -1408,4 +1433,46 @@ export const adminTransferOrganizationOwnership = mutation({
     return { success: true };
   },
 });
+
+/**
+ * toggleBranchStatus
+ * Suspend, activate, or archive a specific branch location directly
+ */
+export const toggleBranchStatus = mutation({
+  args: {
+    sessionToken: v.string(),
+    branchId: v.id("branches"),
+    targetStatus: v.union(v.literal("active"), v.literal("suspended"), v.literal("archived")),
+    reason: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+
+    const branch = await ctx.db.get(args.branchId);
+    if (!branch) {
+      throw new Error("Branch location not found.");
+    }
+
+    const previousStatus = branch.status || "active";
+    const now = Date.now();
+
+    await ctx.db.patch(args.branchId, {
+      status: args.targetStatus,
+      isActive: args.targetStatus === "active",
+      updatedAt: now,
+    });
+
+    await logAudit(ctx, admin._id, "admin.branch_status_toggled", String(args.branchId), {
+      branchName: branch.name,
+      previousStatus,
+      newStatus: args.targetStatus,
+      workspaceId: branch.workspaceId,
+      organizationId: branch.organizationId,
+      reason: args.reason || "Status toggled by administrator",
+    });
+
+    return { success: true, branchId: args.branchId, status: args.targetStatus };
+  },
+});
+
 

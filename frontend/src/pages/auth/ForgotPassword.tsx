@@ -21,6 +21,12 @@ type ForgotPasswordFormData = z.infer<typeof forgotPasswordSchema>;
 export const ForgotPassword: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [submittedEmail, setSubmittedEmail] = useState<string | null>(null);
+  const [idempotencyKey] = useState(() => {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+      return crypto.randomUUID();
+    }
+    return `idemp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  });
 
   const {
     register,
@@ -33,7 +39,11 @@ export const ForgotPassword: React.FC = () => {
   const onSubmit = async (data: ForgotPasswordFormData) => {
     setIsLoading(true);
     try {
-      await api.post('/auth/forgot-password', { email: data.email });
+      await api.post(
+        '/auth/forgot-password',
+        { email: data.email },
+        { headers: { 'Idempotency-Key': idempotencyKey } }
+      );
       setSubmittedEmail(data.email);
       toast.success('Password reset instructions sent!');
     } catch (error: any) {

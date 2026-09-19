@@ -191,6 +191,7 @@ async function fetcher<T>(
         endpoint.includes("/auth/logout") ||
         endpoint.includes("/auth/me") ||
         endpoint.includes("/auth/verify-email") ||
+        endpoint.includes("/auth/change-pending-email") ||
         endpoint.includes("/invitations/");
 
       if (response.status === 401 && !isRetry && !isAuthProbeEndpoint) {

@@ -1,5 +1,7 @@
 import { mutation, query } from "./_generated/server.js";
 import { v } from "convex/values";
+import { checkHasFinancialRecords } from "./organizations.js";
+import { resolveOrganization } from "./applications.js";
 
 export const createWorkspace = mutation({
   args: {
@@ -893,7 +895,7 @@ export const getDefaultWorkspace = query({
 
 export const updateWorkspace = mutation({
   args: {
-    workspaceId: v.id("workspaces"),
+    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
     name: v.optional(v.string()),
     type: v.optional(v.string()),
     country: v.optional(v.string()),
@@ -908,8 +910,23 @@ export const updateWorkspace = mutation({
     settings: v.optional(v.any()),
   },
   handler: async (ctx, args) => {
-    const workspace = await ctx.db.get(args.workspaceId);
+    let wsId = ctx.db.normalizeId("workspaces", args.workspaceId);
+    if (!wsId) {
+      const resolved = await resolveOrganization(ctx, args.workspaceId);
+      if (resolved.workspaceId) wsId = resolved.workspaceId;
+    }
+    if (!wsId) throw new Error("WORKSPACE_NOT_FOUND");
+    const workspace = await ctx.db.get(wsId);
     if (!workspace) throw new Error("WORKSPACE_NOT_FOUND");
+
+    if (args.currency && args.currency !== workspace.currency) {
+      const hasFinance = await checkHasFinancialRecords(ctx, workspace.organizationId || wsId);
+      if (hasFinance) {
+        throw new Error(
+          "CURRENCY_LOCKED: Workspace currency cannot be modified because financial or sales records already exist."
+        );
+      }
+    }
 
     const patch: any = { updatedAt: Date.now() };
     if (args.name !== undefined) patch.name = args.name;
@@ -930,24 +947,32 @@ export const updateWorkspace = mutation({
       };
     }
 
-    await ctx.db.patch(args.workspaceId, patch);
+    await ctx.db.patch(wsId, patch);
     return { success: true };
   },
 });
 
 export const activateWorkspaceProduct = mutation({
   args: {
-    workspaceId: v.id("workspaces"),
+    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
     productKey: v.string(),
     planId: v.optional(v.string()),
-    userId: v.id("users"),
+    userId: v.union(v.id("users"), v.string()),
   },
   handler: async (ctx, args) => {
+    let wsId = ctx.db.normalizeId("workspaces", args.workspaceId);
+    if (!wsId) {
+      const resolved = await resolveOrganization(ctx, args.workspaceId);
+      if (resolved.workspaceId) wsId = resolved.workspaceId;
+    }
+    if (!wsId) throw new Error("WORKSPACE_NOT_FOUND");
+
+    const uId = ctx.db.normalizeId("users", args.userId) || (args.userId as any);
     const now = Date.now();
     const existing = await ctx.db
       .query("workspaceProducts")
       .withIndex("by_workspace_product", (q) =>
-        q.eq("workspaceId", args.workspaceId).eq("productKey", args.productKey)
+        q.eq("workspaceId", wsId!).eq("productKey", args.productKey)
       )
       .first();
 
@@ -960,13 +985,13 @@ export const activateWorkspaceProduct = mutation({
     }
 
     const entitlementId = await ctx.db.insert("workspaceProducts", {
-      workspaceId: args.workspaceId,
+      workspaceId: wsId,
       productKey: args.productKey,
       status: "active",
       planId: args.planId || "standard",
       trialStartedAt: now,
       trialEndsAt: now + 30 * 86_400_000,
-      activatedBy: args.userId,
+      activatedBy: uId,
       activatedAt: now,
     });
 
@@ -974,15 +999,15 @@ export const activateWorkspaceProduct = mutation({
     const existingPm = await ctx.db
       .query("productMemberships")
       .withIndex("by_workspace_user", (q) =>
-        q.eq("workspaceId", args.workspaceId).eq("userId", args.userId)
+        q.eq("workspaceId", wsId!).eq("userId", uId)
       )
       .filter((q) => q.eq(q.field("productKey"), args.productKey))
       .first();
 
     if (!existingPm) {
       await ctx.db.insert("productMemberships", {
-        workspaceId: args.workspaceId,
-        userId: args.userId,
+        workspaceId: wsId,
+        userId: uId,
         productKey: args.productKey,
         role: "owner",
         permissions: ["*"],
@@ -994,8 +1019,8 @@ export const activateWorkspaceProduct = mutation({
 
     // Audit log
     await ctx.db.insert("workspaceAuditLogs", {
-      workspaceId: args.workspaceId,
-      actorUserId: args.userId,
+      workspaceId: wsId,
+      actorUserId: uId,
       eventType: "workspace.product_activated",
       entityType: "product",
       entityId: args.productKey,
@@ -1009,66 +1034,208 @@ export const activateWorkspaceProduct = mutation({
 });
 
 export const getWorkspaceProducts = query({
-  args: { workspaceId: v.id("workspaces") },
+  args: { workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()) },
   handler: async (ctx, args) => {
+    let wsId = ctx.db.normalizeId("workspaces", args.workspaceId);
+    if (!wsId) {
+      try {
+        const resolved = await resolveOrganization(ctx, args.workspaceId);
+        if (resolved.workspaceId) wsId = resolved.workspaceId;
+      } catch {}
+    }
+    if (!wsId) {
+      return [];
+    }
     return await ctx.db
       .query("workspaceProducts")
-      .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", wsId!))
       .collect();
   },
 });
 
 export const getWorkspaceMembership = query({
   args: {
-    workspaceId: v.id("workspaces"),
-    userId: v.id("users"),
+    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
+    userId: v.union(v.id("users"), v.string()),
   },
   handler: async (ctx, args) => {
-    return await ctx.db
-      .query("workspaceMemberships")
-      .withIndex("by_workspace_user", (q) =>
-        q.eq("workspaceId", args.workspaceId).eq("userId", args.userId)
-      )
-      .first();
+    let wsId = ctx.db.normalizeId("workspaces", args.workspaceId);
+    let uId = ctx.db.normalizeId("users", args.userId);
+    let orgId = ctx.db.normalizeId("organizations", args.workspaceId);
+    let orgDoc: any = null;
+    let wsDoc: any = null;
+
+    try {
+      const resolved = await resolveOrganization(ctx, args.workspaceId);
+      if (resolved.workspaceId) wsId = resolved.workspaceId;
+      if (resolved.orgId) orgId = resolved.orgId;
+      if (resolved.org) orgDoc = resolved.org;
+      if (resolved.workspace) wsDoc = resolved.workspace;
+    } catch {}
+
+    if (wsId && uId) {
+      const mem = await ctx.db
+        .query("workspaceMemberships")
+        .withIndex("by_workspace_user", (q) =>
+          q.eq("workspaceId", wsId!).eq("userId", uId!)
+        )
+        .first();
+      if (mem) return mem;
+    }
+
+    // Check organization membership
+    if (orgId && uId) {
+      const orgMem = await ctx.db
+        .query("organizationMemberships")
+        .withIndex("by_org_and_user", (q: any) =>
+          q.eq("organizationId", orgId!).eq("userId", uId!)
+        )
+        .first();
+      if (orgMem) {
+        return {
+          _id: orgMem._id,
+          workspaceId: wsId || args.workspaceId,
+          userId: uId,
+          role: orgMem.role || "member",
+          status: orgMem.status || "active",
+          invitedAt: orgMem.invitedAt,
+          joinedAt: orgMem.joinedAt,
+        };
+      }
+    }
+
+    // Check direct owner
+    if (!orgDoc && orgId) {
+      try {
+        orgDoc = await ctx.db.get(orgId);
+      } catch {}
+    }
+    if (!wsDoc && wsId) {
+      try {
+        wsDoc = await ctx.db.get(wsId);
+      } catch {}
+    }
+
+    if (
+      (orgDoc && (String(orgDoc.ownerId) === String(args.userId) || (uId && String(orgDoc.ownerId) === String(uId)))) ||
+      (wsDoc && (String(wsDoc.ownerId) === String(args.userId) || (uId && String(wsDoc.ownerId) === String(uId))))
+    ) {
+      return {
+        _id: "synthetic_owner_membership",
+        workspaceId: wsId || args.workspaceId,
+        userId: uId || args.userId,
+        role: "owner",
+        status: "active",
+        joinedAt: Date.now(),
+      };
+    }
+
+    return null;
   },
 });
 
 export const getProductMembership = query({
   args: {
-    workspaceId: v.id("workspaces"),
-    userId: v.id("users"),
+    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
+    userId: v.union(v.id("users"), v.string()),
     productKey: v.string(),
   },
   handler: async (ctx, args) => {
-    return await ctx.db
-      .query("productMemberships")
-      .withIndex("by_workspace_user", (q) =>
-        q.eq("workspaceId", args.workspaceId).eq("userId", args.userId)
-      )
-      .filter((q) => q.eq(q.field("productKey"), args.productKey))
-      .first();
+    let wsId = ctx.db.normalizeId("workspaces", args.workspaceId);
+    let uId = ctx.db.normalizeId("users", args.userId);
+    let orgId = ctx.db.normalizeId("organizations", args.workspaceId);
+    let orgDoc: any = null;
+    let wsDoc: any = null;
+
+    try {
+      const resolved = await resolveOrganization(ctx, args.workspaceId);
+      if (resolved.workspaceId) wsId = resolved.workspaceId;
+      if (resolved.orgId) orgId = resolved.orgId;
+      if (resolved.org) orgDoc = resolved.org;
+      if (resolved.workspace) wsDoc = resolved.workspace;
+    } catch {}
+
+    if (wsId && uId) {
+      const pm = await ctx.db
+        .query("productMemberships")
+        .withIndex("by_workspace_user", (q) =>
+          q.eq("workspaceId", wsId!).eq("userId", uId!)
+        )
+        .filter((q) => q.eq(q.field("productKey"), args.productKey))
+        .first();
+      if (pm) return pm;
+    }
+
+    // Check direct owner or org owner
+    if (!orgDoc && orgId) {
+      try {
+        orgDoc = await ctx.db.get(orgId);
+      } catch {}
+    }
+    if (!wsDoc && wsId) {
+      try {
+        wsDoc = await ctx.db.get(wsId);
+      } catch {}
+    }
+
+    if (
+      (orgDoc && (String(orgDoc.ownerId) === String(args.userId) || (uId && String(orgDoc.ownerId) === String(uId)))) ||
+      (wsDoc && (String(wsDoc.ownerId) === String(args.userId) || (uId && String(wsDoc.ownerId) === String(uId))))
+    ) {
+      return {
+        _id: "synthetic_owner_product_membership",
+        workspaceId: wsId || args.workspaceId,
+        userId: uId || args.userId,
+        productKey: args.productKey,
+        role: "owner",
+        permissions: ["*"],
+        status: "active",
+      };
+    }
+
+    return null;
   },
 });
 
 export const getWorkspaceAuditLogs = query({
   args: {
-    workspaceId: v.id("workspaces"),
+    workspaceId: v.union(v.id("workspaces"), v.string()),
     limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const limit = args.limit || 50;
-    return await ctx.db
+    let targetWsId: any = args.workspaceId;
+    if (typeof args.workspaceId === "string") {
+      const bySlug = await ctx.db
+        .query("workspaces")
+        .withIndex("by_slug", (q) => q.eq("slug", args.workspaceId as string))
+        .first();
+      if (bySlug) {
+        targetWsId = bySlug._id;
+      }
+    }
+
+    const logs = await ctx.db
       .query("workspaceAuditLogs")
-      .withIndex("by_workspace_created", (q) => q.eq("workspaceId", args.workspaceId))
+      .withIndex("by_workspace_created", (q) => q.eq("workspaceId", targetWsId))
       .order("desc")
       .take(limit);
+
+    if (logs.length === 0 && targetWsId !== args.workspaceId) {
+      return await ctx.db
+        .query("workspaceAuditLogs")
+        .withIndex("by_workspace_created", (q) => q.eq("workspaceId", args.workspaceId as any))
+        .order("desc")
+        .take(limit);
+    }
+    return logs;
   },
 });
 
 export const logWorkspaceAudit = mutation({
   args: {
-    workspaceId: v.id("workspaces"),
-    actorUserId: v.optional(v.id("users")),
+    workspaceId: v.union(v.id("workspaces"), v.string()),
+    actorUserId: v.optional(v.union(v.id("users"), v.string())),
     eventType: v.string(),
     entityType: v.string(),
     entityId: v.optional(v.string()),
@@ -1316,4 +1483,474 @@ export const activateProductEntitlement = mutation({
   },
 });
 
+// ==========================================
+// LIFECYCLE & OWNERSHIP MUTATIONS
+// ==========================================
 
+/** Allowed lifecycle transitions */
+const WORKSPACE_TRANSITIONS: Record<string, string[]> = {
+  creating: ["setup_incomplete", "trial", "active"],
+  setup_incomplete: ["trial", "active", "deleting", "archived"],
+  trial: ["active", "past_due", "suspended", "archived", "deleting"],
+  active: ["past_due", "suspended", "archived", "deleting"],
+  past_due: ["active", "suspended", "archived", "deleting"],
+  suspended: ["active", "archived", "deleting"],
+  archived: ["active", "deleting"],
+  deleting: ["active", "deleted"],
+  deleted: [],
+};
+
+function canTransitionWorkspace(fromStatus: string, toStatus: string): boolean {
+  const from = (fromStatus || "active").toLowerCase();
+  const to = (toStatus || "active").toLowerCase();
+  if (from === to) return true;
+  const allowed = WORKSPACE_TRANSITIONS[from] || [];
+  return allowed.includes(to);
+}
+
+export const archiveWorkspace = mutation({
+  args: {
+    workspaceId: v.id("workspaces"),
+    callerUserId: v.id("users"),
+    reason: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const ws = await ctx.db.get(args.workspaceId);
+    if (!ws || ws.deletedAt || ws.status === "deleted") {
+      throw new Error("WORKSPACE_NOT_FOUND");
+    }
+
+    const callerMembership = await ctx.db
+      .query("workspaceMemberships")
+      .withIndex("by_workspace_user", (q) =>
+        q.eq("workspaceId", args.workspaceId).eq("userId", args.callerUserId)
+      )
+      .first();
+
+    const callerRole = (callerMembership?.role || callerMembership?.defaultRole || "").toLowerCase();
+    if (!callerMembership || callerRole !== "owner") {
+      throw new Error("ONLY_OWNER_CAN_ARCHIVE_WORKSPACE");
+    }
+
+    if (ws.status === "archived") {
+      return { success: true, status: "archived" };
+    }
+
+    if (!canTransitionWorkspace(ws.status || "active", "archived")) {
+      throw new Error(`CANNOT_TRANSITION_STATUS_FROM_${(ws.status || "").toUpperCase()}_TO_ARCHIVED`);
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(args.workspaceId, {
+      status: "archived",
+      archivedAt: now,
+      archivedBy: args.callerUserId as string,
+      updatedAt: now,
+    });
+
+    await ctx.db.insert("workspaceAuditLogs", {
+      workspaceId: args.workspaceId,
+      actorUserId: args.callerUserId,
+      eventType: "workspace.archived",
+      entityType: "workspace",
+      entityId: args.workspaceId,
+      severity: "warning",
+      metadata: { reason: args.reason, previousStatus: ws.status },
+      createdAt: now,
+    });
+
+    const members = await ctx.db
+      .query("workspaceMemberships")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
+      .collect();
+
+    for (const member of members) {
+      if (member.status === "active") {
+        await ctx.db.insert("notifications", {
+          userId: member.userId,
+          type: "workspace_archived",
+          title: `Workspace "${ws.name}" has been archived`,
+          body: `The workspace has been placed in read-only archive mode.`,
+          data: { workspaceId: args.workspaceId, workspaceName: ws.name },
+          severity: "WARNING",
+          channel: "IN_APP",
+          status: "UNREAD",
+          createdAt: now,
+        });
+      }
+    }
+
+    return { success: true, status: "archived" };
+  },
+});
+
+export const restoreWorkspace = mutation({
+  args: {
+    workspaceId: v.id("workspaces"),
+    callerUserId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    const ws = await ctx.db.get(args.workspaceId);
+    if (!ws || ws.deletedAt || ws.status === "deleted") {
+      throw new Error("WORKSPACE_NOT_FOUND");
+    }
+
+    const callerMembership = await ctx.db
+      .query("workspaceMemberships")
+      .withIndex("by_workspace_user", (q) =>
+        q.eq("workspaceId", args.workspaceId).eq("userId", args.callerUserId)
+      )
+      .first();
+
+    const callerRole = (callerMembership?.role || callerMembership?.defaultRole || "").toLowerCase();
+    if (!callerMembership || callerRole !== "owner") {
+      throw new Error("ONLY_OWNER_CAN_RESTORE_WORKSPACE");
+    }
+
+    if (ws.status === "active") {
+      return { success: true, status: "active" };
+    }
+
+    if (!canTransitionWorkspace(ws.status || "archived", "active")) {
+      throw new Error(`CANNOT_TRANSITION_STATUS_FROM_${(ws.status || "").toUpperCase()}_TO_ACTIVE`);
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(args.workspaceId, {
+      status: "active",
+      restoredAt: now,
+      restoredBy: args.callerUserId as string,
+      updatedAt: now,
+    });
+
+    await ctx.db.insert("workspaceAuditLogs", {
+      workspaceId: args.workspaceId,
+      actorUserId: args.callerUserId,
+      eventType: "workspace.restored",
+      entityType: "workspace",
+      entityId: args.workspaceId,
+      severity: "info",
+      metadata: { previousStatus: ws.status },
+      createdAt: now,
+    });
+
+    return { success: true, status: "active" };
+  },
+});
+
+export const suspendWorkspace = mutation({
+  args: {
+    workspaceId: v.id("workspaces"),
+    callerUserId: v.id("users"),
+    reason: v.optional(v.string()),
+    notes: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const ws = await ctx.db.get(args.workspaceId);
+    if (!ws || ws.deletedAt || ws.status === "deleted") {
+      throw new Error("WORKSPACE_NOT_FOUND");
+    }
+
+    const callerMembership = await ctx.db
+      .query("workspaceMemberships")
+      .withIndex("by_workspace_user", (q) =>
+        q.eq("workspaceId", args.workspaceId).eq("userId", args.callerUserId)
+      )
+      .first();
+
+    const callerRole = (callerMembership?.role || callerMembership?.defaultRole || "").toLowerCase();
+    if (!callerMembership || (callerRole !== "owner" && callerRole !== "admin")) {
+      throw new Error("UNAUTHORIZED_SUSPEND_WORKSPACE");
+    }
+
+    if (!canTransitionWorkspace(ws.status || "active", "suspended")) {
+      throw new Error(`CANNOT_TRANSITION_STATUS_FROM_${(ws.status || "").toUpperCase()}_TO_SUSPENDED`);
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(args.workspaceId, {
+      status: "suspended",
+      suspendedAt: now,
+      suspendedBy: args.callerUserId as string,
+      suspensionReason: args.reason || "Administrative suspension",
+      suspensionNotes: args.notes,
+      updatedAt: now,
+    });
+
+    await ctx.db.insert("workspaceAuditLogs", {
+      workspaceId: args.workspaceId,
+      actorUserId: args.callerUserId,
+      eventType: "workspace.suspended",
+      entityType: "workspace",
+      entityId: args.workspaceId,
+      severity: "warning",
+      metadata: { reason: args.reason, previousStatus: ws.status },
+      createdAt: now,
+    });
+
+    return { success: true, status: "suspended" };
+  },
+});
+
+export const requestWorkspaceDeletion = mutation({
+  args: {
+    workspaceId: v.id("workspaces"),
+    callerUserId: v.id("users"),
+    reason: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const ws = await ctx.db.get(args.workspaceId);
+    if (!ws || ws.deletedAt || ws.status === "deleted") {
+      throw new Error("WORKSPACE_NOT_FOUND");
+    }
+
+    const callerMembership = await ctx.db
+      .query("workspaceMemberships")
+      .withIndex("by_workspace_user", (q) =>
+        q.eq("workspaceId", args.workspaceId).eq("userId", args.callerUserId)
+      )
+      .first();
+
+    const callerRole = (callerMembership?.role || callerMembership?.defaultRole || "").toLowerCase();
+    if (!callerMembership || callerRole !== "owner") {
+      throw new Error("ONLY_OWNER_CAN_DELETE_WORKSPACE");
+    }
+
+    const now = Date.now();
+    const purgeScheduledAt = now + 30 * 86_400_000;
+
+    await ctx.db.patch(args.workspaceId, {
+      status: "deleting",
+      deletionRequestedAt: now,
+      deletionRequestedBy: args.callerUserId as string,
+      deletionReason: args.reason,
+      deletionStatus: "pending_cooldown",
+      purgeScheduledAt,
+      updatedAt: now,
+    });
+
+    await ctx.db.insert("workspaceAuditLogs", {
+      workspaceId: args.workspaceId,
+      actorUserId: args.callerUserId,
+      eventType: "workspace.deletion_requested",
+      entityType: "workspace",
+      entityId: args.workspaceId,
+      severity: "warning",
+      metadata: { purgeScheduledAt, reason: args.reason },
+      createdAt: now,
+    });
+
+    return { success: true, status: "deleting", purgeScheduledAt };
+  },
+});
+
+export const cancelWorkspaceDeletion = mutation({
+  args: {
+    workspaceId: v.id("workspaces"),
+    callerUserId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    const ws = await ctx.db.get(args.workspaceId);
+    if (!ws) {
+      throw new Error("WORKSPACE_NOT_FOUND");
+    }
+
+    if (ws.status !== "deleting" && !ws.deletionRequestedAt) {
+      throw new Error("NO_PENDING_DELETION_TO_CANCEL");
+    }
+
+    const callerMembership = await ctx.db
+      .query("workspaceMemberships")
+      .withIndex("by_workspace_user", (q) =>
+        q.eq("workspaceId", args.workspaceId).eq("userId", args.callerUserId)
+      )
+      .first();
+
+    const callerRole = (callerMembership?.role || callerMembership?.defaultRole || "").toLowerCase();
+    if (!callerMembership || callerRole !== "owner") {
+      throw new Error("ONLY_OWNER_CAN_CANCEL_DELETION");
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(args.workspaceId, {
+      status: "active",
+      deletionCancelledAt: now,
+      deletionStatus: undefined,
+      deletionRequestedAt: undefined,
+      deletionRequestedBy: undefined,
+      purgeScheduledAt: undefined,
+      updatedAt: now,
+    });
+
+    await ctx.db.insert("workspaceAuditLogs", {
+      workspaceId: args.workspaceId,
+      actorUserId: args.callerUserId,
+      eventType: "workspace.deletion_cancelled",
+      entityType: "workspace",
+      entityId: args.workspaceId,
+      severity: "info",
+      metadata: { previousStatus: "deleting" },
+      createdAt: now,
+    });
+
+    return { success: true, status: "active" };
+  },
+});
+
+export const transferWorkspaceOwnership = mutation({
+  args: {
+    workspaceId: v.id("workspaces"),
+    callerUserId: v.id("users"),
+    newOwnerUserId: v.id("users"),
+    transferPassword: v.optional(v.string()),
+    reason: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    if (args.callerUserId === args.newOwnerUserId) {
+      throw new Error("CANNOT_TRANSFER_TO_SELF");
+    }
+
+    const ws = await ctx.db.get(args.workspaceId);
+    if (!ws || ws.deletedAt || ws.status === "deleted") {
+      throw new Error("WORKSPACE_NOT_FOUND");
+    }
+
+    const callerMembership = await ctx.db
+      .query("workspaceMemberships")
+      .withIndex("by_workspace_user", (q) =>
+        q.eq("workspaceId", args.workspaceId).eq("userId", args.callerUserId)
+      )
+      .first();
+
+    const callerRole = (callerMembership?.role || callerMembership?.defaultRole || "").toLowerCase();
+    if (!callerMembership || callerRole !== "owner") {
+      throw new Error("ONLY_OWNER_CAN_TRANSFER_OWNERSHIP");
+    }
+
+    const newOwnerMembership = await ctx.db
+      .query("workspaceMemberships")
+      .withIndex("by_workspace_user", (q) =>
+        q.eq("workspaceId", args.workspaceId).eq("userId", args.newOwnerUserId)
+      )
+      .first();
+
+    if (!newOwnerMembership || (newOwnerMembership.status || "").toLowerCase() !== "active") {
+      throw new Error("NEW_OWNER_MUST_BE_ACTIVE_MEMBER");
+    }
+
+    const newOwnerWorkspaces = await ctx.db
+      .query("workspaces")
+      .withIndex("by_owner", (q) => q.eq("ownerId", args.newOwnerUserId))
+      .collect();
+
+    const activeOwned = newOwnerWorkspaces.filter(
+      (w) => !w.deletedAt && (w.status || "").toLowerCase() !== "deleted"
+    );
+
+    if (activeOwned.length >= 3) {
+      throw new Error("TARGET_USER_WORKSPACE_LIMIT_REACHED");
+    }
+
+    const now = Date.now();
+
+    await ctx.db.patch(args.workspaceId, {
+      ownerId: args.newOwnerUserId,
+      updatedAt: now,
+    });
+
+    await ctx.db.patch(newOwnerMembership._id, {
+      role: "owner",
+      defaultRole: "owner",
+      updatedAt: now,
+    });
+
+    await ctx.db.patch(callerMembership._id, {
+      role: "admin",
+      defaultRole: "admin",
+      updatedAt: now,
+    });
+
+    await ctx.db.insert("workspaceAuditLogs", {
+      workspaceId: args.workspaceId,
+      actorUserId: args.callerUserId,
+      eventType: "workspace.ownership_transferred",
+      entityType: "workspace",
+      entityId: args.workspaceId,
+      severity: "warning",
+      metadata: {
+        previousOwnerId: args.callerUserId,
+        newOwnerId: args.newOwnerUserId,
+        reason: args.reason,
+      },
+      createdAt: now,
+    });
+
+    await ctx.db.insert("notifications", {
+      userId: args.newOwnerUserId,
+      type: "workspace_ownership_transferred",
+      title: `You are now the owner of ${ws.name}`,
+      body: `Ownership was transferred to you.`,
+      data: { workspaceId: args.workspaceId, workspaceName: ws.name },
+      severity: "INFO",
+      channel: "IN_APP",
+      status: "UNREAD",
+      createdAt: now,
+    });
+
+    await ctx.db.insert("notifications", {
+      userId: args.callerUserId,
+      type: "workspace_ownership_transferred",
+      title: `Ownership of ${ws.name} transferred`,
+      body: `You are now an administrator in this workspace.`,
+      data: { workspaceId: args.workspaceId, workspaceName: ws.name },
+      severity: "INFO",
+      channel: "IN_APP",
+      status: "UNREAD",
+      createdAt: now,
+    });
+
+    return { success: true, newOwnerId: args.newOwnerUserId };
+  },
+});
+
+export const getWorkspaceEligibility = query({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const ownedWorkspaces = await ctx.db
+      .query("workspaces")
+      .withIndex("by_owner", (q) => q.eq("ownerId", args.userId))
+      .collect();
+
+    const activeOwned = ownedWorkspaces.filter(
+      (w) => !w.deletedAt && (w.status || "").toLowerCase() !== "deleted"
+    );
+
+    const trialCount = activeOwned.filter(
+      (w) => (w.status || "").toLowerCase() === "trial"
+    ).length;
+
+    const allMemberships = await ctx.db
+      .query("workspaceMemberships")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+
+    const activeJoined = allMemberships.filter(
+      (m) => (m.status || "").toLowerCase() === "active" && (m.role || "").toLowerCase() !== "owner"
+    ).length;
+
+    const maxLimit = 3;
+    const allowed = activeOwned.length < maxLimit;
+
+    return {
+      allowed,
+      ownedCount: activeOwned.length,
+      ownedLimit: maxLimit,
+      trialCount,
+      trialLimit: 1,
+      freeTrialEligible: trialCount === 0,
+      joinedCount: activeJoined,
+      canCreateTrial: trialCount === 0 && allowed,
+      reasons: allowed ? [] : ["Plan workspace limit (3) reached"],
+    };
+  },
+});

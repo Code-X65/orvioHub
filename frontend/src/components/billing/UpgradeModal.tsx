@@ -30,7 +30,7 @@ interface UpgradeModalProps {
 }
 
 type PaymentGatewayTab = "paystack" | "transfer";
-type SelectedPlanTier = "standard";
+type SelectedPlanTier = "standard" | "premium";
 
 export function getUpgradeMessage(triggerReason?: string) {
   switch (triggerReason) {
@@ -66,8 +66,11 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
 
   const normalizedPlan = (currentPlanKey || "free_trial").toLowerCase();
   const isStandard = normalizedPlan === "standard";
+  const isPremium = normalizedPlan === "premium";
 
-  const [selectedPlan] = useState<SelectedPlanTier>("standard");
+  // Standard users upgrade to Premium; trial/free users can choose between Standard and Premium
+  const defaultTargetPlan: SelectedPlanTier = isStandard ? "premium" : "standard";
+  const [selectedPlan, setSelectedPlan] = useState<SelectedPlanTier>(defaultTargetPlan);
   const [billingInterval, setBillingInterval] = useState<"monthly" | "annual">("monthly");
   const [paymentMethod, setPaymentMethod] = useState<PaymentGatewayTab>("paystack");
   const [transferReference, setTransferReference] = useState("");
@@ -78,7 +81,8 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
 
   if (!isOpen) return null;
 
-  if (isStandard) {
+  // Already on Premium — nothing to upgrade to
+  if (isPremium) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
         <div className="max-w-md w-full rounded-2xl bg-[#0f0a0e] border border-white/10 p-6 md:p-8 shadow-2xl space-y-6">
@@ -88,39 +92,30 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
                 <Sparkles className="w-5 h-5" />
               </div>
               <div>
-                <h2 className="text-lg font-bold text-white">Standard Plan Active</h2>
-                <p className="text-xs text-slate-400">Your organization is fully activated</p>
+                <h2 className="text-lg font-bold text-white">Premium Plan Active</h2>
+                <p className="text-xs text-slate-400">Your organization has full premium access</p>
               </div>
             </div>
-            <button
-              onClick={onClose}
-              className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/5 transition cursor-pointer"
-            >
+            <button onClick={onClose} className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/5 transition cursor-pointer">
               <X className="w-5 h-5" />
             </button>
           </div>
-
           <div className="space-y-4">
             <div className="p-4 rounded-xl bg-purple-500/10 border border-purple-500/20 text-xs text-purple-200">
-              Your business is on the Standard Plan with access to 3 apps, 3 branches, and 10 members.
+              You have full Premium access: unlimited apps, up to 10 branches/app, up to 50 team members, 25,000 products, and 25,000 transactions/month.
             </div>
             <p className="text-xs text-slate-300 leading-relaxed">
-              If you require custom capacity or enterprise volume beyond standard limits, please reach out to our team.
+              For custom enterprise volume, dedicated SLA, or white-label requirements, please contact our team.
             </p>
-
             <div className="pt-2 flex flex-col gap-2.5">
               <a
-                href="mailto:support@orviohub.com?subject=Enterprise%20Plan%20Inquiry"
+                href="mailto:support@orviohub.com?subject=Enterprise%20Inquiry"
                 className="w-full h-11 bg-[#714b67] hover:bg-[#86597a] text-white rounded-xl font-bold text-xs shadow-lg shadow-[#714b67]/25 flex items-center justify-center gap-2 cursor-pointer transition"
               >
                 <Mail className="w-4 h-4" />
-                <span>Contact Support</span>
+                <span>Contact Enterprise Sales</span>
               </a>
-              <button
-                type="button"
-                onClick={onClose}
-                className="w-full h-10 bg-white/5 hover:bg-white/10 text-slate-300 rounded-xl font-semibold text-xs transition cursor-pointer"
-              >
+              <button type="button" onClick={onClose} className="w-full h-10 bg-white/5 hover:bg-white/10 text-slate-300 rounded-xl font-semibold text-xs transition cursor-pointer">
                 Dismiss
               </button>
             </div>
@@ -130,18 +125,31 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
     );
   }
 
-  const planPricing = {
+  const planPricing: Record<SelectedPlanTier, { monthly: number; annual: number; name: string; features: string[] }> = {
     standard: {
       monthly: 7500,
       annual: 75000,
       name: "Standard Plan",
       features: [
-        "Up to 3 Applications",
-        "Up to 3 Branches per app",
+        "Full Inventory App Access",
+        "Up to 3 Branches / Warehouses",
         "Up to 10 Team Members",
-        "5,000 Products",
-        "5,000 Tx / month",
-        "Priority Support",
+        "5,000 Products & Stock Items",
+        "5,000 Monthly Transactions",
+        "Standard Email Support",
+      ],
+    },
+    premium: {
+      monthly: 25000,
+      annual: 250000,
+      name: "Premium Plan",
+      features: [
+        "Full Inventory App Access",
+        "Up to 10 Branches / Warehouses",
+        "Up to 50 Team Members",
+        "25,000 Products & Stock Items",
+        "25,000 Monthly Transactions",
+        "Priority 24/7 Support",
       ],
     },
   };
@@ -161,21 +169,75 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
     setErrorMessage(null);
 
     const email = user?.email || "customer@orviohub.com";
+    const apiUrl = getApiUrl(env).replace(/\/$/, "");
+    const idempotencyKey = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `idemp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     try {
+      let serverReference = `orv_upg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      
+      // Initialize server checkout session if workspaceId is present
+      if (workspaceId) {
+        try {
+          const checkoutRes = await fetch(`${apiUrl}/api/v1/workspaces/${workspaceId}/billing/checkout`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "idempotency-key": idempotencyKey,
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+            body: JSON.stringify({
+              planKey: selectedPlan,
+              billingInterval,
+              provider: "paystack",
+            }),
+          });
+          const checkoutData = await checkoutRes.json().catch(() => ({}));
+          if (checkoutData?.data?.reference) {
+            serverReference = checkoutData.data.reference;
+          }
+        } catch {
+          // Fallback to client reference
+        }
+      }
+
       await openPaystackPopup({
         email,
         amountInNaira: activeAmount,
+        reference: serverReference,
         planName: `${activePlanInfo.name} (${billingInterval === "annual" ? "Annual" : "Monthly"})`,
         onSuccess: async (verifiedRef) => {
           try {
-            const apiUrl = getApiUrl(env).replace(/\/$/, "");
+            const verifyIdempotencyKey = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `verify_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            
+            // Call workspace-scoped verification endpoint
+            const verifyUrl = workspaceId
+              ? `${apiUrl}/api/v1/workspaces/${workspaceId}/billing/verify`
+              : `${apiUrl}/api/v1/billing/verify`;
+
+            await fetch(verifyUrl, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "idempotency-key": verifyIdempotencyKey,
+                ...(token ? { Authorization: `Bearer ${token}` } : {}),
+              },
+              body: JSON.stringify({
+                reference: verifiedRef,
+                gateway: "paystack",
+                workspaceId,
+                planKey: selectedPlan,
+                billingInterval,
+              }),
+            });
+
+            // Also send GET fallback for compatibility with older query route
             await fetch(
               `${apiUrl}/api/v1/billing/verify?reference=${encodeURIComponent(verifiedRef)}&gateway=paystack&workspaceId=${encodeURIComponent(workspaceId)}&interval=${billingInterval}&plan=${selectedPlan}`,
               {
                 headers: token ? { Authorization: `Bearer ${token}` } : {},
               }
-            );
+            ).catch(() => {});
+
             toast.success(`Payment confirmed! Upgraded to ${activePlanInfo.name}.`);
             if (onSuccess) onSuccess();
             onClose();
@@ -251,10 +313,16 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
             </div>
             <div>
               <h2 className="text-lg font-bold text-white">
-                {triggerReason ? "Limit Reached" : "Upgrade Your Subscription"}
+                {triggerReason
+                  ? "Limit Reached"
+                  : isStandard
+                  ? "Upgrade to Premium"
+                  : "Upgrade Your Subscription"}
               </h2>
               <p className="text-xs text-slate-400">
-                Single subscription covering all your workspaces and business applications.
+                {isStandard
+                  ? "Unlock Premium capacity: more apps, branches, members, and the full business suite."
+                  : "Single subscription covering all your workspaces and business applications."}
               </p>
             </div>
           </div>
@@ -377,23 +445,89 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
             {/* Plan Tier Selection */}
             <div>
               <label className="block text-xs font-semibold text-slate-300 mb-2 uppercase tracking-wide">
-                Selected Plan
+                Select Upgrade Plan
               </label>
-              <div className="p-3.5 rounded-xl border bg-[#714b67]/25 border-[#714b67] text-white shadow-md shadow-[#714b67]/15 flex flex-col justify-between">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-white">Standard Organization Plan</span>
-                  <span className="text-[10px] bg-[#714b67]/40 text-white px-2 py-0.5 rounded-full font-bold">
-                    Official Plan
-                  </span>
+              {!isStandard ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* Standard Plan Card */}
+                  <div
+                    onClick={() => setSelectedPlan("standard")}
+                    className={`p-3.5 rounded-xl border transition cursor-pointer flex flex-col justify-between ${
+                      selectedPlan === "standard"
+                        ? "bg-[#714b67]/25 border-[#714b67] text-white shadow-md shadow-[#714b67]/15 ring-1 ring-[#714b67]"
+                        : "bg-[#140d12] border-white/10 text-slate-400 hover:border-white/20"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-white">Standard</span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                        selectedPlan === "standard" ? "bg-[#714b67]/50 text-white" : "bg-white/5 text-slate-400"
+                      }`}>
+                        Growth
+                      </span>
+                    </div>
+                    <p className="text-sm font-extrabold text-white mt-1.5">
+                      ₦{billingInterval === "annual" ? "75,000" : "7,500"}
+                      <span className="text-[10px] font-normal text-slate-400">
+                        /{billingInterval === "annual" ? "yr" : "mo"}
+                      </span>
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Up to 3 Apps • Up to 3 Branches • 10 Members
+                    </p>
+                  </div>
+
+                  {/* Premium Plan Card */}
+                  <div
+                    onClick={() => setSelectedPlan("premium")}
+                    className={`p-3.5 rounded-xl border transition cursor-pointer flex flex-col justify-between ${
+                      selectedPlan === "premium"
+                        ? "bg-purple-950/40 border-purple-500 text-white shadow-md shadow-purple-900/20 ring-1 ring-purple-500"
+                        : "bg-[#140d12] border-white/10 text-slate-400 hover:border-white/20"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-white">Premium</span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                        selectedPlan === "premium" ? "bg-purple-500/40 text-purple-200" : "bg-white/5 text-slate-400"
+                      }`}>
+                        Full Power
+                      </span>
+                    </div>
+                    <p className="text-sm font-extrabold text-white mt-1.5">
+                      ₦{billingInterval === "annual" ? "250,000" : "25,000"}
+                      <span className="text-[10px] font-normal text-slate-400">
+                        /{billingInterval === "annual" ? "yr" : "mo"}
+                      </span>
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Unlimited Apps • Up to 10 Branches • 50 Members
+                    </p>
+                  </div>
                 </div>
-                <p className="text-base font-extrabold text-white mt-1">
-                  ₦{billingInterval === "annual" ? "75,000" : "7,500"}
-                  <span className="text-[10px] font-normal text-slate-400">
-                    /{billingInterval === "annual" ? "yr" : "mo"}
-                  </span>
-                </p>
-                <p className="text-[10px] text-slate-400 mt-1">Up to 3 Apps • Up to 3 Branches per app • Up to 10 Members</p>
-              </div>
+              ) : (
+                <div className="p-3.5 rounded-xl border bg-purple-950/40 border-purple-500 text-white shadow-md shadow-purple-900/20 flex flex-col justify-between">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-white">
+                      Premium Organization Plan
+                    </span>
+                    <span className="text-[10px] bg-purple-500/40 text-purple-200 px-2 py-0.5 rounded-full font-bold">
+                      Enterprise Tier
+                    </span>
+                  </div>
+                  <p className="text-base font-extrabold text-white mt-1">
+                    ₦{billingInterval === "annual"
+                      ? activePlanInfo.annual.toLocaleString("en-NG")
+                      : activePlanInfo.monthly.toLocaleString("en-NG")}
+                    <span className="text-[10px] font-normal text-slate-400">
+                      /{billingInterval === "annual" ? "yr" : "mo"}
+                    </span>
+                  </p>
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    Unlimited Apps • Up to 10 Branches/app • Up to 50 Members • 25k Products
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Selected Plan Features Overview */}
@@ -404,7 +538,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
                     {activePlanInfo.name} Features
                   </span>
                   <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-full font-bold">
-                    Per-User Subscription
+                    Per-Organization Subscription
                   </span>
                 </div>
                 <span className="text-sm font-extrabold text-white">{priceDisplay}</span>

@@ -79,7 +79,7 @@ export const getUsage = query({
       )
       .collect();
 
-    const usage: Record<string, { current: number; limit: number }> = {};
+    const usage: Record<string, { current: number; limit: number | undefined }> = {};
     for (const counter of counters) {
       usage[counter.featureKey] = {
         current: counter.usageValue,
