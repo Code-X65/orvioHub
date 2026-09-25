@@ -8,8 +8,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
-import { Building2, Tag, X, Edit2, Mail, MapPin, Copy, Phone, ChevronDown, Check, Search } from 'lucide-react';
+import { Building2, Tag, X, Edit2, Mail, MapPin, Copy, Phone, ChevronDown, Check, Search, ShieldCheck } from 'lucide-react';
+import { OtpVerificationModal } from '@/components/phone/OtpVerificationModal';
 import { cn } from '@/lib/utils';
+import { cleanPhone } from '@/components/branch/branchFormUtils';
 
 // Helper custom searchable select
 const CustomSelect: React.FC<{
@@ -125,6 +127,9 @@ export const BranchEditModal: React.FC<BranchEditModalProps> = ({
   const [phoneDigits, setPhoneDigits] = useState('');
   const [email, setEmail] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [phoneVerified, setPhoneVerified] = useState(false);
+  const [isPhoneVerifyModalOpen, setIsPhoneVerifyModalOpen] = useState(false);
+  const [isStartingPhoneVerify, setIsStartingPhoneVerify] = useState(false);
 
   // Split Nigerian Address
   const [street, setStreet] = useState('');
@@ -136,13 +141,7 @@ export const BranchEditModal: React.FC<BranchEditModalProps> = ({
     fetchStates();
   }, [fetchStates]);
 
-  const cleanPhone = (val: string) => {
-    let raw = val.replace(/\s+/g, '');
-    if (raw.startsWith('+234')) raw = raw.slice(4);
-    else if (raw.startsWith('234')) raw = raw.slice(3);
-    else if (raw.startsWith('0')) raw = raw.slice(1);
-    return raw;
-  };
+
 
   useEffect(() => {
     if (branch) {
@@ -155,6 +154,7 @@ export const BranchEditModal: React.FC<BranchEditModalProps> = ({
       } else {
         setPhoneDigits('');
       }
+      setPhoneVerified(Boolean(branch.phoneVerifiedAt || branch.phoneVerified));
 
       setStreet(branch.street || (typeof branch.address === 'string' && branch.address ? branch.address.split(',')[0] : ''));
       setCity(branch.city || '');
@@ -316,19 +316,68 @@ export const BranchEditModal: React.FC<BranchEditModalProps> = ({
           {/* Contact Details */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
             <div className="space-y-1.5">
-              <Label className="text-xs text-slate-300 font-medium">Branch Phone</Label>
-              <div className="relative flex items-center h-10 bg-[#160f14] border border-white/10 rounded-xl text-xs transition-all focus-within:ring-1 focus-within:ring-[#714b67] focus-within:border-[#714b67]">
-                <div className="flex items-center gap-1.5 pl-3 pr-2.5 h-full border-r border-white/10 text-slate-300 select-none shrink-0 bg-white/[0.02]">
-                  <Phone className="w-3.5 h-3.5 text-slate-500" />
-                  <span className="text-xs font-medium text-slate-200">+234</span>
+              <div className="flex items-center justify-between">
+                <Label className="text-xs text-slate-300 font-medium">Branch Phone</Label>
+                {phoneDigits.trim() && (
+                  phoneVerified ? (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                      <Check className="w-3 h-3" /> Verified
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                      Unverified
+                    </span>
+                  )
+                )}
+              </div>
+              <div className="flex gap-2">
+                <div className="relative flex-1 flex items-center h-10 bg-[#160f14] border border-white/10 rounded-xl text-xs transition-all focus-within:ring-1 focus-within:ring-[#714b67] focus-within:border-[#714b67]">
+                  <div className="flex items-center gap-1.5 pl-3 pr-2.5 h-full border-r border-white/10 text-slate-300 select-none shrink-0 bg-white/[0.02]">
+                    <Phone className="w-3.5 h-3.5 text-slate-500" />
+                    <span className="text-xs font-medium text-slate-200">+234</span>
+                  </div>
+                  <input
+                    type="tel"
+                    placeholder="801 234 5678"
+                    value={phoneDigits}
+                    onChange={(e) => {
+                      setPhoneDigits(e.target.value);
+                      setPhoneVerified(false);
+                    }}
+                    className="w-full h-full bg-transparent px-3 text-white placeholder:text-slate-600 text-xs focus:outline-none"
+                  />
                 </div>
-                <input
-                  type="tel"
-                  placeholder="801 234 5678"
-                  value={phoneDigits}
-                  onChange={(e) => setPhoneDigits(e.target.value)}
-                  className="w-full h-full bg-transparent px-3 text-white placeholder:text-slate-600 text-xs focus:outline-none"
-                />
+                {phoneDigits.trim() && !phoneVerified && branchId && (
+                  <Button
+                    type="button"
+                    onClick={async () => {
+                      const formattedPhone = phoneDigits.trim() ? `+234${cleanPhone(phoneDigits)}` : '';
+                      if (!formattedPhone) {
+                        toast.error('Please enter a phone number first.');
+                        return;
+                      }
+                      const wsId = currentWorkspace?.id || (branch as any)?.workspaceId || (branch as any)?.organizationId;
+                      if (!wsId || !branchId) return;
+
+                      setIsStartingPhoneVerify(true);
+                      try {
+                        await api.post(`/workspaces/${wsId}/branches/${branchId}/phone/verification/start`, {
+                          phone: formattedPhone,
+                        });
+                        setIsPhoneVerifyModalOpen(true);
+                        toast.success(`Verification code sent to ${formattedPhone}`);
+                      } catch (err: any) {
+                        toast.error(err.message || 'Failed to start phone verification.');
+                      } finally {
+                        setIsStartingPhoneVerify(false);
+                      }
+                    }}
+                    disabled={isStartingPhoneVerify}
+                    className="h-10 px-3 bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-semibold rounded-xl cursor-pointer shrink-0"
+                  >
+                    Verify
+                  </Button>
+                )}
               </div>
             </div>
 
@@ -415,6 +464,31 @@ export const BranchEditModal: React.FC<BranchEditModalProps> = ({
             </Button>
           </div>
         </form>
+
+        {/* Branch Phone Verification Modal */}
+        <OtpVerificationModal
+          isOpen={isPhoneVerifyModalOpen}
+          phone={`+234${cleanPhone(phoneDigits)}`}
+          title="Verify Branch Phone"
+          subtitle={`We sent a 6-digit verification code to verify ${name || 'branch'}'s contact phone.`}
+          onClose={() => setIsPhoneVerifyModalOpen(false)}
+          onSuccess={() => {
+            setPhoneVerified(true);
+          }}
+          onVerifyOverride={async (otp: string) => {
+            const wsId = currentWorkspace?.id || (branch as any)?.workspaceId || (branch as any)?.organizationId;
+            await api.post(`/workspaces/${wsId}/branches/${branchId}/phone/verification/verify`, {
+              code: otp,
+            });
+            setPhoneVerified(true);
+            toast.success('Branch phone verified successfully!');
+          }}
+          onResendOverride={async () => {
+            const wsId = currentWorkspace?.id || (branch as any)?.workspaceId || (branch as any)?.organizationId;
+            await api.post(`/workspaces/${wsId}/branches/${branchId}/phone/verification/resend`, {});
+            toast.success('Verification code resent.');
+          }}
+        />
       </div>
     </div>,
     document.body

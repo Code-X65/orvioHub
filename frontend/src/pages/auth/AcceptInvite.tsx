@@ -6,7 +6,7 @@ import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { AuthLayout } from './AuthLayout';
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
-import { Building2, XCircle, Store } from 'lucide-react';
+import { Building2, XCircle, Store, ShieldCheck, Phone } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface AppAccessItem {
@@ -25,10 +25,13 @@ interface AppAccessItem {
 
 interface InvitationDetails {
   id: string;
-  type?: 'workspace' | 'organization';
+  type?: 'workspace' | 'organization' | 'team';
   email: string;
+  phone?: string;
   role: string;
   organizationRole?: string;
+  branchRole?: string;
+  branchName?: string;
   appAccess?: AppAccessItem[];
   productKey?: string;
   branchIds?: string[];
@@ -44,6 +47,7 @@ interface InvitationDetails {
     name: string;
   };
   expiresAt: number;
+  isExpired?: boolean;
 }
 
 export const AcceptInvite: React.FC = () => {
@@ -61,6 +65,8 @@ export const AcceptInvite: React.FC = () => {
   const [capacityError, setCapacityError] = useState<string | null>(null);
   const [isAccepting, setIsAccepting] = useState(false);
   const [isDeclining, setIsDeclining] = useState(false);
+  // Track whether this is a team invitation (uses different endpoint)
+  const [isTeamInvite, setIsTeamInvite] = useState(false);
 
   useEffect(() => {
     if (token) {
@@ -70,18 +76,59 @@ export const AcceptInvite: React.FC = () => {
 
   const fetchInvitation = async () => {
     try {
+      // First try the org-level invitation endpoint
       const response = await api.get<{ invitation: InvitationDetails }>(`/invitations/${token}`);
       setDetails(response.invitation);
       setFetchState('SUCCESS');
     } catch (error: any) {
+      // If 404/not found, try the team-level invitation endpoint
+      if (error?.status === 404 || error?.response?.status === 404 || error?.code === 'INVITATION_NOT_FOUND') {
+        try {
+          const teamRes = await api.get<{ data: { invitation: InvitationDetails } }>(`/team-invitations/${token}`);
+          const teamInv = teamRes?.data?.invitation || (teamRes as any)?.invitation;
+          if (teamInv) {
+            setDetails({
+              ...teamInv,
+              type: 'team',
+              role: teamInv.branchRole || teamInv.role || 'staff',
+              organizationRole: teamInv.branchRole || teamInv.role || 'staff',
+            });
+            setIsTeamInvite(true);
+            setFetchState('SUCCESS');
+            return;
+          }
+        } catch (teamErr: any) {
+          setFetchState('ERROR');
+          setErrorMessage(teamErr.message || 'This invitation link is invalid or has expired.');
+          return;
+        }
+      }
       setFetchState('ERROR');
       setErrorMessage(error.message || 'Unable to load invitation details');
     }
   };
 
   const handleAccept = async () => {
+    if (user?.email && details?.email && user.email.toLowerCase() !== details.email.toLowerCase()) {
+      toast.error(`This invitation is for ${details.email}. You are signed in as ${user.email}.`);
+      return;
+    }
+
     setIsAccepting(true);
     try {
+      if (isTeamInvite) {
+        // Team invitation: use the team-specific accept endpoint
+        await api.patch(`/team-invitations/${token}/accept`, {});
+        toast.success('Invitation accepted! Welcome to the team.');
+        await refreshSession();
+        if (details?.workspaceId) {
+          await selectWorkspace(details.workspaceId, 'inventory');
+        }
+        navigate('/inventory/dashboard');
+        return;
+      }
+
+      // Org-level invitation flow
       const res = await api.post<{
         type?: string;
         workspace?: { id: string; name: string };
@@ -106,6 +153,8 @@ export const AcceptInvite: React.FC = () => {
       if (error.code === 'PLAN_MEMBER_LIMIT_REACHED' || error.message?.includes('PLAN_MEMBER_LIMIT_REACHED') || error.message?.includes('seat limit reached') || error.message?.includes('Plan limit reached')) {
         setCapacityError(error.message?.replace('PLAN_MEMBER_LIMIT_REACHED:', '').trim() || 'This team has reached its member limit for their current plan. Please contact the administrator who invited you to upgrade.');
         toast.error('Workspace seat limit reached.');
+      } else if (error.code === 'EMAIL_MISMATCH' || error.code === 'INVITATION_EMAIL_MISMATCH' || error.message?.includes('EMAIL_MISMATCH') || error.message?.includes('signed in as')) {
+        toast.error(error.message || 'Email mismatch: please sign in with the invited email address.');
       } else {
         toast.error(error.message || 'Failed to accept invitation');
       }
@@ -120,7 +169,11 @@ export const AcceptInvite: React.FC = () => {
   const handleDecline = async () => {
     setIsDeclining(true);
     try {
-      await api.post(`/invitations/${token}/decline`);
+      if (isTeamInvite) {
+        await api.post(`/team-invitations/${token}/decline`, {});
+      } else {
+        await api.post(`/invitations/${token}/decline`);
+      }
       toast.info('Invitation declined');
       navigate('/inventory/dashboard');
     } catch (err: any) {
@@ -193,64 +246,116 @@ export const AcceptInvite: React.FC = () => {
             <span className="text-slate-200 font-medium">{details.email}</span>
           </div>
 
-          <div className="flex justify-between items-center text-sm border-b border-white/5 pb-2.5">
-            <span className="text-slate-400">Organization Role</span>
-            <span className="text-indigo-400 font-semibold uppercase font-mono text-xs px-2.5 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/20">
-              {details.organizationRole || details.role}
-            </span>
-          </div>
-
-          {details.appAccess && details.appAccess.length > 0 ? (
-            <div className="space-y-2 pt-1">
-              <span className="text-xs font-semibold text-slate-400 block uppercase tracking-wider">
-                Application Access & Branches
+          {details.phone && (
+            <div className="flex justify-between items-center text-sm border-b border-white/5 pb-2.5">
+              <span className="text-slate-400">Invited Contact Phone</span>
+              <span className="text-slate-200 font-mono text-xs flex items-center gap-1.5">
+                <Phone className="w-3.5 h-3.5 text-slate-400" />
+                {details.phone}
               </span>
-              <div className="space-y-2">
-                {details.appAccess.map((app) => (
-                  <div
-                    key={app.productKey}
-                    className="p-3 rounded-lg bg-black/40 border border-white/5 space-y-1.5"
-                  >
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-bold text-white flex items-center gap-1.5">
-                        <Store className="w-3.5 h-3.5 text-emerald-400" />
-                        {app.productName || app.productKey}
-                      </span>
-                      <span className="text-[11px] font-mono uppercase font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded">
-                        {app.appRole.replace('_', ' ')}
-                      </span>
-                    </div>
+            </div>
+          )}
 
-                    <div className="text-[11px] text-slate-400">
-                      {app.branches && app.branches.length > 0 ? (
-                        <div className="flex flex-wrap items-center gap-1 mt-1">
-                          <span className="text-slate-500 mr-1">Branches:</span>
-                          {app.branches.map((b) => (
-                            <span
-                              key={b.id}
-                              className="px-1.5 py-0.5 rounded bg-slate-800/80 text-slate-300 text-[10px]"
-                            >
-                              {b.name} {b.city ? `(${b.city})` : ''}
-                            </span>
-                          ))}
-                        </div>
-                      ) : (
-                        <span className="text-slate-400 italic">Organization-wide access</span>
-                      )}
-                    </div>
-                  </div>
-                ))}
+          {isAuthenticated && user && (
+            <div className="flex justify-between items-center text-sm border-b border-white/5 pb-2.5">
+              <span className="text-slate-400">Your Phone Status</span>
+              {user.phoneVerified || user.phoneStatus === 'verified' ? (
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                  <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                  Verified
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
+                  Unverified (Recommended)
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Team invite: show branch role & location. Org invite: show org role */}
+          {details.type === 'team' ? (
+            <>
+              <div className="flex justify-between items-center text-sm border-b border-white/5 pb-2.5">
+                <span className="text-slate-400">Branch Role</span>
+                <span className="text-emerald-400 font-semibold uppercase font-mono text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20">
+                  {details.branchRole || details.role}
+                </span>
               </div>
-            </div>
-          ) : details.productKey ? (
-            <div className="flex justify-between items-center text-sm">
-              <span className="text-slate-400">Product Access</span>
-              <span className="text-emerald-400 font-medium capitalize flex items-center gap-1">
-                <Store className="w-3.5 h-3.5" />
-                {details.productKey}
-              </span>
-            </div>
-          ) : null}
+              {details.branchName && (
+                <div className="flex justify-between items-center text-sm border-b border-white/5 pb-2.5">
+                  <span className="text-slate-400">Branch Location</span>
+                  <span className="text-white font-medium flex items-center gap-1.5">
+                    <Store className="w-3.5 h-3.5 text-amber-400" />
+                    {details.branchName}
+                  </span>
+                </div>
+              )}
+              <div className="flex justify-between items-center text-sm">
+                <span className="text-slate-400">Application</span>
+                <span className="text-[#e296cb] font-semibold text-xs">Inventory</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex justify-between items-center text-sm border-b border-white/5 pb-2.5">
+                <span className="text-slate-400">Organization Role</span>
+                <span className="text-indigo-400 font-semibold uppercase font-mono text-xs px-2.5 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/20">
+                  {details.organizationRole || details.role}
+                </span>
+              </div>
+
+              {details.appAccess && details.appAccess.length > 0 ? (
+                <div className="space-y-2 pt-1">
+                  <span className="text-xs font-semibold text-slate-400 block uppercase tracking-wider">
+                    Application Access & Branches
+                  </span>
+                  <div className="space-y-2">
+                    {details.appAccess.map((app) => (
+                      <div
+                        key={app.productKey}
+                        className="p-3 rounded-lg bg-black/40 border border-white/5 space-y-1.5"
+                      >
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-bold text-white flex items-center gap-1.5">
+                            <Store className="w-3.5 h-3.5 text-emerald-400" />
+                            {app.productName || app.productKey}
+                          </span>
+                          <span className="text-[11px] font-mono uppercase font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded">
+                            {app.appRole.replace('_', ' ')}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-400">
+                          {app.branches && app.branches.length > 0 ? (
+                            <div className="flex flex-wrap items-center gap-1 mt-1">
+                              <span className="text-slate-500 mr-1">Branches:</span>
+                              {app.branches.map((b) => (
+                                <span
+                                  key={b.id}
+                                  className="px-1.5 py-0.5 rounded bg-slate-800/80 text-slate-300 text-[10px]"
+                                >
+                                  {b.name} {b.city ? `(${b.city})` : ''}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 italic">Organization-wide access</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : details.productKey ? (
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-slate-400">Product Access</span>
+                  <span className="text-emerald-400 font-medium capitalize flex items-center gap-1">
+                    <Store className="w-3.5 h-3.5" />
+                    {details.productKey}
+                  </span>
+                </div>
+              ) : null}
+            </>
+          )}
         </div>
 
         {!isAuthenticated ? (

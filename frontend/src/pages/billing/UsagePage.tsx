@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
-import { api } from "@/lib/api";
+import { usePlanConfig } from "@/hooks/usePlanConfig";
+import { useLiveUsage } from "@/hooks/useLiveUsage";
 import {
   Building2,
   Layers,
@@ -10,58 +11,10 @@ import {
   Sparkles,
   AlertTriangle,
   ShoppingBag,
+  RefreshCw,
+  AlertCircle,
 } from "lucide-react";
 import { UpgradeModal } from "@/components/billing/UpgradeModal";
-
-const PLAN_LIMITS_MAP: Record<
-  string,
-  {
-    name: string;
-    maxWorkspaces: number;
-    maxApps: number;
-    maxBranches: number;
-    maxMembers: number;
-    maxProducts: number;
-    maxTransactions: number;
-  }
-> = {
-  free: {
-    name: "30-Day Free Trial",
-    maxWorkspaces: 1,
-    maxApps: 1,
-    maxBranches: 1,
-    maxMembers: 2,
-    maxProducts: 500,
-    maxTransactions: 500,
-  },
-  free_trial: {
-    name: "30-Day Free Trial",
-    maxWorkspaces: 1,
-    maxApps: 1,
-    maxBranches: 1,
-    maxMembers: 2,
-    maxProducts: 500,
-    maxTransactions: 500,
-  },
-  standard: {
-    name: "Standard Plan",
-    maxWorkspaces: 3,
-    maxApps: 3,
-    maxBranches: 3,
-    maxMembers: 10,
-    maxProducts: 5000,
-    maxTransactions: 5000,
-  },
-  premium: {
-    name: "Premium Plan",
-    maxWorkspaces: 10,
-    maxApps: 10,
-    maxBranches: 10,
-    maxMembers: 50,
-    maxProducts: 25000,
-    maxTransactions: 25000,
-  },
-};
 
 interface UsageItemProps {
   label: string;
@@ -155,24 +108,12 @@ export const UsagePage: React.FC = () => {
   const { currentWorkspace, workspaces, products } = useWorkspaceStore();
   const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
   const [upgradeReason, setUpgradeReason] = useState<string | undefined>(undefined);
-  const [liveUsage, setLiveUsage] = useState<any>(null);
 
   const effectiveOrgId = currentWorkspace?.id || workspaces[0]?.workspace?.id;
   const effectiveOrgName = currentWorkspace?.name || workspaces[0]?.workspace?.name || "Your Business";
 
-  const fetchUsage = async () => {
-    if (!effectiveOrgId) return;
-    try {
-      const res: any = await api.get(`/usage?workspaceId=${effectiveOrgId}&organizationId=${effectiveOrgId}`).catch(() => null);
-      if (res?.data) {
-        setLiveUsage(res.data);
-      }
-    } catch {}
-  };
-
-  useEffect(() => {
-    fetchUsage();
-  }, [effectiveOrgId]);
+  const { getPlanLimits, planMap } = usePlanConfig();
+  const { usage: liveUsage, isLoading: isUsageLoading, error: usageError, refetch: refetchUsage } = useLiveUsage(effectiveOrgId);
 
   const sub = currentWorkspace?.subscription;
   const planKey = (
@@ -180,9 +121,20 @@ export const UsagePage: React.FC = () => {
     (sub?.status === "active" ? (sub?.selectedPlan || sub?.planKey) : null) ||
     currentWorkspace?.planKey ||
     currentWorkspace?.planId ||
+    liveUsage?.planKey ||
     "free_trial"
   ).toLowerCase();
-  const planInfo = PLAN_LIMITS_MAP[planKey] || PLAN_LIMITS_MAP.free_trial;
+
+  const planLimits = getPlanLimits(planKey);
+  const planInfo = {
+    name: planMap[planKey]?.name || (planKey === "premium" ? "Premium Plan" : planKey === "standard" ? "Standard Plan" : "30-Day Free Trial"),
+    maxWorkspaces: planKey === "premium" ? 10 : planKey === "standard" ? 3 : 1,
+    maxApps: planKey === "premium" ? 10 : planKey === "standard" ? 3 : 1,
+    maxBranches: planLimits.branches || (planKey === "premium" ? 10 : planKey === "standard" ? 3 : 1),
+    maxMembers: planLimits.members || (planKey === "premium" ? 50 : planKey === "standard" ? 10 : 2),
+    maxProducts: planLimits.products || (planKey === "premium" ? 25000 : planKey === "standard" ? 5000 : 500),
+    maxTransactions: planLimits.monthly_transactions || (planKey === "premium" ? 25000 : planKey === "standard" ? 5000 : 300),
+  };
 
   const handleOpenUpgrade = (reason?: string) => {
     setUpgradeReason(reason);
@@ -194,10 +146,10 @@ export const UsagePage: React.FC = () => {
   const currentAppsCount = (products || []).filter(
     (p) => (p.status || "").toLowerCase() === "active" || (p.status || "").toLowerCase() === "trial"
   ).length || 1;
-  const currentBranchesCount = liveUsage?.branches || 1;
-  const currentMembersCount = liveUsage?.members || 1;
-  const currentProductsCount = liveUsage?.products || 0;
-  const currentTxCount = liveUsage?.transactions || 0;
+  const currentBranchesCount = liveUsage?.branches ?? 1;
+  const currentMembersCount = liveUsage?.members ?? 1;
+  const currentProductsCount = liveUsage?.products ?? 0;
+  const currentTxCount = liveUsage?.transactions ?? 0;
 
   const isNearAnyLimit =
     currentWorkspacesCount >= planInfo.maxWorkspaces ||
@@ -221,14 +173,40 @@ export const UsagePage: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={() => handleOpenUpgrade("usage_limit")}
-          className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/25 transition cursor-pointer self-start sm:self-center shrink-0 active:scale-95"
-        >
-          <Sparkles className="w-4 h-4 text-[#FDB02F]" />
-          <span>Upgrade Capacity</span>
-        </button>
+        <div className="flex items-center gap-2 self-start sm:self-center">
+          <button
+            onClick={() => refetchUsage()}
+            disabled={isUsageLoading}
+            title="Refresh usage statistics"
+            className="p-2.5 rounded-xl border border-white/10 hover:border-white/20 bg-black/40 text-slate-300 hover:text-white transition cursor-pointer disabled:opacity-50"
+          >
+            <RefreshCw className={`w-4 h-4 ${isUsageLoading ? 'animate-spin text-[#FDB02F]' : ''}`} />
+          </button>
+          <button
+            onClick={() => handleOpenUpgrade("usage_limit")}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/25 transition cursor-pointer shrink-0 active:scale-95"
+          >
+            <Sparkles className="w-4 h-4 text-[#FDB02F]" />
+            <span>Upgrade Capacity</span>
+          </button>
+        </div>
       </div>
+
+      {/* Error Banner with Retry */}
+      {usageError && (
+        <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-200 text-xs flex items-center justify-between gap-4 shadow-lg shadow-rose-950/20">
+          <div className="flex items-center gap-2.5">
+            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+            <span>{usageError}</span>
+          </div>
+          <button
+            onClick={() => refetchUsage()}
+            className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-white font-semibold text-xs border border-rose-500/40 transition cursor-pointer shrink-0"
+          >
+            Retry Fetch
+          </button>
+        </div>
+      )}
 
       {/* Near Limit Alert */}
       {isNearAnyLimit && (
@@ -312,7 +290,7 @@ export const UsagePage: React.FC = () => {
         triggerReason={upgradeReason}
         onClose={() => setUpgradeModalOpen(false)}
         onSuccess={() => {
-          fetchUsage();
+          refetchUsage();
         }}
       />
     </div>

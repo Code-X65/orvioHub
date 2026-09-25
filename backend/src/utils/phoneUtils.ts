@@ -1,5 +1,13 @@
 import crypto from 'crypto';
 
+export const NIGERIAN_PREFIXES = [
+  '701', '702', '703', '704', '705', '706', '707', '708', '709',
+  '801', '802', '803', '804', '805', '806', '807', '808', '809',
+  '810', '811', '812', '813', '814', '815', '816', '817', '818', '819',
+  '901', '902', '903', '904', '905', '906', '907', '908', '909',
+  '912', '913', '915', '916'
+];
+
 /**
  * Normalizes phone numbers into standard E.164 international format.
  * Defaults to Nigeria (+234) for local 10/11 digit numbers (e.g. '0803 123 4567' -> '+2348031234567').
@@ -22,6 +30,15 @@ export function normalizePhoneNumber(rawPhone: string, defaultCountry = 'NG'): s
     if (digitsOnly.length < 8 || digitsOnly.length > 15) {
       throw new Error('INVALID_PHONE_FORMAT: International phone number must be between 8 and 15 digits.');
     }
+    if (digitsOnly.startsWith('234')) {
+      if (digitsOnly.length !== 13) {
+        throw new Error('INVALID_PHONE_FORMAT: Nigerian phone number must be 13 digits with country code (+234...).');
+      }
+      const prefix = digitsOnly.slice(3, 6);
+      if (!NIGERIAN_PREFIXES.includes(prefix)) {
+        throw new Error(`INVALID_PHONE_FORMAT: Invalid Nigerian mobile network prefix (${prefix}).`);
+      }
+    }
     return `+${digitsOnly}`;
   }
 
@@ -31,6 +48,15 @@ export function normalizePhoneNumber(rawPhone: string, defaultCountry = 'NG'): s
     if (digitsOnly.length < 8 || digitsOnly.length > 15) {
       throw new Error('INVALID_PHONE_FORMAT: Phone number must be between 8 and 15 digits.');
     }
+    if (digitsOnly.startsWith('234')) {
+      if (digitsOnly.length !== 13) {
+        throw new Error('INVALID_PHONE_FORMAT: Nigerian phone number must be 13 digits with country code (00234...).');
+      }
+      const prefix = digitsOnly.slice(3, 6);
+      if (!NIGERIAN_PREFIXES.includes(prefix)) {
+        throw new Error(`INVALID_PHONE_FORMAT: Invalid Nigerian mobile network prefix (${prefix}).`);
+      }
+    }
     return `+${digitsOnly}`;
   }
 
@@ -38,24 +64,34 @@ export function normalizePhoneNumber(rawPhone: string, defaultCountry = 'NG'): s
   if (defaultCountry === 'NG') {
     // Local format e.g. 08031234567, 070..., 090..., 081... (11 digits starting with 0)
     if (cleaned.startsWith('0') && cleaned.length === 11) {
+      const prefix = cleaned.slice(1, 4);
+      if (!NIGERIAN_PREFIXES.includes(prefix)) {
+        throw new Error(`INVALID_PHONE_FORMAT: Invalid Nigerian mobile network prefix (${prefix}).`);
+      }
       return `+234${cleaned.slice(1)}`;
     }
     // 10 digits missing leading zero e.g. 8031234567
-    if (cleaned.length === 10 && /^[789]\d{9}$/.test(cleaned)) {
+    if (cleaned.length === 10) {
+      const prefix = cleaned.slice(0, 3);
+      if (!NIGERIAN_PREFIXES.includes(prefix)) {
+        throw new Error(`INVALID_PHONE_FORMAT: Invalid Nigerian mobile network prefix (${prefix}).`);
+      }
       return `+234${cleaned}`;
     }
     // Starts with 234 without +
     if (cleaned.startsWith('234') && cleaned.length === 13) {
+      const prefix = cleaned.slice(3, 6);
+      if (!NIGERIAN_PREFIXES.includes(prefix)) {
+        throw new Error(`INVALID_PHONE_FORMAT: Invalid Nigerian mobile network prefix (${prefix}).`);
+      }
       return `+${cleaned}`;
     }
+    throw new Error(`INVALID_PHONE_FORMAT: "${rawPhone}" is not a valid Nigerian phone number.`);
   }
 
   // Generic fallback: if 10-15 digits, prefix with + if not present
   const digitsOnly = cleaned.replace(/\D/g, '');
   if (digitsOnly.length >= 8 && digitsOnly.length <= 15) {
-    if (defaultCountry === 'NG' && digitsOnly.startsWith('0')) {
-      return `+234${digitsOnly.slice(1)}`;
-    }
     return `+${digitsOnly}`;
   }
 
@@ -99,4 +135,16 @@ export function generateOtpCode(): string {
  */
 export function hashOtpCode(code: string): string {
   return crypto.createHash('sha256').update(code.trim()).digest('hex');
+}
+
+/**
+ * Returns canonical digits for comparison (e.g. '08012345678' -> '2348012345678', '+2348012345678' -> '2348012345678').
+ */
+export function toCanonicalPhoneDigits(phone?: string | null): string {
+  if (!phone || typeof phone !== 'string') return '';
+  const digits = phone.replace(/\D/g, '');
+  if (digits.startsWith('234') && digits.length === 13) return digits;
+  if (digits.startsWith('0') && digits.length === 11) return `234${digits.slice(1)}`;
+  if (digits.length === 10) return `234${digits}`;
+  return digits;
 }

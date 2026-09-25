@@ -112,7 +112,8 @@ describe('Logout Flow and Wildcard Session Handling Across Subdomains Test Suite
       method: 'POST',
       url: '/api/v1/auth/logout',
       headers: {
-        cookie: `orvio_session=${token}; orvio_refresh_token=mock_refresh_token`,
+        origin: 'http://inventory.orviohub.localhost:3000',
+        cookie: `orvio_session=${token}; orvio_refresh=mock_refresh_token`,
       },
     });
 
@@ -257,8 +258,9 @@ describe('Logout Flow and Wildcard Session Handling Across Subdomains Test Suite
     assert.equal(res.statusCode, 401);
     const body = JSON.parse(res.payload);
     assert.equal(body.success, false);
-    assert.equal(body.error.code, ERROR_CODES.UNAUTHENTICATED);
-    assert.ok(body.error.message.includes('Session has been invalidated'));
+    assert.equal(body.error.code, ERROR_CODES.TOKEN_VERSION_MISMATCH);
+    assert.equal(body.error.reauthenticateRequired, true);
+    assert.ok(body.error.message.includes('session was terminated because your password'));
   });
 
   test('6. Valid active session succeeds on protected route with session context', async () => {
@@ -302,4 +304,82 @@ describe('Logout Flow and Wildcard Session Handling Across Subdomains Test Suite
     assert.equal(body.success, true);
     assert.equal(body.data.user.email, 'sso_user@example.com');
   });
+
+  test('7. Logout returns explicit sessionInvalidated confirmation and timestamp', async () => {
+    let logoutCalled = false;
+    dataService.logoutUser = async () => {
+      logoutCalled = true;
+    };
+
+    const token = app.jwt.sign({
+      userId: 'user_sso_1',
+      email: 'sso_user@example.com',
+      sessionId: 'sess_123',
+      tokenVersion: 1,
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/logout',
+      headers: {
+        authorization: `Bearer ${token}`,
+      },
+      payload: {},
+    });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(logoutCalled, true);
+    const body = JSON.parse(res.payload);
+    assert.equal(body.success, true);
+    assert.equal(body.data.sessionInvalidated, true);
+    assert.ok(typeof body.data.loggedOutAt === 'number');
+  });
+
+  test('8. Authenticated request touches session activity tracking', async () => {
+    let touchedSessionId: string | null = null;
+    dataService.touchSessionActivity = async (sessionId: string) => {
+      touchedSessionId = sessionId;
+      return { success: true };
+    };
+
+    dataService.getUserById = async (id: string) => ({
+      id,
+      email: 'sso_user@example.com',
+      name: 'SSO User',
+      emailVerified: true,
+      tokenVersion: 1,
+      status: 'ACTIVE',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+
+    dataService.getSessionById = async (_sessionId: string) => ({
+      id: 'sess_touch_123',
+      sessionId: 'sess_touch_123',
+      userId: 'user_sso_1',
+      tokenVersion: 1,
+      expiresAt: Date.now() + 86_400_000,
+      revokedAt: undefined,
+      isRevoked: false,
+    });
+
+    const token = app.jwt.sign({
+      userId: 'user_sso_1',
+      email: 'sso_user@example.com',
+      sessionId: 'sess_touch_123',
+      tokenVersion: 1,
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/me',
+      headers: {
+        authorization: `Bearer ${token}`,
+      },
+    });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(touchedSessionId, 'sess_touch_123');
+  });
 });
+

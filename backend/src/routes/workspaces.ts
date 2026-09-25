@@ -8,6 +8,7 @@ import { smsService } from '../services/smsService.js';
 import { validateNigerianPhone } from '../utils/phoneValidation.js';
 import { ERROR_CODES, AUDIT_EVENTS } from '../config/constants.js';
 import { getPlanLimits } from '../config/planLimits.js';
+import { attachAutomaticCacheInvalidation } from '../utils/cacheHeaders.js';
 
 const createWorkspaceSchema = z.object({
   name: z.string().min(2, 'Workspace name must be at least 2 characters'),
@@ -41,6 +42,7 @@ const updateWorkspaceSchema = z.object({
 export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
   // All workspace routes require authentication
   fastify.addHook('preHandler', fastify.authenticate);
+  attachAutomaticCacheInvalidation(fastify, 'workspaces');
 
   // GET /api/v1/workspaces
   fastify.get(
@@ -360,7 +362,7 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       const { workspaceId } = request.params as { workspaceId: string };
-      const context = await dataService.getWorkspaceContext(workspaceId, request.user.id);
+      const context = await dataService.getTenantContext(workspaceId, request.user.id);
       if (!context) {
         return reply.status(404).send({
           success: false,
@@ -616,6 +618,141 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
     }
   );
 
+  // PATCH /api/v1/workspaces/:workspaceId/products/:productKey
+  fastify.patch(
+    '/:workspaceId/products/:productKey',
+    {
+      schema: {
+        tags: ['Workspaces'],
+        summary: 'Update or activate/deactivate a workspace product',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['workspaceId', 'productKey'],
+          properties: {
+            workspaceId: { type: 'string' },
+            productKey: { type: 'string' },
+          },
+        },
+        body: {
+          type: 'object',
+          properties: {
+            action: { type: 'string' },
+            status: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId, productKey } = request.params as { workspaceId: string; productKey: string };
+      const { action, status } = (request.body as { action?: string; status?: string }) || {};
+
+      const app = await dataService.getPlatformApplication(productKey);
+      if (app?.isCore && (action === 'deactivate' || status === 'deactivated' || status === 'inactive')) {
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: 'CORE_APP_PROTECTED',
+            message: `${app.name} is a core application and cannot be deactivated.`,
+          },
+        });
+      }
+
+      if (action === 'deactivate' || status === 'deactivated' || status === 'inactive') {
+        await dataService
+          .mutate('workspaceProducts:deactivate', {
+            workspaceId: workspaceId as any,
+            productKey,
+            userId: request.user?.id as any,
+          })
+          .catch(() => null);
+        return reply.send({
+          success: true,
+          message: `Product '${productKey}' deactivated successfully.`,
+          data: { productKey, status: 'DEACTIVATED' },
+        });
+      }
+
+      if (action === 'activate' || status === 'active') {
+        const entitlement = await entitlementService.checkAppActivationEntitlement(workspaceId, productKey);
+        if (!entitlement.allowed) {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.PLAN_LIMIT_REACHED,
+              message: entitlement.error,
+              current: entitlement.current,
+              limit: entitlement.limit,
+              max: entitlement.limit,
+              planKey: entitlement.planKey,
+              upgradeRequired: true,
+            },
+          });
+        }
+        await dataService.activateWorkspaceProduct({
+          workspaceId,
+          productKey,
+          planId: 'standard',
+          userId: request.user.id,
+        });
+        return reply.send({
+          success: true,
+          message: `Product '${productKey}' activated successfully.`,
+          data: { productKey, status: 'ACTIVE' },
+        });
+      }
+
+      return reply.send({ success: true, message: 'Product updated.' });
+    }
+  );
+
+  // POST /api/v1/workspaces/:workspaceId/products/:productKey/deactivate
+  fastify.post(
+    '/:workspaceId/products/:productKey/deactivate',
+    {
+      schema: {
+        tags: ['Workspaces'],
+        summary: 'Deactivate a specific product for the workspace',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['workspaceId', 'productKey'],
+          properties: {
+            workspaceId: { type: 'string' },
+            productKey: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId, productKey } = request.params as { workspaceId: string; productKey: string };
+      const app = await dataService.getPlatformApplication(productKey);
+      if (app?.isCore) {
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: 'CORE_APP_PROTECTED',
+            message: `${app.name} is a core application and cannot be deactivated.`,
+          },
+        });
+      }
+
+      await dataService
+        .mutate('workspaceProducts:deactivate', {
+          workspaceId: workspaceId as any,
+          productKey,
+          userId: request.user?.id as any,
+        })
+        .catch(() => null);
+
+      return reply.send({
+        success: true,
+        message: `Product '${productKey}' deactivated successfully.`,
+        data: { productKey, status: 'DEACTIVATED' },
+      });
+    }
+  );
+
   // GET /api/v1/workspaces/:workspaceId/products/:productKey/is-active
   fastify.get(
     '/:workspaceId/products/:productKey/is-active',
@@ -781,7 +918,6 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
             formattedAddress: { type: 'string' },
             phone: { type: 'string' },
             email: { type: 'string' },
-            managerId: { type: 'string' },
           },
         },
       },
@@ -806,7 +942,6 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
         formattedAddress?: string;
         phone?: string;
         email?: string;
-        managerId?: string;
       };
 
       let normalizedPhone: string | undefined;
@@ -857,7 +992,6 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
           phone: formattedPhone || body.phone,
           phoneNormalized: normalizedPhone,
           email: body.email,
-          managerId: body.managerId,
           callerUserId: request.user.id,
         });
 
@@ -957,7 +1091,6 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
             formattedAddress: { type: 'string' },
             phone: { type: 'string' },
             email: { type: 'string' },
-            managerId: { type: 'string' },
             status: { type: 'string' },
           },
         },
@@ -983,7 +1116,6 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
         formattedAddress?: string;
         phone?: string;
         email?: string;
-        managerId?: string;
         status?: string;
       };
 
@@ -1143,30 +1275,36 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      // Generate 6-digit OTP code
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
-      const otpHash = await bcrypt.hash(otp, 10);
-      const codeExpiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
-
-      await dataService.saveBranchPhoneOtp({
-        branchId,
-        phone: validation.formatted || body.phone,
-        phoneNormalized: validation.normalized,
-        verificationCode: otpHash,
-        codeExpiresAt,
-      });
-
-      // Dispatch SMS
-      await smsService.sendOtp(validation.normalized, otp);
-
-      return reply.send({
-        success: true,
-        message: `Verification code sent to branch contact ${validation.formatted || validation.normalized}.`,
-        data: {
+      try {
+        const challenge = await dataService.startBranchPhoneVerification(
           branchId,
-          expiresInSeconds: 600,
-        },
-      });
+          workspaceId,
+          request.user.id,
+          validation.normalized,
+          'branch_phone_verification',
+          request.ip,
+          request.headers['user-agent']
+        );
+
+        return reply.send({
+          success: true,
+          message: `Verification code sent to branch contact ${challenge.phoneNormalized}.`,
+          data: {
+            branchId,
+            challengeId: challenge.challengeId,
+            expiresInSeconds: 600,
+          },
+        });
+      } catch (err: any) {
+        const isRateLimit = err.message?.includes('RATE_LIMIT_EXCEEDED');
+        return reply.status(isRateLimit ? 429 : 400).send({
+          success: false,
+          error: {
+            code: isRateLimit ? 'RATE_LIMIT_EXCEEDED' : 'VERIFICATION_START_FAILED',
+            message: err.message || 'Failed to start branch phone verification.',
+          },
+        });
+      }
     }
   );
 
@@ -1207,1063 +1345,41 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      if ((branch as any).codeExpiresAt && Date.now() > (branch as any).codeExpiresAt) {
-        return reply.status(400).send({
-          success: false,
-          error: { code: 'OTP_EXPIRED', message: 'Verification code has expired. Please request a new one.' },
-        });
-      }
-
-      if (!(branch as any).verificationCode) {
-        return reply.status(400).send({
-          success: false,
-          error: { code: 'OTP_INVALID', message: 'No active verification code found.' },
-        });
-      }
-
-      const isMatch = await bcrypt.compare(body.otp.trim(), (branch as any).verificationCode);
-      if (!isMatch) {
-        return reply.status(400).send({
-          success: false,
-          error: { code: 'OTP_INVALID', message: 'Incorrect verification code.' },
-        });
-      }
-
-      await dataService.verifyBranchPhone(branchId, workspaceId, request.user.id, body.otp.trim());
-
-      return reply.send({
-        success: true,
-        message: 'Branch contact phone number verified successfully!',
-        data: { branchId, phoneVerified: true },
-      });
-    }
-  );
-
-  // ==========================================
-  // WORKSPACE MEMBERSHIP ROUTES
-  // ==========================================
-
-  // GET /api/v1/workspaces/:workspaceId/members
-  fastify.get(
-    '/:workspaceId/members',
-    {
-      schema: {
-        tags: ['Workspaces'],
-        summary: 'List workspace members with platform and product roles',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId'],
-          properties: { workspaceId: { type: 'string' } },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId } = request.params as { workspaceId: string };
-      const members = await dataService.getWorkspaceMembers(workspaceId, request.user.id);
-      return reply.send({
-        success: true,
-        data: members,
-        members,
-      });
-    }
-  );
-
-  // GET /api/v1/workspaces/:workspaceId/members/:membershipId
-  fastify.get(
-    '/:workspaceId/members/:membershipId',
-    {
-      schema: {
-        tags: ['Workspaces'],
-        summary: 'Get member details by membership ID',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId', 'membershipId'],
-          properties: {
-            workspaceId: { type: 'string' },
-            membershipId: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId, membershipId } = request.params as { workspaceId: string; membershipId: string };
-      const member = await dataService.getWorkspaceMemberById(workspaceId, membershipId, request.user.id);
-      return reply.send({
-        success: true,
-        data: { member },
-      });
-    }
-  );
-
-  // PATCH /api/v1/workspaces/:workspaceId/members/:membershipId
-  fastify.patch(
-    '/:workspaceId/members/:membershipId',
-    {
-      schema: {
-        tags: ['Workspaces'],
-        summary: 'Update member platform/product role or branch assignments',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId', 'membershipId'],
-          properties: {
-            workspaceId: { type: 'string' },
-            membershipId: { type: 'string' },
-          },
-        },
-        body: {
-          type: 'object',
-          required: ['role'],
-          properties: {
-            role: { type: 'string' },
-            productRole: { type: 'string' },
-            productKey: { type: 'string' },
-            branchIds: { type: 'array', items: { type: 'string' } },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId, membershipId } = request.params as { workspaceId: string; membershipId: string };
-      const body = request.body as {
-        role: string;
-        productRole?: string;
-        productKey?: string;
-        branchIds?: string[];
-      };
-
-      await dataService.updateWorkspaceMemberRole({
-        workspaceId,
-        membershipId,
-        callerUserId: request.user.id,
-        role: body.role,
-        productRole: body.productRole,
-        productKey: body.productKey,
-        branchIds: body.branchIds,
-      });
-
-      return reply.send({
-        success: true,
-        message: 'Member updated successfully.',
-      });
-    }
-  );
-
-  // POST /api/v1/workspaces/:workspaceId/members/:membershipId/suspend
-  fastify.post(
-    '/:workspaceId/members/:membershipId/suspend',
-    {
-      schema: {
-        tags: ['Workspaces'],
-        summary: 'Suspend a workspace member',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId', 'membershipId'],
-          properties: {
-            workspaceId: { type: 'string' },
-            membershipId: { type: 'string' },
-          },
-        },
-        body: {
-          type: 'object',
-          properties: { reason: { type: 'string' } },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId, membershipId } = request.params as { workspaceId: string; membershipId: string };
-      const body = (request.body as { reason?: string }) || {};
-
-      await dataService.suspendWorkspaceMember(workspaceId, membershipId, request.user.id, body.reason);
-      return reply.send({
-        success: true,
-        message: 'Member has been suspended.',
-      });
-    }
-  );
-
-  // POST /api/v1/workspaces/:workspaceId/members/:membershipId/restore
-  fastify.post(
-    '/:workspaceId/members/:membershipId/restore',
-    {
-      schema: {
-        tags: ['Workspaces'],
-        summary: 'Restore a suspended workspace member',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId', 'membershipId'],
-          properties: {
-            workspaceId: { type: 'string' },
-            membershipId: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId, membershipId } = request.params as { workspaceId: string; membershipId: string };
-      await dataService.restoreWorkspaceMember(workspaceId, membershipId, request.user.id);
-      return reply.send({
-        success: true,
-        message: 'Member has been restored.',
-      });
-    }
-  );
-
-  // DELETE /api/v1/workspaces/:workspaceId/members/:membershipId
-  fastify.delete(
-    '/:workspaceId/members/:membershipId',
-    {
-      schema: {
-        tags: ['Workspaces'],
-        summary: 'Remove a member from the workspace',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId', 'membershipId'],
-          properties: {
-            workspaceId: { type: 'string' },
-            membershipId: { type: 'string' },
-          },
-        },
-        body: {
-          type: 'object',
-          properties: { reason: { type: 'string' } },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId, membershipId } = request.params as { workspaceId: string; membershipId: string };
-      const body = (request.body as { reason?: string }) || {};
-
-      await dataService.removeWorkspaceMember(workspaceId, membershipId, request.user.id, body.reason);
-      return reply.send({
-        success: true,
-        message: 'Member removed from workspace.',
-      });
-    }
-  );
-
-  // ==========================================
-  // WORKSPACE INVITATION ROUTES
-  // ==========================================
-
-  // GET /api/v1/workspaces/:workspaceId/invitations
-  fastify.get(
-    '/:workspaceId/invitations',
-    {
-      schema: {
-        tags: ['Workspaces'],
-        summary: 'List pending and past invitations for workspace',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId'],
-          properties: { workspaceId: { type: 'string' } },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId } = request.params as { workspaceId: string };
-      const invitations = await dataService.getWorkspaceInvitations(workspaceId, request.user.id);
-      return reply.send({
-        success: true,
-        data: { invitations },
-      });
-    }
-  );
-
-  // POST /api/v1/workspaces/:workspaceId/invitations
-  fastify.post(
-    '/:workspaceId/invitations',
-    {
-      schema: {
-        tags: ['Workspaces'],
-        summary: 'Create and send a workspace invitation with hybrid organization, app, and branch access',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId'],
-          properties: { workspaceId: { type: 'string' } },
-        },
-        body: {
-          type: 'object',
-          required: ['email'],
-          properties: {
-            email: { type: 'string', format: 'email' },
-            role: { type: 'string' },
-            organizationRole: { type: 'string' },
-            appAccess: {
-              type: 'array',
-              items: {
-                type: 'object',
-                required: ['productKey', 'appRole', 'branchIds'],
-                properties: {
-                  productKey: { type: 'string' },
-                  appRole: { type: 'string' },
-                  branchIds: { type: 'array', items: { type: 'string' } },
-                },
-              },
-            },
-            productKey: { type: 'string' },
-            branchIds: { type: 'array', items: { type: 'string' } },
-            message: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId } = request.params as { workspaceId: string };
-      const body = request.body as {
-        email: string;
-        role?: string;
-        organizationRole?: string;
-        appAccess?: Array<{
-          productKey: string;
-          appRole: string;
-          branchIds: string[];
-        }>;
-        productKey?: string;
-        branchIds?: string[];
-        message?: string;
-      };
-
       try {
-        const result = await dataService.createWorkspaceInvitation({
+        const res = await dataService.verifyBranchPhone(
+          branchId,
           workspaceId,
-          callerUserId: request.user.id,
-          email: body.email,
-          role: body.organizationRole || body.role || 'staff',
-          organizationRole: body.organizationRole || body.role || 'staff',
-          appAccess: body.appAccess,
-          productKey: body.productKey,
-          branchIds: body.branchIds,
-          message: body.message,
-        });
+          request.user.id,
+          body.otp.trim(),
+          'branch_phone_verification',
+          request.ip,
+          request.headers['user-agent']
+        );
+
+        if (!res.success) {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: res.error || 'OTP_INVALID',
+              message: 'Invalid or expired verification code.',
+              attemptsRemaining: res.attemptsRemaining,
+            },
+          });
+        }
 
         return reply.send({
           success: true,
-          message: `Invitation sent to ${body.email}.`,
-          data: result,
+          message: 'Branch contact phone number verified successfully!',
+          data: { branchId, phoneVerified: true, phoneStatus: 'verified' },
         });
       } catch (err: any) {
-        if (err.message?.includes('ACTIVE_INVITATION_EXISTS')) {
-          return reply.status(409).send({
-            success: false,
-            error: {
-              code: 'ACTIVE_INVITATION_EXISTS',
-              message: 'An active invitation already exists for this email address.',
-            },
-          });
-        }
-        if (err.message?.includes('PLAN_MEMBER_LIMIT_REACHED')) {
-          return reply.status(403).send({
-            success: false,
-            error: {
-              code: 'PLAN_MEMBER_LIMIT_REACHED',
-              message: err.message.replace('PLAN_MEMBER_LIMIT_REACHED:', '').trim(),
-            },
-          });
-        }
-        if (err.message?.includes('SUBSCRIPTION_SUSPENDED')) {
-          return reply.status(403).send({
-            success: false,
-            error: {
-              code: 'SUBSCRIPTION_SUSPENDED',
-              message: err.message.replace('SUBSCRIPTION_SUSPENDED:', '').trim(),
-            },
-          });
-        }
-        throw err;
-      }
-    }
-  );
-
-  // POST /api/v1/workspaces/:workspaceId/invitations/:id/resend
-  fastify.post(
-    '/:workspaceId/invitations/:id/resend',
-    {
-      schema: {
-        tags: ['Workspaces'],
-        summary: 'Resend a workspace invitation with renewed token and expiry',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId', 'id'],
-          properties: {
-            workspaceId: { type: 'string' },
-            id: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { id } = request.params as { workspaceId: string; id: string };
-      const result = await dataService.resendWorkspaceInvitation(id, request.user.id);
-      return reply.send({
-        success: true,
-        message: 'Invitation resent successfully.',
-        data: result,
-      });
-    }
-  );
-
-  // POST /api/v1/workspaces/:workspaceId/invitations/:id/revoke
-  fastify.post(
-    '/:workspaceId/invitations/:id/revoke',
-    {
-      schema: {
-        tags: ['Workspaces'],
-        summary: 'Revoke a pending workspace invitation',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId', 'id'],
-          properties: {
-            workspaceId: { type: 'string' },
-            id: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { id } = request.params as { workspaceId: string; id: string };
-      await dataService.revokeWorkspaceInvitation(id, request.user.id);
-      return reply.send({
-        success: true,
-        message: 'Invitation revoked.',
-      });
-    }
-  );
-
-  // ==========================================
-  // GRANULAR MEMBER ACCESS & PERMISSIONS
-  // ==========================================
-
-  // GET /api/v1/workspaces/:workspaceId/members/:userId/access
-  fastify.get(
-    '/:workspaceId/members/:userId/access',
-    {
-      schema: {
-        tags: ['Workspaces', 'Members'],
-        summary: 'Get granular access matrix for a member (org role, app roles, branch access)',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId', 'userId'],
-          properties: {
-            workspaceId: { type: 'string' },
-            userId: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId, userId } = request.params as { workspaceId: string; userId: string };
-      const access = await dataService.getMemberAccessDetails(workspaceId, userId, request.user.id);
-      return reply.send({
-        success: true,
-        data: access,
-      });
-    }
-  );
-
-  // PATCH /api/v1/workspaces/:workspaceId/members/:userId/access
-  fastify.patch(
-    '/:workspaceId/members/:userId/access',
-    {
-      schema: {
-        tags: ['Workspaces', 'Members'],
-        summary: 'Update member organization role, app roles, and branch assignments',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId', 'userId'],
-          properties: {
-            workspaceId: { type: 'string' },
-            userId: { type: 'string' },
-          },
-        },
-        body: {
-          type: 'object',
-          properties: {
-            organizationRole: { type: 'string' },
-            appAccess: {
-              type: 'array',
-              items: {
-                type: 'object',
-                required: ['productKey', 'enabled', 'appRole', 'branchIds'],
-                properties: {
-                  productKey: { type: 'string' },
-                  enabled: { type: 'boolean' },
-                  appRole: { type: 'string' },
-                  branchIds: { type: 'array', items: { type: 'string' } },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId, userId } = request.params as { workspaceId: string; userId: string };
-      const body = request.body as {
-        organizationRole?: string;
-        appAccess?: Array<{
-          productKey: string;
-          enabled: boolean;
-          appRole: string;
-          branchIds: string[];
-        }>;
-      };
-
-      await dataService.updateMemberAccess({
-        workspaceId,
-        memberUserId: userId,
-        callerUserId: request.user.id,
-        organizationRole: body.organizationRole,
-        appAccess: body.appAccess || [],
-      });
-
-      return reply.send({
-        success: true,
-        message: 'Member access permissions updated.',
-      });
-    }
-  );
-
-  // POST /api/v1/workspaces/:workspaceId/members/:userId/apps
-  fastify.post(
-    '/:workspaceId/members/:userId/apps',
-    {
-      schema: {
-        tags: ['Workspaces', 'Members'],
-        summary: 'Grant or update application access for member',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId', 'userId'],
-          properties: {
-            workspaceId: { type: 'string' },
-            userId: { type: 'string' },
-          },
-        },
-        body: {
-          type: 'object',
-          required: ['productKey', 'role'],
-          properties: {
-            productKey: { type: 'string' },
-            role: { type: 'string' },
-            branchIds: { type: 'array', items: { type: 'string' } },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId, userId } = request.params as { workspaceId: string; userId: string };
-      const body = request.body as { productKey: string; role: string; branchIds?: string[] };
-
-      await dataService.updateMemberAccess({
-        workspaceId,
-        memberUserId: userId,
-        callerUserId: request.user.id,
-        appAccess: [
-          {
-            productKey: body.productKey,
-            enabled: true,
-            appRole: body.role,
-            branchIds: body.branchIds || [],
-          },
-        ],
-      });
-
-      return reply.send({
-        success: true,
-        message: `App access for ${body.productKey} granted.`,
-      });
-    }
-  );
-
-  // DELETE /api/v1/workspaces/:workspaceId/members/:userId/apps/:productKey
-  fastify.delete(
-    '/:workspaceId/members/:userId/apps/:productKey',
-    {
-      schema: {
-        tags: ['Workspaces', 'Members'],
-        summary: 'Revoke application access from member',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId', 'userId', 'productKey'],
-          properties: {
-            workspaceId: { type: 'string' },
-            userId: { type: 'string' },
-            productKey: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId, userId, productKey } = request.params as {
-        workspaceId: string;
-        userId: string;
-        productKey: string;
-      };
-
-      await dataService.updateMemberAccess({
-        workspaceId,
-        memberUserId: userId,
-        callerUserId: request.user.id,
-        appAccess: [
-          {
-            productKey,
-            enabled: false,
-            appRole: 'staff',
-            branchIds: [],
-          },
-        ],
-      });
-
-      return reply.send({
-        success: true,
-        message: `App access for ${productKey} revoked.`,
-      });
-    }
-  );
-
-  // POST /api/v1/workspaces/:workspaceId/members/:userId/branches
-  fastify.post(
-    '/:workspaceId/members/:userId/branches',
-    {
-      schema: {
-        tags: ['Workspaces', 'Members'],
-        summary: 'Grant branch access to member for an application',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId', 'userId'],
-          properties: {
-            workspaceId: { type: 'string' },
-            userId: { type: 'string' },
-          },
-        },
-        body: {
-          type: 'object',
-          required: ['productKey', 'branchId'],
-          properties: {
-            productKey: { type: 'string' },
-            branchId: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId, userId } = request.params as { workspaceId: string; userId: string };
-      const body = request.body as { productKey: string; branchId: string };
-
-      const currentAccess: any = await dataService.getMemberAccessDetails(workspaceId, userId, request.user.id);
-      const app = currentAccess.apps.find((a: any) => a.productKey === body.productKey);
-      const currentBranches = app ? [...app.branchIds] : [];
-      if (!currentBranches.includes(body.branchId)) {
-        currentBranches.push(body.branchId);
-      }
-
-      await dataService.updateMemberAccess({
-        workspaceId,
-        memberUserId: userId,
-        callerUserId: request.user.id,
-        appAccess: [
-          {
-            productKey: body.productKey,
-            enabled: true,
-            appRole: app?.role || 'staff',
-            branchIds: currentBranches,
-          },
-        ],
-      });
-
-      return reply.send({
-        success: true,
-        message: 'Branch access granted.',
-      });
-    }
-  );
-
-  // DELETE /api/v1/workspaces/:workspaceId/members/:userId/branches/:branchId
-  fastify.delete(
-    '/:workspaceId/members/:userId/branches/:branchId',
-    {
-      schema: {
-        tags: ['Workspaces', 'Members'],
-        summary: 'Revoke branch access from member',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId', 'userId', 'branchId'],
-          properties: {
-            workspaceId: { type: 'string' },
-            userId: { type: 'string' },
-            branchId: { type: 'string' },
-          },
-        },
-        querystring: {
-          type: 'object',
-          properties: {
-            productKey: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId, userId, branchId } = request.params as {
-        workspaceId: string;
-        userId: string;
-        branchId: string;
-      };
-      const query = (request.query as { productKey?: string }) || {};
-
-      const currentAccess: any = await dataService.getMemberAccessDetails(workspaceId, userId, request.user.id);
-      const appsToUpdate = query.productKey
-        ? currentAccess.apps.filter((a: any) => a.productKey === query.productKey)
-        : currentAccess.apps;
-
-      for (const app of appsToUpdate) {
-        const remainingBranches = app.branchIds.filter((bId: string) => bId !== branchId);
-        await dataService.updateMemberAccess({
-          workspaceId,
-          memberUserId: userId,
-          callerUserId: request.user.id,
-          appAccess: [
-            {
-              productKey: app.productKey,
-              enabled: true,
-              appRole: app.role,
-              branchIds: remainingBranches,
-            },
-          ],
+        return reply.status(400).send({
+          success: false,
+          error: { code: 'VERIFICATION_FAILED', message: err.message || 'Failed to verify branch phone code.' },
         });
       }
-
-      return reply.send({
-        success: true,
-        message: 'Branch access revoked.',
-      });
     }
   );
-
-  // ==========================================
-  // 3-TIER ROLES, PERMISSIONS & AUDIT LOGS
-  // ==========================================
-
-  // GET /api/v1/workspaces/:workspaceId/roles
-  fastify.get(
-    '/:workspaceId/roles',
-    {
-      schema: {
-        tags: ['Workspaces', 'Roles'],
-        summary: 'Get workspace and application role definitions with their permissions',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId'],
-          properties: { workspaceId: { type: 'string' } },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId } = request.params as { workspaceId: string };
-      const roles = await dataService.getRoleDefinitions(workspaceId);
-      return reply.send({
-        success: true,
-        data: roles,
-      });
-    }
-  );
-
-  // POST /api/v1/workspaces/:workspaceId/roles/seed
-  fastify.post(
-    '/:workspaceId/roles/seed',
-    {
-      schema: {
-        tags: ['Workspaces', 'Roles'],
-        summary: 'Seed default role definitions for workspace and applications',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId'],
-          properties: { workspaceId: { type: 'string' } },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId } = request.params as { workspaceId: string };
-      await dataService.seedDefaultRoleDefinitions(workspaceId);
-      return reply.send({
-        success: true,
-        message: 'Default roles seeded successfully.',
-      });
-    }
-  );
-
-  // GET /api/v1/workspaces/:workspaceId/permissions/evaluate
-  fastify.get(
-    '/:workspaceId/permissions/evaluate',
-    {
-      schema: {
-        tags: ['Workspaces', 'Permissions'],
-        summary: 'Evaluate 3-tier user permissions for workspace, application, and branch',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId'],
-          properties: { workspaceId: { type: 'string' } },
-        },
-        querystring: {
-          type: 'object',
-          properties: {
-            applicationKey: { type: 'string' },
-            branchId: { type: 'string' },
-            userId: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId } = request.params as { workspaceId: string };
-      const query = request.query as { applicationKey?: string; branchId?: string; userId?: string };
-      const targetUserId = query.userId || request.user.id;
-
-      const evaluation = await dataService.resolve3TierPermissions(
-        workspaceId,
-        targetUserId,
-        query.applicationKey,
-        query.branchId
-      );
-
-      return reply.send({
-        success: true,
-        data: evaluation,
-      });
-    }
-  );
-
-  // POST /api/v1/workspaces/:workspaceId/permissions/check
-  fastify.post(
-    '/:workspaceId/permissions/check',
-    {
-      schema: {
-        tags: ['Workspaces', 'Permissions'],
-        summary: 'Check if user has a specific permission in workspace context',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId'],
-          properties: { workspaceId: { type: 'string' } },
-        },
-        body: {
-          type: 'object',
-          required: ['permission'],
-          properties: {
-            permission: { type: 'string' },
-            applicationKey: { type: 'string' },
-            branchId: { type: 'string' },
-            userId: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId } = request.params as { workspaceId: string };
-      const body = request.body as { permission: string; applicationKey?: string; branchId?: string; userId?: string };
-      const targetUserId = body.userId || request.user.id;
-
-      const result = await dataService.checkUserPermission3Tier(
-        workspaceId,
-        targetUserId,
-        body.permission,
-        body.applicationKey,
-        body.branchId
-      );
-
-      return reply.send({
-        success: true,
-        data: result,
-      });
-    }
-  );
-
-  // GET /api/v1/workspaces/:workspaceId/audit-logs/memberships
-  fastify.get(
-    '/:workspaceId/audit-logs/memberships',
-    {
-      schema: {
-        tags: ['Workspaces', 'Audit'],
-        summary: 'Query membership audit logs for workspace',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId'],
-          properties: { workspaceId: { type: 'string' } },
-        },
-        querystring: {
-          type: 'object',
-          properties: {
-            targetUserId: { type: 'string' },
-            actionType: { type: 'string' },
-            membershipType: { type: 'string' },
-            limit: { type: 'number' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId } = request.params as { workspaceId: string };
-      const query = request.query as {
-        targetUserId?: string;
-        actionType?: string;
-        membershipType?: string;
-        limit?: number;
-      };
-
-      const logs = await dataService.getMembershipAuditLogs(workspaceId, request.user.id, query);
-      return reply.send({
-        success: true,
-        data: { logs: logs || [] },
-      });
-    }
-  );
-
-  // GET /api/v1/workspaces/:workspaceId/branch-assignments
-  fastify.get(
-    '/:workspaceId/branch-assignments',
-    {
-      schema: {
-        tags: ['Workspaces', 'Branches'],
-        summary: 'List branch assignments for workspace',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId'],
-          properties: { workspaceId: { type: 'string' } },
-        },
-        querystring: {
-          type: 'object',
-          properties: {
-            branchId: { type: 'string' },
-            userId: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId } = request.params as { workspaceId: string };
-      const query = request.query as { branchId?: string; userId?: string };
-
-      const assignments = await dataService.getBranchAssignments(
-        workspaceId,
-        request.user.id,
-        query.branchId,
-        query.userId
-      );
-
-      return reply.send({
-        success: true,
-        data: { assignments: assignments || [] },
-      });
-    }
-  );
-
-  // POST /api/v1/workspaces/:workspaceId/branch-assignments
-  fastify.post(
-    '/:workspaceId/branch-assignments',
-    {
-      schema: {
-        tags: ['Workspaces', 'Branches'],
-        summary: 'Assign a user to a branch with a role (manager, staff, viewer)',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId'],
-          properties: { workspaceId: { type: 'string' } },
-        },
-        body: {
-          type: 'object',
-          required: ['userId', 'branchId', 'role'],
-          properties: {
-            userId: { type: 'string' },
-            branchId: { type: 'string' },
-            role: { type: 'string' },
-            reason: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId } = request.params as { workspaceId: string };
-      const body = request.body as { userId: string; branchId: string; role: string; reason?: string };
-
-      const result = await dataService.assignBranchRole({
-        workspaceId,
-        callerUserId: request.user.id,
-        targetUserId: body.userId,
-        branchId: body.branchId,
-        role: body.role,
-        reason: body.reason,
-      });
-
-      return reply.send({
-        success: true,
-        message: 'Branch assignment updated.',
-        data: result,
-      });
-    }
-  );
-
-  // DELETE /api/v1/workspaces/:workspaceId/branch-assignments/:assignmentId
-  fastify.delete(
-    '/:workspaceId/branch-assignments/:assignmentId',
-    {
-      schema: {
-        tags: ['Workspaces', 'Branches'],
-        summary: 'Remove branch assignment',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['workspaceId', 'assignmentId'],
-          properties: {
-            workspaceId: { type: 'string' },
-            assignmentId: { type: 'string' },
-          },
-        },
-        body: {
-          type: 'object',
-          properties: {
-            reason: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { workspaceId, assignmentId } = request.params as { workspaceId: string; assignmentId: string };
-      const body = (request.body as { reason?: string }) || {};
-
-      await dataService.removeBranchAssignment({
-        workspaceId,
-        callerUserId: request.user.id,
-        assignmentId,
-        reason: body.reason,
-      });
-
-      return reply.send({
-        success: true,
-        message: 'Branch assignment removed.',
-      });
-    }
-  );
-
 
 
   // ==========================================
@@ -2757,6 +1873,7 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
           properties: {
             newOwnerUserId: { type: 'string' },
             password: { type: 'string' },
+            confirmationPassword: { type: 'string' },
             reason: { type: 'string' },
           },
         },
@@ -2764,13 +1881,14 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       const { workspaceId } = request.params as { workspaceId: string };
-      const body = request.body as { newOwnerUserId: string; password?: string; reason?: string };
+      const body = request.body as { newOwnerUserId: string; password?: string; confirmationPassword?: string; reason?: string };
+      const password = body.password || body.confirmationPassword;
 
       // Optional step-up password verification
-      if (body.password) {
+      if (password) {
         const caller = await dataService.getUserById(request.user.id);
         if (caller && caller.passwordHash) {
-          const isValid = await bcrypt.compare(body.password, caller.passwordHash);
+          const isValid = await bcrypt.compare(password, caller.passwordHash);
           if (!isValid) {
             return reply.status(401).send({
               success: false,
@@ -2785,7 +1903,7 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
           workspaceId,
           request.user.id,
           body.newOwnerUserId,
-          body.password,
+          password,
           body.reason
         );
         return reply.send({

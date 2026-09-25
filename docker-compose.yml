@@ -3,26 +3,32 @@ version: '3.8'
 services:
   api:
     build:
-      context: ./api
+      context: ./backend
       dockerfile: Dockerfile
     container_name: orviohub-api
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "4000:4000"
     environment:
-      - PORT=3000
+      - PORT=4000
       - HOST=0.0.0.0
       - NODE_ENV=production
       - LOG_LEVEL=info
       - CONVEX_URL=${CONVEX_URL}
       - JWT_SECRET=${JWT_SECRET}
-      - APP_URL=${APP_URL}
+      - APP_URL=${APP_URL:-https://orviohub.com}
       - RESEND_API_KEY=${RESEND_API_KEY}
       - EMAIL_FROM=${EMAIL_FROM}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   web:
     build:
-      context: ./web
+      context: ./frontend
       dockerfile: Dockerfile
     container_name: orviohub-web
     restart: unless-stopped
@@ -30,3 +36,9 @@ services:
       - "80:80"
     depends_on:
       - api
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+

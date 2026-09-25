@@ -24,6 +24,7 @@ export default defineSchema({
     emailVerificationExpiresAt: v.optional(v.number()),
     emailVerificationCode: v.optional(v.string()),
     emailVerificationCodeExpiresAt: v.optional(v.number()),
+    emailVerificationAttempts: v.optional(v.number()),
     passwordResetToken: v.optional(v.string()),
     passwordResetTokenHash: v.optional(v.string()),
     passwordResetTokenUsed: v.optional(v.boolean()),
@@ -107,6 +108,7 @@ export default defineSchema({
     deletedAt: v.optional(v.number()),
     deletedBy: v.optional(v.string()),
     personalOnboardingCompleted: v.optional(v.boolean()),
+    welcomeEmailSent: v.optional(v.boolean()),
     lastLoginIp: v.optional(v.string()),
     totalLoginCount: v.optional(v.number()),
     createdAt: v.number(),
@@ -295,6 +297,7 @@ export default defineSchema({
     allowedApplications: v.optional(v.array(v.string())),
     allowedBranches: v.optional(v.array(v.id("branches"))),
     primaryBranchId: v.optional(v.id("branches")),
+    invitedAt: v.optional(v.number()),
     joinedAt: v.number(),
     updatedAt: v.number(),
   })
@@ -444,7 +447,7 @@ export default defineSchema({
     removalReason: v.optional(v.string()),
     leftAt: v.optional(v.number()),
     deprecated: v.optional(v.boolean()), // Legacy marker during hybrid migration
-    migratedToAppMembership: v.optional(v.id("applicationMemberships")),
+    deprecationNotice: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -1256,7 +1259,6 @@ export default defineSchema({
     verificationCode: v.optional(v.string()), // hashed OTP for branch phone
     codeExpiresAt: v.optional(v.number()),
     email: v.optional(v.string()),
-    managerId: v.optional(v.id("users")),
     status: v.string(),
     createdBy: v.optional(v.id("users")),
     deletedAt: v.optional(v.number()),
@@ -1275,20 +1277,55 @@ export default defineSchema({
     .index("by_workspace_code", ["workspaceId", "code"])
     .index("by_phone", ["phoneNormalized"]),
 
+  // Canonical per-branch staff assignment. Product memberships grant app access;
+  // this table grants a member access to a specific location and role.
+  branchAssignments: defineTable({
+    workspaceId: v.id("workspaces"),
+    branchId: v.id("branches"),
+    userId: v.id("users"),
+    productKey: v.string(),
+    role: v.string(), // branch_manager | sales_attendant | stock_manager | viewer
+    status: v.string(), // active | removed
+    assignedBy: v.id("users"),
+    assignedAt: v.number(),
+    updatedAt: v.number(),
+    removedAt: v.optional(v.number()),
+  })
+    .index("by_workspace_branch", ["workspaceId", "branchId"])
+    .index("by_workspace_branch_user", ["workspaceId", "branchId", "userId"])
+    .index("by_workspace_user", ["workspaceId", "userId"]),
+
   branchSettings: defineTable({
     branchId: v.union(v.id("branches"), v.string()),
     workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
     productKey: v.optional(v.string()),
     displayName: v.optional(v.string()),
+    // Opening Hours
     openingHours: v.optional(v.any()),
     operatingHours: v.optional(v.any()),
+    // POS & Receipts (Per-Location)
     receiptFooter: v.optional(v.string()),
+    paperWidth: v.optional(v.string()), // "80mm" | "58mm"
+    tin: v.optional(v.string()),
+    vatRate: v.optional(v.number()),
+    enableVat: v.optional(v.boolean()),
+    showCashier: v.optional(v.boolean()),
+    showCustomer: v.optional(v.boolean()),
+    showBarcode: v.optional(v.boolean()),
+    headerText: v.optional(v.string()),
+    footerMessage: v.optional(v.string()),
+    returnPolicy: v.optional(v.string()),
+    receiptPrefix: v.optional(v.string()),
+    tagline: v.optional(v.string()),
+    // Inventory Rules (Per-Location)
     negativeStockAllowed: v.optional(v.boolean()),
     allowNegativeStock: v.optional(v.boolean()),
     enforceStockCheck: v.optional(v.boolean()),
     lowStockThreshold: v.optional(v.number()),
+    stockAdjustmentApprovalRequired: v.optional(v.boolean()),
     discrepancyApprovalThreshold: v.optional(v.number()), // e.g. require approval if adjustment value > threshold
     enforceStockCountApproval: v.optional(v.boolean()),
+    // Lifecycle & Meta
     isPrimary: v.optional(v.boolean()),
     status: v.optional(v.string()),
     createdAt: v.number(),
@@ -1310,22 +1347,6 @@ export default defineSchema({
   })
     .index("by_workspace", ["workspaceId"])
     .index("by_workspace_product", ["workspaceId", "productKey"]),
-
-  appBranchAccess: defineTable({
-    workspaceId: v.id("workspaces"),
-    userId: v.id("users"),
-    productKey: v.string(),
-    branchId: v.union(v.id("branches"), v.string()),
-    status: v.string(), // "active" | "revoked"
-    grantedBy: v.id("users"),
-    createdAt: v.number(),
-    updatedAt: v.number(),
-  })
-    .index("by_workspace_user", ["workspaceId", "userId"])
-    .index("by_workspace_product_user", ["workspaceId", "productKey", "userId"])
-    .index("by_branch_user", ["branchId", "userId"])
-    .index("by_branch_status", ["branchId", "status"])
-    .index("by_userId", ["userId"]),
 
   emailEvents: defineTable({
     recipient: v.string(),
@@ -1382,7 +1403,9 @@ export default defineSchema({
       v.literal("in_progress"),
       v.literal("completed"),
       v.literal("abandoned"),
-      v.literal("pending")
+      v.literal("pending"),
+      v.literal("not_started"),
+      v.literal("skipped")
     ),
     currentStep: v.string(),
     completedSteps: v.array(v.string()),
@@ -1539,6 +1562,8 @@ export default defineSchema({
     organizationId: v.id("organizations"),
     productKey: v.optional(v.string()),
     email: v.string(),
+    phone: v.optional(v.string()),
+    phoneNormalized: v.optional(v.string()),
     invitedUserId: v.optional(v.id("users")),
     role: v.union(
       v.literal("OWNER"),
@@ -1796,6 +1821,7 @@ export default defineSchema({
     cancelledBy: v.optional(v.id("users")),
     cancellationReason: v.optional(v.string()),
     receiptSnapshot: v.optional(v.any()), // Frozen snapshot of receipt branding at point of sale
+    metadata: v.optional(v.any()), // Extended metadata (e.g. { tutorial: true })
     createdAt: v.number(),
   })
     .index("by_workspaceId", ["workspaceId"])
@@ -1942,7 +1968,69 @@ export default defineSchema({
     .index("by_user_and_created", ["userId", "createdAt"])
     .index("by_user_and_event", ["userId", "eventType"]),
 
+  platformAdmins: defineTable({
+    email: v.string(),
+    passwordHash: v.string(),
+    name: v.string(),
+    role: v.string(), // 'super_admin'
+    isActive: v.boolean(),
+    avatar: v.optional(v.string()),
+    avatarUrl: v.optional(v.string()),
+    lastLoginAt: v.optional(v.number()),
+    lastLoginIp: v.optional(v.string()),
+    failedLoginAttempts: v.optional(v.number()),
+    lockedUntil: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_email", ["email"])
+    .index("by_active", ["isActive"]),
 
+  adminSessions: defineTable({
+    adminId: v.id("platformAdmins"),
+    sessionToken: v.string(),
+    ipAddress: v.optional(v.string()),
+    userAgent: v.optional(v.string()),
+    expiresAt: v.number(),
+    createdAt: v.number(),
+    lastActiveAt: v.number(),
+  })
+    .index("by_token", ["sessionToken"])
+    .index("by_admin", ["adminId"])
+    .index("by_expires", ["expiresAt"]),
+
+  adminAuditLogs: defineTable({
+    adminId: v.optional(v.id("platformAdmins")),
+    action: v.string(),
+    resourceType: v.optional(v.string()),
+    resourceId: v.optional(v.string()),
+    details: v.optional(v.any()),
+    ipAddress: v.optional(v.string()),
+    userAgent: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_admin", ["adminId"])
+    .index("by_action", ["action"])
+    .index("by_created", ["createdAt"]),
+
+  adminLoginAttempts: defineTable({
+    ipAddress: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_ip", ["ipAddress"])
+    .index("by_created", ["createdAt"]),
+
+  adminStepUpTokens: defineTable({
+    adminId: v.id("platformAdmins"),
+    tokenHash: v.string(),
+    targetAction: v.string(),
+    targetId: v.string(),
+    expiresAt: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_token_hash", ["tokenHash"])
+    .index("by_admin", ["adminId"])
+    .index("by_expires", ["expiresAt"]),
 
   platformStats: defineTable({
     metricName: v.string(),
@@ -2018,25 +2106,6 @@ export default defineSchema({
     .index("by_state", ["stateCode"])
     .index("by_type_state", ["type", "stateCode"]),
 
-  userPhones: defineTable({
-    userId: v.id("users"),
-    phone: v.string(),
-    phoneNormalized: v.string(),
-    isVerified: v.boolean(),
-    isPrimary: v.boolean(),
-    verificationCode: v.optional(v.string()), // hashed OTP
-    codeExpiresAt: v.optional(v.number()),
-    attemptsCount: v.optional(v.number()),
-    lastAttemptAt: v.optional(v.number()),
-    verifiedAt: v.optional(v.number()),
-    createdAt: v.number(),
-    updatedAt: v.optional(v.number()),
-  })
-    .index("by_user", ["userId"])
-    .index("by_phone", ["phoneNormalized"])
-    .index("by_user_phone", ["userId", "phoneNormalized"])
-    .index("by_user_primary", ["userId", "isPrimary"]),
-
   applications: defineTable({
     key: v.string(), // "inventory", "task_management", "crm", "gym", "booking", etc.
     name: v.string(),
@@ -2109,264 +2178,166 @@ export default defineSchema({
     .index("by_applicationId", ["applicationId"])
     .index("by_org_and_app", ["organizationId", "applicationId"]),
 
-  branchMemberships: defineTable({
-    workspaceId: v.string(),
-    organizationId: v.optional(v.id("organizations")),
-    applicationKey: v.string(), // "inventory", "taskmanagement", etc.
-    branchId: v.string(),
+  userAdminSupportNotes: defineTable({
     userId: v.id("users"),
-    applicationMembershipId: v.optional(v.string()),
-    role: v.string(), // "inventory_owner" | "inventory_manager" | "cashier" | "stock_manager" | "accountant" | "inventory_viewer"
-    roleOverride: v.optional(v.string()),
-    permissions: v.array(v.string()),
-    status: v.union(v.literal("active"), v.literal("suspended"), v.literal("removed")),
-    assignedByUserId: v.id("users"),
-    assignedAt: v.number(),
-    suspendedAt: v.optional(v.number()),
-    suspensionReason: v.optional(v.string()),
-    removedAt: v.optional(v.number()),
-    removalReason: v.optional(v.string()),
-    transferredFromBranchId: v.optional(v.string()),
-    transferredFromRole: v.optional(v.string()),
+    authorId: v.id("platformAdmins"),
+    authorName: v.string(),
+    category: v.union(
+      v.literal("support"),
+      v.literal("billing"),
+      v.literal("security"),
+      v.literal("onboarding"),
+      v.literal("general")
+    ),
+    note: v.string(),
+    visibility: v.literal("admin_only"),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
-    .index("by_workspace", ["workspaceId"])
-    .index("by_workspace_user", ["workspaceId", "userId"])
-    .index("by_workspace_branch", ["workspaceId", "branchId"])
-    .index("by_workspace_application", ["workspaceId", "applicationKey"])
-    .index("by_workspace_application_branch", ["workspaceId", "applicationKey", "branchId"])
-    .index("by_user_application", ["userId", "applicationKey"])
-    .index("by_user_branch", ["userId", "branchId"])
-    .index("by_branch_status", ["branchId", "status"])
-    .index("by_user_status", ["userId", "status"])
-    .index("by_status", ["status"]),
+    .index("by_userId", ["userId"])
+    .index("by_user_and_category", ["userId", "category"]),
 
-  branchTransfers: defineTable({
-    workspaceId: v.string(),
-    organizationId: v.optional(v.id("organizations")),
-    applicationKey: v.string(),
-    userId: v.id("users"),
-    membershipId: v.optional(v.string()),
-    fromBranchId: v.optional(v.string()),
-    toBranchId: v.optional(v.string()),
-    sourceBranchId: v.string(),
-    targetBranchId: v.string(),
-    fromRole: v.optional(v.string()),
-    toRole: v.optional(v.string()),
-    previousRole: v.string(),
-    newRole: v.string(),
-    reason: v.optional(v.string()),
-    transferredBy: v.id("users"),
-    effectiveDate: v.number(),
-    effectiveAt: v.optional(v.number()),
-    message: v.optional(v.string()),
-    createdAt: v.number(),
-  })
-    .index("by_workspace", ["workspaceId"])
-    .index("by_user", ["userId"])
-    .index("by_source_branch", ["sourceBranchId"])
-    .index("by_target_branch", ["targetBranchId"]),
-
-  branchMembershipTransfers: defineTable({
-    workspaceId: v.string(),
-    organizationId: v.optional(v.id("organizations")),
-    applicationKey: v.string(), // "inventory"
-    userId: v.id("users"),
-    membershipId: v.string(),
-    fromBranchId: v.string(),
-    toBranchId: v.string(),
-    fromRole: v.string(),
-    toRole: v.string(),
-    reason: v.optional(v.string()),
-    effectiveAt: v.number(),
-    transferredBy: v.id("users"),
-    createdAt: v.number(),
-  })
-    .index("by_workspace", ["workspaceId"])
-    .index("by_user", ["userId"])
-    .index("by_membership", ["membershipId"])
-    .index("by_created", ["createdAt"])
-    .index("by_from_branch", ["fromBranchId"])
-    .index("by_to_branch", ["toBranchId"]),
-
-  applicationMemberships: defineTable({
-    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
-    userId: v.id("users"),
-    applicationKey: v.union(
-      v.literal("inventory"),
-      v.literal("tasks"),
-      v.literal("pos"),
-      v.literal("gym"),
-      v.literal("booking"),
-      v.literal("crm"),
-      v.string()
-    ),
-    appRole: v.optional(v.union(v.literal("admin"), v.literal("member"), v.literal("viewer"), v.string())),
-    role: v.optional(v.string()), // Legacy compatibility
-    status: v.union(v.literal("active"), v.literal("suspended"), v.literal("removed")),
-    addedBy: v.optional(v.union(v.id("users"), v.string())),
-    addedAt: v.optional(v.number()),
-    grantedBy: v.optional(v.union(v.id("users"), v.string())),
-    grantedAt: v.optional(v.number()),
-    assignedBy: v.optional(v.union(v.id("users"), v.string())),
-    assignedAt: v.optional(v.number()),
-    jobTitle: v.optional(v.string()),
-    employeeId: v.optional(v.string()),
-    phoneNumber: v.optional(v.string()),
-    customPermissions: v.optional(v.array(v.string())),
-    permissions: v.optional(v.array(v.string())),
-    branchIds: v.optional(v.array(v.union(v.id("branches"), v.string()))),
-    suspendedAt: v.optional(v.number()),
-    suspensionReason: v.optional(v.string()),
-    removedAt: v.optional(v.number()),
-    removalReason: v.optional(v.string()),
-    createdAt: v.number(),
-    updatedAt: v.number(),
-  })
-    .index("by_workspace", ["workspaceId"])
-    .index("by_workspace_user", ["workspaceId", "userId"])
-    .index("by_workspace_application", ["workspaceId", "applicationKey"])
-    .index("by_workspace_app", ["workspaceId", "applicationKey"])
-    .index("by_user_application", ["userId", "applicationKey"])
-    .index("by_user_app", ["userId", "applicationKey"])
-    .index("by_user_workspace", ["userId", "workspaceId"])
-    .index("by_workspace_user_app", ["workspaceId", "userId", "applicationKey"])
-    .index("by_workspace_application_user", ["workspaceId", "applicationKey", "userId"])
-    .index("by_status", ["status"]),
-
-  teamInvitations: defineTable({
-    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
-    applicationKey: v.string(),
-    email: v.string(),
-    phoneNumber: v.optional(v.string()),
-    appRole: v.union(
-      v.literal("admin"),
-      v.literal("member"),
-      v.literal("viewer")
-    ),
-    branchAssignments: v.optional(
-      v.array(
-        v.object({
-          branchId: v.union(v.id("branches"), v.string()),
-          branchRole: v.union(
-            v.literal("manager"),
-            v.literal("staff"),
-            v.literal("viewer"),
-            v.literal("accountant")
-          ),
-        })
-      )
-    ),
-    invitedBy: v.union(v.id("users"), v.string()),
-    invitedAt: v.number(),
-    expiresAt: v.number(),
-    message: v.optional(v.string()),
-    status: v.union(
-      v.literal("pending"),
-      v.literal("accepted"),
-      v.literal("declined"),
-      v.literal("expired"),
-      v.literal("revoked")
-    ),
-    acceptedAt: v.optional(v.number()),
-    declinedAt: v.optional(v.number()),
-    existingUserId: v.optional(v.id("users")),
-    createdAt: v.number(),
-  })
-    .index("by_email_status", ["email", "status"])
-    .index("by_workspace_app", ["workspaceId", "applicationKey"])
-    .index("by_invited_by", ["invitedBy"])
-    .index("by_expires_at", ["expiresAt"]),
-
-  branchAssignments: defineTable({
-    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
-    userId: v.id("users"),
-    applicationKey: v.optional(v.string()), // "inventory", "tasks", etc.
-    branchId: v.union(v.id("branches"), v.string()),
-    branchRole: v.optional(
-      v.union(
-        v.literal("manager"),
-        v.literal("staff"),
-        v.literal("viewer"),
-        v.literal("accountant"),
-        v.string()
-      )
-    ),
-    role: v.optional(v.string()), // Legacy compatibility
-    assignmentType: v.optional(
-      v.union(
-        v.literal("primary"),
-        v.literal("secondary"),
-        v.literal("temporary")
-      )
-    ),
-    temporaryUntil: v.optional(v.number()),
-    status: v.optional(v.union(v.literal("active"), v.literal("suspended"), v.literal("removed"))),
-    assignedBy: v.optional(v.union(v.id("users"), v.string())),
-    assignedAt: v.optional(v.number()),
-    grantedBy: v.optional(v.union(v.id("users"), v.string())),
-    grantedAt: v.optional(v.number()),
-    customPermissions: v.optional(v.array(v.string())),
-    createdAt: v.number(),
-    updatedAt: v.number(),
-  })
-    .index("by_workspace", ["workspaceId"])
-    .index("by_workspace_user_branch", ["workspaceId", "userId", "branchId"])
-    .index("by_user_workspace_app", ["userId", "workspaceId", "applicationKey"])
-    .index("by_branch_workspace_app", ["branchId", "workspaceId", "applicationKey"])
-    .index("by_user_branch", ["userId", "branchId"])
-    .index("by_branch_user", ["branchId", "userId"])
-    .index("by_user_workspace", ["userId", "workspaceId"])
-    .index("by_branch", ["branchId"])
-    .index("by_temporary_until", ["temporaryUntil"]),
-
-  workspaceRoleDefinitions: defineTable({
+  phoneVerificationChallenges: defineTable({
+    userId: v.optional(v.id("users")),
     workspaceId: v.optional(v.union(v.id("workspaces"), v.id("organizations"), v.string())),
-    roleKey: v.string(), // "owner" | "admin" | "member" | "guest"
-    permissions: v.array(v.string()),
-    isSystemRole: v.boolean(),
-    createdAt: v.number(),
-    updatedAt: v.number(),
-  })
-    .index("by_workspace_role", ["workspaceId", "roleKey"])
-    .index("by_workspace", ["workspaceId"])
-    .index("by_roleKey", ["roleKey"]),
-
-  applicationRoleDefinitions: defineTable({
-    workspaceId: v.optional(v.union(v.id("workspaces"), v.id("organizations"), v.string())),
-    applicationKey: v.string(), // "inventory", "tasks", "pos", "gym", "booking", "crm"
-    roleKey: v.string(), // "admin" | "member" | "viewer"
-    permissions: v.array(v.string()),
-    isSystemRole: v.boolean(),
-    createdAt: v.number(),
-    updatedAt: v.number(),
-  })
-    .index("by_workspace_app_role", ["workspaceId", "applicationKey", "roleKey"])
-    .index("by_workspace_app", ["workspaceId", "applicationKey"])
-    .index("by_app_role", ["applicationKey", "roleKey"]),
-
-  membershipAuditLogs: defineTable({
-    workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
-    actorUserId: v.union(v.id("users"), v.string()),
-    targetUserId: v.union(v.id("users"), v.string()),
-    actionType: v.string(), // 'invited' | 'accepted' | 'role_changed' | 'app_access_granted' | 'app_access_revoked' | 'branch_assigned' | 'branch_revoked' | 'suspended' | 'restored' | 'removed'
-    membershipType: v.union(v.literal("workspace"), v.literal("application"), v.literal("branch")),
-    membershipId: v.string(),
-    applicationKey: v.optional(v.string()),
+    organizationId: v.optional(v.union(v.id("organizations"), v.string())),
     branchId: v.optional(v.union(v.id("branches"), v.string())),
-    previousRole: v.optional(v.string()),
-    newRole: v.optional(v.string()),
-    reason: v.optional(v.string()),
-    requestId: v.optional(v.string()),
-    ipAddress: v.optional(v.string()),
-    userAgent: v.optional(v.string()),
+    phone: v.string(),
+    phoneNormalized: v.string(),
+    purpose: v.string(), // "user_phone_verification" | "user_phone_change" | "phone_recovery_setup" | "sms_mfa_setup" | "workspace_phone_verification" | "branch_phone_verification"
+    codeHash: v.string(),
+    status: v.union(v.literal("pending"), v.literal("verified"), v.literal("expired"), v.literal("cancelled")),
+    attempts: v.number(),
+    maxAttempts: v.number(),
+    expiresAt: v.number(),
+    lastResentAt: v.optional(v.number()),
+    resendCount: v.optional(v.number()),
+    verifiedAt: v.optional(v.number()),
     createdAt: v.number(),
   })
-    .index("by_workspace", ["workspaceId"])
-    .index("by_workspace_created", ["workspaceId", "createdAt"])
-    .index("by_actor", ["actorUserId"])
-    .index("by_target", ["targetUserId"]),
+    .index("by_phone_normalized", ["phoneNormalized"])
+    .index("by_user_purpose", ["userId", "purpose", "status"])
+    .index("by_workspace_purpose", ["workspaceId", "purpose", "status"])
+    .index("by_branch_purpose", ["branchId", "purpose", "status"])
+    .index("by_status_expires", ["status", "expiresAt"]),
+
+  idempotencyKeys: defineTable({
+    key: v.string(),
+    scope: v.string(),
+    fingerprint: v.string(),
+    status: v.union(v.literal("processing"), v.literal("completed"), v.literal("failed")),
+    statusCode: v.optional(v.number()),
+    responseBody: v.optional(v.string()),
+    userId: v.optional(v.union(v.id("users"), v.string())),
+    lockedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+  })
+    .index("by_key", ["key"])
+    .index("by_expiresAt", ["expiresAt"]),
+
+  oauthFlows: defineTable({
+    flowId: v.string(),
+    provider: v.union(v.literal("google"), v.literal("facebook")),
+    stateHash: v.string(),
+    nonceHash: v.optional(v.string()),
+    pkceChallenge: v.optional(v.string()),
+    pkceVerifier: v.optional(v.string()),
+    returnTo: v.optional(v.string()),
+    product: v.optional(v.string()),
+    status: v.union(v.literal("pending"), v.literal("completed"), v.literal("replayed")),
+    userId: v.optional(v.id("users")),
+    usedAt: v.optional(v.number()),
+    expiresAt: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_stateHash", ["stateHash"])
+    .index("by_flowId", ["flowId"])
+    .index("by_expiresAt", ["expiresAt"]),
+
+  analyticsDailyMetrics: defineTable({
+    date: v.string(),
+    timezone: v.optional(v.string()),
+    currency: v.optional(v.string()),
+    activeOrganizations: v.optional(v.number()),
+    trialOrganizations: v.optional(v.number()),
+    standardOrganizations: v.optional(v.number()),
+    premiumOrganizations: v.optional(v.number()),
+    mrr: v.optional(v.number()),
+    arr: v.optional(v.number()),
+    complimentaryMrr: v.optional(v.number()),
+    successfulPayments: v.optional(v.number()),
+    failedPayments: v.optional(v.number()),
+    paymentVolume: v.optional(v.number()),
+    trialStarts: v.optional(v.number()),
+    trialConversions: v.optional(v.number()),
+    cancellations: v.optional(v.number()),
+    downgrades: v.optional(v.number()),
+    upgrades: v.optional(v.number()),
+    inventoryActivations: v.optional(v.number()),
+    inventorySetupCompletions: v.optional(v.number()),
+    demoBranches: v.optional(v.number()),
+    computedAt: v.optional(v.number()),
+    version: v.optional(v.number()),
+  })
+    .index("by_date", ["date"]),
+
+  analyticsEvents: defineTable({
+    eventId: v.string(),
+    eventType: v.string(),
+    workspaceId: v.optional(v.string()),
+    billingAccountId: v.optional(v.string()),
+    subscriptionId: v.optional(v.string()),
+    planKey: v.optional(v.string()),
+    amount: v.optional(v.number()),
+    currency: v.optional(v.string()),
+    occurredAt: v.optional(v.number()),
+    requestId: v.optional(v.string()),
+    source: v.optional(v.string()),
+    metadata: v.optional(v.any()),
+    createdAt: v.number(),
+  })
+    .index("by_eventId", ["eventId"])
+    .index("by_eventType", ["eventType"])
+    .index("by_workspace", ["workspaceId"]),
+
+  userDashboardVisits: defineTable({
+    userId: v.string(),
+    workspaceId: v.optional(v.string()),
+    organizationId: v.optional(v.string()),
+    branchId: v.optional(v.string()),
+    productKey: v.string(),
+    visitCount: v.number(),
+    firstVisitedAt: v.number(),
+    lastVisitedAt: v.number(),
+    welcomedAt: v.optional(v.number()),
+  })
+    .index("by_user_org_product", ["userId", "organizationId", "productKey"])
+    .index("by_user_branch_product", ["userId", "branchId", "productKey"])
+    .index("by_user_product", ["userId", "productKey"]),
+
+  platform_applications: defineTable({
+    key: v.string(),
+    name: v.string(),
+    status: v.union(
+      v.literal("coming_soon"),
+      v.literal("active"),
+      v.literal("maintenance"),
+      v.literal("deprecated")
+    ),
+    isCore: v.boolean(),
+    planRequirements: v.array(v.string()),
+    subdomain: v.string(),
+    icon: v.optional(v.string()),
+    description: v.optional(v.string()),
+    badge: v.optional(v.string()),
+    displayOrder: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_key", ["key"])
+    .index("by_status", ["status"])
+    .index("by_isCore", ["isCore"]),
 });
 
 

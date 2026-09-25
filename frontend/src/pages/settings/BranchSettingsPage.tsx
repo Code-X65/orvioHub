@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { useBranchStore } from '@/stores/useBranchStore';
@@ -8,10 +8,16 @@ import { OpeningHoursEditor, type WeeklyOpeningHours } from '@/components/settin
 import { AddressForm, type NigerianAddress } from '@/components/location/AddressForm';
 import { ConfirmationModal } from '@/components/settings/ConfirmationModal';
 import { UpgradeModal } from '@/components/billing/UpgradeModal';
+import { BranchCreationModal } from '@/components/workspace/BranchCreationModal';
+import { useBranchLimit } from '@/hooks/useBranchLimit';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Spinner } from '@/components/ui/spinner';
 import { toast } from 'sonner';
+import { validatePhoneNumber } from '@/lib/phoneValidation';
+import { BranchPhoneVerification } from '@/components/phone/BranchPhoneVerification';
+import { FormSkeleton } from '@/components/common/LoadingSkeletons';
 import {
   Store,
   MapPin,
@@ -19,7 +25,6 @@ import {
   Users,
   UserPlus,
   Trash2,
-  Sliders,
   ShieldAlert,
   Loader2,
   Save,
@@ -30,14 +35,15 @@ import {
   ShieldCheck,
   ArrowRightLeft,
   Search,
-  ScrollText,
   Mail,
-  Building2,
   CheckCircle2,
+  AlertCircle,
   Plus,
   ChevronDown,
-  AlertTriangle,
-  RotateCw,
+  Receipt,
+  Layers,
+  History,
+  GitBranch,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -99,7 +105,6 @@ const BRANCH_ROLES = [
 ];
 
 export const BranchSettingsPage: React.FC = () => {
-  const navigate = useNavigate();
   const { branchId: urlBranchId } = useParams<{ branchId?: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const { memberships, activeOrganizationId } = useAuthStore();
@@ -141,10 +146,14 @@ export const BranchSettingsPage: React.FC = () => {
     code: '',
     description: '',
     phone: '',
+    phoneVerified: false,
+    phoneStatus: 'unverified' as 'unverified' | 'pending' | 'verified',
     email: '',
     isPrimary: false,
     status: 'active',
   });
+  const [isPhoneVerifyModalOpen, setIsPhoneVerifyModalOpen] = useState(false);
+  const [isStartingPhoneVerify, setIsStartingPhoneVerify] = useState(false);
 
   // Structured Address State
   const [addressForm, setAddressForm] = useState<NigerianAddress>({
@@ -171,22 +180,35 @@ export const BranchSettingsPage: React.FC = () => {
     sunday: { open: '10:00', closed: true, close: '16:00' },
   });
 
-  // Operational Settings State
-  const [operationalForm, setOperationalForm] = useState({
-    receiptFooter: '',
-    negativeStockAllowed: false,
+  // POS & Receipt Settings State
+  const [posReceiptForm, setPosReceiptForm] = useState({
+    paperWidth: '80mm',
+    tin: '',
+    vatRate: 7.5,
+    enableVat: false,
+    showCashier: true,
+    showCustomer: true,
+    showBarcode: false,
+    headerText: '',
+    footerMessage: '',
+    returnPolicy: '',
+    receiptPrefix: 'REC',
+    tagline: '',
+  });
+
+  // Branch Inventory Rules State
+  const [inventoryRulesForm, setInventoryRulesForm] = useState({
     lowStockThreshold: 10,
+    negativeStockAllowed: false,
+    stockAdjustmentApprovalRequired: false,
+    discrepancyApprovalThreshold: 5000,
+    enforceStockCountApproval: false,
   });
 
   // Modals & Action States
   const [actionModal, setActionModal] = useState<'primary' | 'suspend' | 'restore' | 'archive' | null>(null);
   const [isAddBranchModalOpen, setIsAddBranchModalOpen] = useState(false);
   const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState(false);
-  const [newBranchName, setNewBranchName] = useState('');
-  const [newBranchCode, setNewBranchCode] = useState('');
-  const [newBranchAddress, setNewBranchAddress] = useState('');
-  const [newBranchPhone, setNewBranchPhone] = useState('');
-  const [isCreatingBranch, setIsCreatingBranch] = useState(false);
 
   // Team Management State
   const [branchMembers, setBranchMembers] = useState<BranchStaffRecord[]>([]);
@@ -196,6 +218,20 @@ export const BranchSettingsPage: React.FC = () => {
   const [isTeamLoading, setIsTeamLoading] = useState(false);
   const [branchSubTab, setBranchSubTab] = useState<'staff' | 'invitations' | 'audit'>('staff');
   const [teamSearch, setTeamSearch] = useState('');
+
+  // Branch Switch History (Impl 27)
+  interface BranchSwitchEntry {
+    id: string;
+    actorName?: string;
+    actorUserId?: string;
+    previousBranchId?: string;
+    previousBranchName?: string;
+    newBranchId?: string;
+    newBranchName?: string;
+    timestamp: number;
+  }
+  const [branchSwitchHistory, setBranchSwitchHistory] = useState<BranchSwitchEntry[]>([]);
+  const [isSwitchHistoryLoading, setIsSwitchHistoryLoading] = useState(false);
 
   // Assign Existing Member Form
   const [isAddingTeamMember, setIsAddingTeamMember] = useState(false);
@@ -217,8 +253,6 @@ export const BranchSettingsPage: React.FC = () => {
 
   // Remove Staff Confirmation
   const [removeMember, setRemoveMember] = useState<BranchStaffRecord | null>(null);
-  const [removeReason, setRemoveReason] = useState('');
-  const [isRemoving, setIsRemoving] = useState(false);
 
   // Role Matrix Modal
   const [isRoleMatrixOpen, setIsRoleMatrixOpen] = useState(false);
@@ -261,61 +295,20 @@ export const BranchSettingsPage: React.FC = () => {
     }
   };
 
+  const branchLimit = useBranchLimit({
+    currentCount: branches.length,
+  });
+
   const handleAddBranchClick = () => {
-    const planKey = (currentWorkspace?.planKey || (currentWorkspace as any)?.planId || 'free_trial').toLowerCase();
-    const maxBranches = planKey === 'premium' ? 10 : planKey === 'standard' ? 3 : 1;
-    if (branches.length >= maxBranches) {
-      if (planKey === 'free_trial' || planKey === 'standard') {
+    if (branchLimit.atLimit) {
+      if (branchLimit.upgradePlan) {
         setIsUpgradeModalOpen(true);
       } else {
-        toast.error('Maximum branch limit reached (10 branches on Premium). Contact sales for enterprise expansion.');
+        toast.error(`Maximum branch limit reached (${branchLimit.maxBranches} branches on ${branchLimit.planName}). Contact sales for enterprise expansion.`);
       }
       return;
     }
-    setNewBranchName('');
-    setNewBranchCode('');
-    setNewBranchAddress('');
-    setNewBranchPhone('');
     setIsAddBranchModalOpen(true);
-  };
-
-  const handleCreateBranchSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!workspaceId) return;
-    if (!newBranchName.trim()) {
-      toast.error('Please enter a branch name.');
-      return;
-    }
-
-    setIsCreatingBranch(true);
-    try {
-      const res = await api.post<{ branchId?: string; id?: string }>(`/workspaces/${workspaceId}/branches`, {
-        name: newBranchName.trim(),
-        code: newBranchCode.trim().toUpperCase() || undefined,
-        address: newBranchAddress.trim() || undefined,
-        phone: newBranchPhone.trim() || undefined,
-        productKey: 'inventory',
-      });
-
-      toast.success(`Branch "${newBranchName.trim()}" created successfully!`);
-      setIsAddBranchModalOpen(false);
-      await fetchBranches();
-      await refreshBranchStore(workspaceId, 'inventory');
-      const newId = res.branchId || res.id;
-      if (newId) {
-        setSelectedBranchId(newId);
-      }
-    } catch (err: any) {
-      const msg = err?.response?.data?.error?.message || err?.message || 'Failed to create branch.';
-      if (msg.includes('Free Trial') || msg.includes('limit')) {
-        setIsAddBranchModalOpen(false);
-        setIsUpgradeModalOpen(true);
-      } else {
-        toast.error(msg);
-      }
-    } finally {
-      setIsCreatingBranch(false);
-    }
   };
 
   // Fetch Selected Branch Details
@@ -346,6 +339,8 @@ export const BranchSettingsPage: React.FC = () => {
           code: b.code || '',
           description: b.description || '',
           phone: b.phone || '',
+          phoneVerified: Boolean(b.phoneVerifiedAt || b.phoneVerified),
+          phoneStatus: b.phoneStatus || (b.phoneVerifiedAt || b.phoneVerified ? 'verified' : 'unverified'),
           email: b.email || '',
           isPrimary: Boolean(b.isPrimary),
           status: b.status || 'active',
@@ -363,10 +358,28 @@ export const BranchSettingsPage: React.FC = () => {
           postalCode: b.postalCode || '',
         });
         if (b.openingHours) setOpeningHours(b.openingHours);
-        setOperationalForm({
-          receiptFooter: b.receiptFooter || '',
-          negativeStockAllowed: Boolean(b.negativeStockAllowed),
-          lowStockThreshold: b.lowStockThreshold ?? 10,
+
+        setPosReceiptForm({
+          paperWidth: b.paperWidth || b.receiptSettings?.paperWidth || '80mm',
+          tin: b.tin || b.receiptSettings?.tin || '',
+          vatRate: b.vatRate ?? b.receiptSettings?.vatRate ?? 7.5,
+          enableVat: b.enableVat ?? b.receiptSettings?.enableVat ?? false,
+          showCashier: b.showCashier ?? b.receiptSettings?.showCashier ?? true,
+          showCustomer: b.showCustomer ?? b.receiptSettings?.showCustomer ?? true,
+          showBarcode: b.showBarcode ?? b.receiptSettings?.showBarcode ?? false,
+          headerText: b.headerText || b.receiptSettings?.headerText || '',
+          footerMessage: b.footerMessage || b.receiptFooter || b.receiptSettings?.footerMessage || '',
+          returnPolicy: b.returnPolicy || b.receiptSettings?.returnPolicy || '',
+          receiptPrefix: b.receiptPrefix || b.receiptSettings?.receiptPrefix || 'REC',
+          tagline: b.tagline || b.receiptSettings?.tagline || '',
+        });
+
+        setInventoryRulesForm({
+          lowStockThreshold: b.lowStockThreshold ?? b.stockRules?.lowStockThreshold ?? 10,
+          negativeStockAllowed: b.negativeStockAllowed ?? b.stockRules?.negativeStockAllowed ?? false,
+          stockAdjustmentApprovalRequired: b.stockAdjustmentApprovalRequired ?? b.stockRules?.stockAdjustmentApprovalRequired ?? false,
+          discrepancyApprovalThreshold: b.discrepancyApprovalThreshold ?? 5000,
+          enforceStockCountApproval: b.enforceStockCountApproval ?? false,
         });
       }
     } catch (err: any) {
@@ -382,14 +395,14 @@ export const BranchSettingsPage: React.FC = () => {
     setIsTeamLoading(true);
     try {
       const [membersRes, wsMembersRes, invitesRes, auditRes] = await Promise.all([
-        api.get<{ members?: any[]; data?: any[] }>(`/workspaces/${workspaceId}/inventory/branches/${selectedBranchId}/members`).catch(() => ({ members: [] })),
-        api.get<{ members?: any[]; data?: any[] }>(`/workspaces/${workspaceId}/members`).catch(() => ({ members: [] })),
-        api.get<{ invitations?: BranchInvitationRecord[] }>(`/workspaces/${workspaceId}/invitations`).catch(() => ({ invitations: [] })),
-        api.get<{ data?: { logs: BranchAuditLogRecord[] } }>(`/workspaces/${workspaceId}/audit-logs/memberships?branchId=${selectedBranchId}`).catch(() => ({ data: { logs: [] } })),
+        api.get<any>(`/workspaces/${workspaceId}/inventory/branches/${selectedBranchId}/members`).catch(() => ({ members: [] })),
+        api.get<any>(`/workspaces/${workspaceId}/members`).catch(() => ({ members: [] })),
+        api.get<any>(`/workspaces/${workspaceId}/invitations`).catch(() => ({ invitations: [] })),
+        api.get<any>(`/workspaces/${workspaceId}/audit-logs/memberships?branchId=${selectedBranchId}`).catch(() => ({ data: { logs: [] } })),
       ]);
 
-      const bMembers = membersRes?.members || (membersRes as any)?.data?.members || (Array.isArray(membersRes?.data) ? membersRes.data : []) || [];
-      const orgMembers = wsMembersRes?.members || (wsMembersRes as any)?.data?.members || (Array.isArray(wsMembersRes?.data) ? wsMembersRes.data : []) || [];
+      const bMembers = (membersRes as any)?.members || (membersRes as any)?.data?.members || (Array.isArray((membersRes as any)?.data) ? (membersRes as any).data : []) || [];
+      const orgMembers = (wsMembersRes as any)?.members || (wsMembersRes as any)?.data?.members || (Array.isArray((wsMembersRes as any)?.data) ? (wsMembersRes as any).data : []) || [];
 
       setWorkspaceMembersList(orgMembers.map((m: any) => ({
         id: m.id || m.userId || m._id,
@@ -440,6 +453,40 @@ export const BranchSettingsPage: React.FC = () => {
     }
   }, [workspaceId, selectedBranchId]);
 
+  // Fetch Branch Switch History from telemetry endpoint (Impl 27)
+  const fetchBranchSwitchHistory = useCallback(async () => {
+    if (!workspaceId || !selectedBranchId) return;
+    setIsSwitchHistoryLoading(true);
+    try {
+      const res = await api.get<any>(
+        `/workspaces/${workspaceId}/telemetry/branch-switches?branchId=${selectedBranchId}&limit=50`
+      ).catch(() => null);
+
+      const entries = res?.data?.switches ||
+        res?.switches ||
+        res?.data?.entries ||
+        res?.entries ||
+        [];
+
+      setBranchSwitchHistory(
+        entries.map((e: any) => ({
+          id: e.id || e._id || String(e.timestamp || Math.random()),
+          actorName: e.actorName || e.actor?.name || e.userName || undefined,
+          actorUserId: e.actorUserId || e.actor?.id || undefined,
+          previousBranchId: e.previousBranchId || undefined,
+          previousBranchName: e.previousBranchName || undefined,
+          newBranchId: e.newBranchId || e.branchId || undefined,
+          newBranchName: e.newBranchName || undefined,
+          timestamp: e.timestamp || e.createdAt || Date.now(),
+        }))
+      );
+    } catch {
+      // silently keep empty list
+    } finally {
+      setIsSwitchHistoryLoading(false);
+    }
+  }, [workspaceId, selectedBranchId]);
+
   useEffect(() => {
     fetchBranches();
   }, [fetchBranches]);
@@ -450,8 +497,11 @@ export const BranchSettingsPage: React.FC = () => {
       if (activeTab === 'team') {
         fetchBranchTeam();
       }
+      if (activeTab === 'audit') {
+        fetchBranchSwitchHistory();
+      }
     }
-  }, [selectedBranchId, activeTab, fetchBranchDetails, fetchBranchTeam]);
+  }, [selectedBranchId, activeTab, fetchBranchDetails, fetchBranchTeam, fetchBranchSwitchHistory]);
 
   // Save Handlers
   const handleSaveProfile = async (e: React.FormEvent) => {
@@ -495,18 +545,50 @@ export const BranchSettingsPage: React.FC = () => {
     }
   };
 
-  const handleSaveOperational = async (e: React.FormEvent) => {
+  const handleSaveHours = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!workspaceId || !selectedBranchId) return;
     setIsSaving(true);
     try {
       await api.patch(`/workspaces/${workspaceId}/branches/${selectedBranchId}/settings`, {
-        ...operationalForm,
         openingHours,
       });
-      toast.success('Branch operational settings and opening hours saved.');
+      toast.success('Branch opening hours saved.');
     } catch (err: any) {
-      toast.error('Failed to save operational settings: ' + err.message);
+      toast.error('Failed to save opening hours: ' + err.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleSavePos = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!workspaceId || !selectedBranchId) return;
+    setIsSaving(true);
+    try {
+      await api.patch(`/workspaces/${workspaceId}/branches/${selectedBranchId}/settings`, {
+        ...posReceiptForm,
+        receiptFooter: posReceiptForm.footerMessage,
+      });
+      toast.success('Branch POS & receipt settings saved.');
+    } catch (err: any) {
+      toast.error('Failed to save POS settings: ' + err.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleSaveInventoryRules = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!workspaceId || !selectedBranchId) return;
+    setIsSaving(true);
+    try {
+      await api.patch(`/workspaces/${workspaceId}/branches/${selectedBranchId}/settings`, {
+        ...inventoryRulesForm,
+      });
+      toast.success('Branch inventory rules saved.');
+    } catch (err: any) {
+      toast.error('Failed to save inventory rules: ' + err.message);
     } finally {
       setIsSaving(false);
     }
@@ -658,17 +740,13 @@ export const BranchSettingsPage: React.FC = () => {
 
   const handleConfirmRemoveStaff = async () => {
     if (!removeMember || !workspaceId || !selectedBranchId) return;
-    setIsRemoving(true);
     try {
       await api.delete(`/workspaces/${workspaceId}/inventory/branches/${selectedBranchId}/members/${removeMember.userId}`);
       toast.success(`Removed ${removeMember.name} from this branch.`);
       setRemoveMember(null);
-      setRemoveReason('');
       await fetchBranchTeam();
     } catch (err: any) {
       toast.error(err?.response?.data?.error?.message || err?.message || 'Failed to remove staff.');
-    } finally {
-      setIsRemoving(false);
     }
   };
 
@@ -701,8 +779,10 @@ export const BranchSettingsPage: React.FC = () => {
     { id: 'general', label: 'Store Profile', icon: Store },
     { id: 'address', label: 'Location & Address', icon: MapPin },
     { id: 'hours', label: 'Opening Hours', icon: Clock },
-    { id: 'operations', label: 'POS & Receipts', icon: Sliders },
+    { id: 'pos', label: 'POS & Receipts', icon: Receipt },
+    { id: 'inventory', label: 'Inventory Rules', icon: Layers },
     { id: 'team', label: 'Staff & Roles', icon: Users, badge: branchMembers.length || undefined },
+    { id: 'audit', label: 'Audit Log', icon: History },
     { id: 'actions', label: 'Status & Archive', icon: ShieldAlert, danger: true },
   ];
 
@@ -796,9 +876,8 @@ export const BranchSettingsPage: React.FC = () => {
       {/* 3. Main Form Container Card */}
       <div className="p-6 rounded-2xl bg-[#120a11]/90 border border-white/10 shadow-2xl backdrop-blur-md">
         {isLoading ? (
-          <div className="py-16 text-center space-y-3">
-            <Loader2 className="w-6 h-6 text-[#e6a8d6] animate-spin mx-auto" />
-            <p className="text-xs text-slate-400">Loading branch settings...</p>
+          <div className="py-4">
+            <FormSkeleton fields={4} />
           </div>
         ) : (
           <>
@@ -839,14 +918,62 @@ export const BranchSettingsPage: React.FC = () => {
                   </div>
 
                   <div className="space-y-1.5">
-                    <Label className="text-xs text-slate-200">Store Phone Number</Label>
-                    <Input
-                      value={profileForm.phone}
-                      onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })}
-                      placeholder="+234 800 000 0000"
-                      disabled={!isOwnerOrAdmin}
-                      className="bg-black/40 border-white/10 text-xs text-white"
-                    />
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs text-slate-200">Store Phone Number</Label>
+                      {profileForm.phone && (
+                        profileForm.phoneVerified ? (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                            <CheckCircle2 className="w-3 h-3" /> Verified
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                            <AlertCircle className="w-3 h-3" /> Unverified
+                          </span>
+                        )
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      <Input
+                        value={profileForm.phone}
+                        onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value, phoneVerified: false, phoneStatus: 'unverified' })}
+                        placeholder="+234 800 000 0000"
+                        disabled={!isOwnerOrAdmin}
+                        className="bg-black/40 border-white/10 text-xs text-white flex-1"
+                      />
+                      {isOwnerOrAdmin && profileForm.phone && !profileForm.phoneVerified && (
+                        <Button
+                          type="button"
+                          onClick={async () => {
+                            if (!profileForm.phone) {
+                              toast.error('Please enter a phone number first.');
+                              return;
+                            }
+                            setIsStartingPhoneVerify(true);
+                            try {
+                              await api.post(`/workspaces/${workspaceId}/branches/${selectedBranchId}/phone/verification/start`, {
+                                phone: profileForm.phone,
+                              });
+                              setIsPhoneVerifyModalOpen(true);
+                              toast.success(`Verification code sent to ${profileForm.phone}`);
+                            } catch (err: any) {
+                              toast.error(err.message || 'Failed to start branch phone verification.');
+                            } finally {
+                              setIsStartingPhoneVerify(false);
+                            }
+                          }}
+                          disabled={isStartingPhoneVerify}
+                          className="h-9 px-3 bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-semibold rounded-md cursor-pointer shrink-0"
+                        >
+                          {isStartingPhoneVerify ? <Spinner size="sm" className="mr-1" /> : <ShieldCheck className="w-3.5 h-3.5 mr-1" />}
+                          Verify
+                        </Button>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-500">
+                      {profileForm.phoneVerified
+                        ? 'This branch phone number is verified.'
+                        : 'Verify this store number to receive SMS notifications.'}
+                    </p>
                   </div>
 
                   <div className="space-y-1.5">
@@ -921,8 +1048,9 @@ export const BranchSettingsPage: React.FC = () => {
             )}
 
             {/* TAB 3: OPENING HOURS */}
+            {/* TAB 3: OPENING HOURS */}
             {activeTab === 'hours' && (
-              <form onSubmit={handleSaveOperational} className="space-y-6">
+              <form onSubmit={handleSaveHours} className="space-y-6">
                 <div className="border-b border-white/10 pb-4">
                   <h2 className="text-base font-bold text-white">Operating Schedule & Hours</h2>
                   <p className="text-xs text-slate-400 mt-0.5">
@@ -952,58 +1080,365 @@ export const BranchSettingsPage: React.FC = () => {
             )}
 
             {/* TAB 4: POS & RECEIPTS */}
-            {activeTab === 'operations' && (
-              <form onSubmit={handleSaveOperational} className="space-y-6">
+            {activeTab === 'pos' && (
+              <form onSubmit={handleSavePos} className="space-y-6">
+                <div className="border-b border-white/10 pb-4 flex items-center justify-between">
+                  <div>
+                    <h2 className="text-base font-bold text-white">Branch POS & Thermal Receipt Setup</h2>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Configure thermal printer layout, receipt header/footer messages, and tax information for this branch.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-slate-200">Receipt Prefix</Label>
+                        <Input
+                          value={posReceiptForm.receiptPrefix}
+                          onChange={(e) => setPosReceiptForm({ ...posReceiptForm, receiptPrefix: e.target.value.toUpperCase() })}
+                          placeholder="REC"
+                          disabled={!isOwnerOrAdmin}
+                          className="bg-black/40 border-white/10 text-xs font-mono uppercase"
+                        />
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-slate-200">Paper Width</Label>
+                        <select
+                          value={posReceiptForm.paperWidth}
+                          onChange={(e) => setPosReceiptForm({ ...posReceiptForm, paperWidth: e.target.value })}
+                          disabled={!isOwnerOrAdmin}
+                          className="w-full h-9 px-3 bg-black/40 border border-white/10 rounded-md text-xs text-white focus:border-[#714b67] focus:outline-none cursor-pointer"
+                        >
+                          <option value="80mm">80mm (Standard Desktop POS)</option>
+                          <option value="58mm">58mm (Mobile POS / Mini)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-slate-200">Header Text / Welcome Greeting</Label>
+                      <Input
+                        value={posReceiptForm.headerText}
+                        onChange={(e) => setPosReceiptForm({ ...posReceiptForm, headerText: e.target.value })}
+                        placeholder="Welcome to our store"
+                        disabled={!isOwnerOrAdmin}
+                        className="bg-black/40 border-white/10 text-xs"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-slate-200">Store Tagline / Subheading</Label>
+                      <Input
+                        value={posReceiptForm.tagline}
+                        onChange={(e) => setPosReceiptForm({ ...posReceiptForm, tagline: e.target.value })}
+                        placeholder="e.g. Quality Goods & Exceptional Service"
+                        disabled={!isOwnerOrAdmin}
+                        className="bg-black/40 border-white/10 text-xs"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-slate-200">Tax ID / TIN Number</Label>
+                        <Input
+                          value={posReceiptForm.tin}
+                          onChange={(e) => setPosReceiptForm({ ...posReceiptForm, tin: e.target.value })}
+                          placeholder="e.g. 12345678-0001"
+                          disabled={!isOwnerOrAdmin}
+                          className="bg-black/40 border-white/10 text-xs font-mono"
+                        />
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-slate-200">VAT Rate (%)</Label>
+                        <Input
+                          type="number"
+                          step="0.1"
+                          min={0}
+                          max={100}
+                          value={posReceiptForm.vatRate}
+                          onChange={(e) => setPosReceiptForm({ ...posReceiptForm, vatRate: parseFloat(e.target.value) || 0 })}
+                          disabled={!isOwnerOrAdmin}
+                          className="bg-black/40 border-white/10 text-xs"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-slate-200">Footer Thank You Message</Label>
+                      <textarea
+                        value={posReceiptForm.footerMessage}
+                        onChange={(e) => setPosReceiptForm({ ...posReceiptForm, footerMessage: e.target.value })}
+                        rows={2}
+                        placeholder="Thank you for shopping with us! Please keep this receipt."
+                        disabled={!isOwnerOrAdmin}
+                        className="w-full p-2.5 bg-black/40 border border-white/10 rounded-md text-xs text-white focus:border-[#714b67] focus:outline-none"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-slate-200">Return & Exchange Policy</Label>
+                      <textarea
+                        value={posReceiptForm.returnPolicy}
+                        onChange={(e) => setPosReceiptForm({ ...posReceiptForm, returnPolicy: e.target.value })}
+                        rows={2}
+                        placeholder="Goods in original condition may be returned within 7 days."
+                        disabled={!isOwnerOrAdmin}
+                        className="w-full p-2.5 bg-black/40 border border-white/10 rounded-md text-xs text-white focus:border-[#714b67] focus:outline-none"
+                      />
+                    </div>
+
+                    <div className="space-y-2 pt-2">
+                      <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-black/40">
+                        <div>
+                          <div className="text-xs font-medium text-white">Enable Value Added Tax (VAT)</div>
+                          <div className="text-[10px] text-slate-400">Calculate and print VAT breakdown on checkout receipts</div>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={posReceiptForm.enableVat}
+                          onChange={(e) => setPosReceiptForm({ ...posReceiptForm, enableVat: e.target.checked })}
+                          disabled={!isOwnerOrAdmin}
+                          className="w-4 h-4 rounded"
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-black/40">
+                        <div>
+                          <div className="text-xs font-medium text-white">Print Cashier Name</div>
+                          <div className="text-[10px] text-slate-400">Show the logged-in staff name on the receipt header</div>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={posReceiptForm.showCashier}
+                          onChange={(e) => setPosReceiptForm({ ...posReceiptForm, showCashier: e.target.checked })}
+                          disabled={!isOwnerOrAdmin}
+                          className="w-4 h-4 rounded"
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-black/40">
+                        <div>
+                          <div className="text-xs font-medium text-white">Print Customer Details</div>
+                          <div className="text-[10px] text-slate-400">Include customer name and phone when attached to sale</div>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={posReceiptForm.showCustomer}
+                          onChange={(e) => setPosReceiptForm({ ...posReceiptForm, showCustomer: e.target.checked })}
+                          disabled={!isOwnerOrAdmin}
+                          className="w-4 h-4 rounded"
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-black/40">
+                        <div>
+                          <div className="text-xs font-medium text-white">Print Barcode / QR Code</div>
+                          <div className="text-[10px] text-slate-400">Print receipt barcode for fast scanner return lookups</div>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={posReceiptForm.showBarcode}
+                          onChange={(e) => setPosReceiptForm({ ...posReceiptForm, showBarcode: e.target.checked })}
+                          disabled={!isOwnerOrAdmin}
+                          className="w-4 h-4 rounded"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Thermal Receipt Live Preview */}
+                  <div className="p-6 bg-slate-900 border border-white/10 rounded-2xl flex flex-col items-center shadow-2xl">
+                    <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-4 flex items-center gap-1.5">
+                      <Receipt className="w-3.5 h-3.5 text-[#e6a8d6]" />
+                      Live Thermal Receipt Preview ({posReceiptForm.paperWidth})
+                    </div>
+
+                    <div
+                      className={cn(
+                        'bg-white text-black p-5 rounded-lg shadow-xl font-mono text-[11px] leading-tight space-y-3 transition-all',
+                        posReceiptForm.paperWidth === '58mm' ? 'w-52' : 'w-64'
+                      )}
+                    >
+                      <div className="text-center space-y-1 border-b border-black/20 pb-2">
+                        <div className="font-bold text-sm tracking-tight">{currentBranch?.name || profileForm.name || 'STORE LOCATION'}</div>
+                        {posReceiptForm.headerText && <div className="text-[10px] font-semibold text-gray-700">{posReceiptForm.headerText}</div>}
+                        {posReceiptForm.tagline && <div className="text-[10px] text-gray-600">{posReceiptForm.tagline}</div>}
+                        <div className="text-[9px] text-gray-500">
+                          {addressForm.street ? `${addressForm.street}, ` : ''}{addressForm.city || 'Ikeja'}, {addressForm.state || 'Lagos'}
+                        </div>
+                        {profileForm.phone && <div className="text-[9px] text-gray-500">Tel: {profileForm.phone}</div>}
+                        {posReceiptForm.tin && <div className="text-[9px] font-bold">TIN: {posReceiptForm.tin}</div>}
+                      </div>
+
+                      <div className="text-[10px] text-gray-600 space-y-0.5">
+                        <div className="flex justify-between">
+                          <span>Rcpt: {posReceiptForm.receiptPrefix || 'REC'}-00421</span>
+                          <span>{new Date().toLocaleDateString()}</span>
+                        </div>
+                        {posReceiptForm.showCashier && (
+                          <div className="flex justify-between">
+                            <span>Cashier: Jane Doe</span>
+                            <span>{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                          </div>
+                        )}
+                        {posReceiptForm.showCustomer && (
+                          <div className="text-[9px] text-gray-500">
+                            Cust: Walk-in Customer
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="border-t border-b border-black/20 py-1.5 space-y-1">
+                        <div className="flex justify-between font-semibold text-[10px]">
+                          <span>Item</span>
+                          <span>Total</span>
+                        </div>
+                        <div className="flex justify-between text-[10px]">
+                          <span>1x Sample Product A</span>
+                          <span>₦ 12,500</span>
+                        </div>
+                        <div className="flex justify-between text-[10px]">
+                          <span>2x Sample Item B</span>
+                          <span>₦ 4,000</span>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1 font-bold">
+                        <div className="flex justify-between">
+                          <span>SUBTOTAL</span>
+                          <span>₦ 16,500</span>
+                        </div>
+                        {posReceiptForm.enableVat && (
+                          <div className="flex justify-between text-[10px] font-normal text-gray-700">
+                            <span>VAT ({posReceiptForm.vatRate}%)</span>
+                            <span>₦ {(16500 * (posReceiptForm.vatRate / 100)).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                          </div>
+                        )}
+                        <div className="flex justify-between text-xs border-t border-black/20 pt-1">
+                          <span>TOTAL</span>
+                          <span>₦ {(16500 * (1 + (posReceiptForm.enableVat ? posReceiptForm.vatRate / 100 : 0))).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                        </div>
+                      </div>
+
+                      <div className="text-center text-[9px] text-gray-600 pt-2 border-t border-dashed border-black/20 space-y-1">
+                        {posReceiptForm.footerMessage && <div>{posReceiptForm.footerMessage}</div>}
+                        {posReceiptForm.returnPolicy && <div className="italic">{posReceiptForm.returnPolicy}</div>}
+                        {posReceiptForm.showBarcode && (
+                          <div className="pt-1 font-mono text-[8px] tracking-widest text-black">
+                            ||| | |||| | | |||||| | ||
+                          </div>
+                        )}
+                        <div className="font-bold">*** THANK YOU ***</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {isOwnerOrAdmin && (
+                  <div className="flex justify-end pt-4 border-t border-white/10">
+                    <Button
+                      type="submit"
+                      disabled={isSaving}
+                      className="bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-semibold px-5 cursor-pointer"
+                    >
+                      {isSaving ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Save className="w-3.5 h-3.5 mr-1.5" />}
+                      Save POS & Receipt Settings
+                    </Button>
+                  </div>
+                )}
+              </form>
+            )}
+
+            {/* TAB 5: INVENTORY RULES */}
+            {activeTab === 'inventory' && (
+              <form onSubmit={handleSaveInventoryRules} className="space-y-6">
                 <div className="border-b border-white/10 pb-4">
-                  <h2 className="text-base font-bold text-white">POS & Receipt Customization</h2>
+                  <h2 className="text-base font-bold text-white">Branch Inventory & Stock Rules</h2>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Location inventory thresholds, receipt footer customization, and sale policies.
+                    Location-specific stock alert levels, negative checkout permissions, and stock adjustment approval policies.
                   </p>
                 </div>
 
-                <div className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-1.5">
-                    <Label className="text-xs text-slate-200">Custom Receipt Footer Message</Label>
-                    <textarea
-                      value={operationalForm.receiptFooter}
-                      onChange={(e) => setOperationalForm({ ...operationalForm, receiptFooter: e.target.value })}
-                      rows={2}
-                      placeholder="e.g. Thank you for shopping with us! Goods sold are non-refundable after 7 days."
+                    <Label className="text-xs text-slate-200">Branch Low Stock Alert Threshold</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      value={inventoryRulesForm.lowStockThreshold}
+                      onChange={(e) => setInventoryRulesForm({ ...inventoryRulesForm, lowStockThreshold: parseInt(e.target.value) || 0 })}
                       disabled={!isOwnerOrAdmin}
-                      className="w-full p-3 bg-black/40 border border-white/10 rounded-md text-xs text-white focus:border-[#714b67] focus:outline-none"
+                      className="bg-black/40 border-white/10 text-xs text-white"
                     />
                     <p className="text-[10px] text-slate-500">
-                      Printed at the bottom of all sales receipts issued by registers at this location.
+                      Units remaining at this store before low inventory notification triggers.
                     </p>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
-                    <div className="space-y-1.5">
-                      <Label className="text-xs text-slate-200">Branch Low Stock Alert Threshold</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        value={operationalForm.lowStockThreshold}
-                        onChange={(e) => setOperationalForm({ ...operationalForm, lowStockThreshold: parseInt(e.target.value) || 0 })}
-                        disabled={!isOwnerOrAdmin}
-                        className="bg-black/40 border-white/10 text-xs text-white"
-                      />
-                      <p className="text-[10px] text-slate-500">
-                        Units remaining at this store before inventory alert triggers.
-                      </p>
-                    </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-slate-200">Stock Discrepancy Approval Threshold (₦)</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      value={inventoryRulesForm.discrepancyApprovalThreshold}
+                      onChange={(e) => setInventoryRulesForm({ ...inventoryRulesForm, discrepancyApprovalThreshold: parseInt(e.target.value) || 0 })}
+                      disabled={!isOwnerOrAdmin}
+                      className="bg-black/40 border-white/10 text-xs text-white"
+                    />
+                    <p className="text-[10px] text-slate-500">
+                      Discrepancies above this monetary value require explicit manager approval.
+                    </p>
+                  </div>
 
+                  <div className="sm:col-span-2 space-y-3 pt-2">
                     <div className="flex items-center justify-between p-3.5 rounded-xl border border-white/10 bg-black/40">
                       <div>
                         <div className="text-xs font-bold text-white">Allow Negative Stock Checkout</div>
                         <div className="text-[10px] text-slate-400">
-                          Allow cashiers to complete sales when recorded quantity is 0.
+                          Allow cashiers at this branch to complete sales when recorded inventory is zero.
                         </div>
                       </div>
                       <input
                         type="checkbox"
-                        checked={operationalForm.negativeStockAllowed}
-                        onChange={(e) => setOperationalForm({ ...operationalForm, negativeStockAllowed: e.target.checked })}
+                        checked={inventoryRulesForm.negativeStockAllowed}
+                        onChange={(e) => setInventoryRulesForm({ ...inventoryRulesForm, negativeStockAllowed: e.target.checked })}
+                        disabled={!isOwnerOrAdmin}
+                        className="rounded bg-black border-white/20 text-[#714b67] focus:ring-[#714b67] w-4 h-4 cursor-pointer"
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between p-3.5 rounded-xl border border-white/10 bg-black/40">
+                      <div>
+                        <div className="text-xs font-bold text-white">Require Approval for Stock Adjustments</div>
+                        <div className="text-[10px] text-slate-400">
+                          Manual stock count changes, shrinkage, or write-offs require manager review.
+                        </div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={inventoryRulesForm.stockAdjustmentApprovalRequired}
+                        onChange={(e) => setInventoryRulesForm({ ...inventoryRulesForm, stockAdjustmentApprovalRequired: e.target.checked })}
+                        disabled={!isOwnerOrAdmin}
+                        className="rounded bg-black border-white/20 text-[#714b67] focus:ring-[#714b67] w-4 h-4 cursor-pointer"
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between p-3.5 rounded-xl border border-white/10 bg-black/40">
+                      <div>
+                        <div className="text-xs font-bold text-white">Enforce Stock Count Audit Approval</div>
+                        <div className="text-[10px] text-slate-400">
+                          Physical inventory cycle counts must be approved by branch manager before applying.
+                        </div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={inventoryRulesForm.enforceStockCountApproval}
+                        onChange={(e) => setInventoryRulesForm({ ...inventoryRulesForm, enforceStockCountApproval: e.target.checked })}
                         disabled={!isOwnerOrAdmin}
                         className="rounded bg-black border-white/20 text-[#714b67] focus:ring-[#714b67] w-4 h-4 cursor-pointer"
                       />
@@ -1019,7 +1454,7 @@ export const BranchSettingsPage: React.FC = () => {
                       className="bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-semibold px-5 cursor-pointer"
                     >
                       {isSaving ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Save className="w-3.5 h-3.5 mr-1.5" />}
-                      Save POS & Operational Rules
+                      Save Branch Inventory Rules
                     </Button>
                   </div>
                 )}
@@ -1204,31 +1639,37 @@ export const BranchSettingsPage: React.FC = () => {
                 {/* SubTab 1: Staff Table */}
                 {branchSubTab === 'staff' && (
                   <div className="overflow-x-auto rounded-xl border border-white/10">
-                    <table className="w-full text-left text-xs text-slate-300">
-                      <thead className="bg-black/50 text-[10px] font-bold uppercase text-slate-400 border-b border-white/10">
-                        <tr>
-                          <th className="py-3 px-4">Staff Member</th>
-                          <th className="py-3 px-4">Branch Role</th>
-                          <th className="py-3 px-4">Assigned On</th>
-                          <th className="py-3 px-4 text-right">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-white/5">
-                        {branchMembers.length === 0 ? (
+                    {isTeamLoading ? (
+                      <div className="py-12 flex flex-col items-center justify-center gap-2">
+                        <Loader2 className="w-5 h-5 text-[#e6a8d6] animate-spin" />
+                        <span className="text-xs text-slate-400">Loading branch staff...</span>
+                      </div>
+                    ) : (
+                      <table className="w-full text-left text-xs text-slate-300">
+                        <thead className="bg-black/50 text-[10px] font-bold uppercase text-slate-400 border-b border-white/10">
                           <tr>
-                            <td colSpan={4} className="py-8 text-center text-slate-500">
-                              No staff members assigned to this branch yet.
-                            </td>
+                            <th className="py-3 px-4">Staff Member</th>
+                            <th className="py-3 px-4">Branch Role</th>
+                            <th className="py-3 px-4">Assigned On</th>
+                            <th className="py-3 px-4 text-right">Actions</th>
                           </tr>
-                        ) : (
-                          branchMembers
-                            .filter(
-                              (m) =>
-                                !teamSearch ||
-                                m.name.toLowerCase().includes(teamSearch.toLowerCase()) ||
-                                m.email.toLowerCase().includes(teamSearch.toLowerCase())
-                            )
-                            .map((member) => (
+                        </thead>
+                        <tbody className="divide-y divide-white/5">
+                          {branchMembers.length === 0 ? (
+                            <tr>
+                              <td colSpan={4} className="py-8 text-center text-slate-500">
+                                No staff members assigned to this branch yet.
+                              </td>
+                            </tr>
+                          ) : (
+                            branchMembers
+                              .filter(
+                                (m) =>
+                                  !teamSearch ||
+                                  m.name.toLowerCase().includes(teamSearch.toLowerCase()) ||
+                                  m.email.toLowerCase().includes(teamSearch.toLowerCase())
+                              )
+                              .map((member) => (
                               <tr key={member.userId} className="hover:bg-white/[0.02]">
                                 <td className="py-3 px-4">
                                   <div className="font-bold text-white">{member.name}</div>
@@ -1289,9 +1730,10 @@ export const BranchSettingsPage: React.FC = () => {
                                 </td>
                               </tr>
                             ))
-                        )}
-                      </tbody>
-                    </table>
+                          )}
+                        </tbody>
+                      </table>
+                    )}
                   </div>
                 )}
 
@@ -1501,6 +1943,127 @@ export const BranchSettingsPage: React.FC = () => {
                 </div>
               </div>
             )}
+
+            {/* TAB 8: AUDIT LOG (Impl 27) */}
+            {activeTab === 'audit' && (
+              <div className="space-y-6 animate-in fade-in duration-150">
+                <div className="border-b border-white/10 pb-4 flex items-center justify-between">
+                  <div>
+                    <h2 className="text-base font-bold text-white flex items-center gap-2">
+                      <History className="w-4 h-4 text-[#e6a8d6]" />
+                      Branch Switch History
+                    </h2>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Recent branch context switches logged for this location — who switched, when, and from where.
+                    </p>
+                  </div>
+                  <button
+                    onClick={fetchBranchSwitchHistory}
+                    disabled={isSwitchHistoryLoading}
+                    className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    <Loader2 className={cn('w-3.5 h-3.5', isSwitchHistoryLoading && 'animate-spin')} />
+                    Refresh
+                  </button>
+                </div>
+
+                {isSwitchHistoryLoading ? (
+                  <div className="py-10 flex flex-col items-center gap-3">
+                    <Loader2 className="w-6 h-6 animate-spin text-[#714b67]" />
+                    <p className="text-xs text-slate-400">Loading switch history...</p>
+                  </div>
+                ) : branchSwitchHistory.length === 0 ? (
+                  <div className="py-12 flex flex-col items-center gap-3 text-center">
+                    <div className="w-12 h-12 rounded-full bg-white/5 border border-white/10 flex items-center justify-center">
+                      <GitBranch className="w-5 h-5 text-slate-500" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-slate-300">No switch events recorded yet</p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Branch context switches will appear here once staff begin using the branch switcher.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {branchSwitchHistory.map((entry) => {
+                      const ts = new Date(entry.timestamp);
+                      const dateStr = ts.toLocaleDateString('en-NG', { day: 'numeric', month: 'short', year: 'numeric' });
+                      const timeStr = ts.toLocaleTimeString('en-NG', { hour: '2-digit', minute: '2-digit' });
+                      return (
+                        <div
+                          key={entry.id}
+                          className="flex items-start gap-3 p-3.5 rounded-xl border border-white/5 bg-black/30 hover:bg-black/50 transition-colors"
+                        >
+                          <div className="w-7 h-7 rounded-full bg-[#714b67]/20 border border-[#714b67]/30 flex items-center justify-center shrink-0 mt-0.5">
+                            <GitBranch className="w-3.5 h-3.5 text-[#c79dbd]" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-xs font-semibold text-white">
+                                {entry.actorName || 'Unknown user'}
+                              </span>
+                              <span className="text-[10px] text-slate-500">switched</span>
+                              {entry.previousBranchName && (
+                                <>
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-300 border border-rose-500/20 font-mono">
+                                    {entry.previousBranchName}
+                                  </span>
+                                  <span className="text-[10px] text-slate-500">→</span>
+                                </>
+                              )}
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 font-mono">
+                                {entry.newBranchName || 'this branch'}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-slate-500 mt-0.5">
+                              {dateStr} at {timeStr}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Membership Audit Logs (existing data from fetchBranchTeam) */}
+                {branchAuditLogs.length > 0 && (
+                  <div className="space-y-4 pt-4 border-t border-white/10">
+                    <h3 className="text-xs font-bold text-white flex items-center gap-2">
+                      <ShieldCheck className="w-3.5 h-3.5 text-[#e6a8d6]" />
+                      Membership Audit Trail
+                    </h3>
+                    <div className="space-y-2">
+                      {branchAuditLogs.map((log) => (
+                        <div
+                          key={log.id}
+                          className="flex items-start gap-3 p-3 rounded-xl border border-white/5 bg-black/20"
+                        >
+                          <div className="w-6 h-6 rounded-full bg-white/5 border border-white/10 flex items-center justify-center shrink-0 mt-0.5">
+                            <ShieldCheck className="w-3 h-3 text-slate-400" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs text-slate-300">
+                              <span className="font-semibold text-white">{log.actorName}</span>
+                              {' '}
+                              <span className="text-slate-400">{log.actionType.replace(/_/g, ' ').toLowerCase()}</span>
+                              {' '}
+                              <span className="font-medium text-white">{log.targetName}</span>
+                              {log.newRole && (
+                                <span className="text-slate-400"> → <span className="text-slate-200 font-mono">{log.newRole}</span></span>
+                              )}
+                            </p>
+                            <p className="text-[10px] text-slate-500 mt-0.5">
+                              {new Date(log.createdAt).toLocaleString('en-NG')}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </>
         )}
       </div>
@@ -1509,8 +2072,8 @@ export const BranchSettingsPage: React.FC = () => {
       <ConfirmationModal
         isOpen={actionModal === 'primary'}
         title="Set Primary Location"
-        message={`Are you sure you want to make "${profileForm.name}" the primary store for this workspace?`}
-        confirmText="Confirm Primary"
+        description={`Are you sure you want to make "${profileForm.name}" the primary store for this workspace?`}
+        confirmButtonText="Confirm Primary"
         onClose={() => setActionModal(null)}
         onConfirm={handleSetPrimary}
       />
@@ -1518,8 +2081,8 @@ export const BranchSettingsPage: React.FC = () => {
       <ConfirmationModal
         isOpen={actionModal === 'suspend'}
         title="Suspend Branch"
-        message={`Are you sure you want to suspend operations for "${profileForm.name}"? Cashiers will not be able to process sales.`}
-        confirmText="Suspend Branch"
+        description={`Are you sure you want to suspend operations for "${profileForm.name}"? Cashiers will not be able to process sales.`}
+        confirmButtonText="Suspend Branch"
         onClose={() => setActionModal(null)}
         onConfirm={handleSuspend}
       />
@@ -1527,8 +2090,8 @@ export const BranchSettingsPage: React.FC = () => {
       <ConfirmationModal
         isOpen={actionModal === 'restore'}
         title="Restore Branch Operations"
-        message={`Restore register and staff operations for "${profileForm.name}"?`}
-        confirmText="Restore Access"
+        description={`Restore register and staff operations for "${profileForm.name}"?`}
+        confirmButtonText="Restore Access"
         onClose={() => setActionModal(null)}
         onConfirm={handleRestore}
       />
@@ -1536,93 +2099,29 @@ export const BranchSettingsPage: React.FC = () => {
       <ConfirmationModal
         isOpen={actionModal === 'archive'}
         title="Archive Branch"
-        message={`Archive "${profileForm.name}"? This branch will no longer appear on registers.`}
-        confirmText="Archive Location"
+        description={`Archive "${profileForm.name}"? This branch will no longer appear on registers.`}
+        confirmButtonText="Archive Location"
         onClose={() => setActionModal(null)}
         onConfirm={handleArchive}
       />
 
       {/* Add Branch Modal */}
       {isAddBranchModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
-          <div className="w-full max-w-md bg-[#160c15] border border-white/10 rounded-2xl p-6 shadow-2xl space-y-4 animate-in zoom-in-95">
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                <Store className="w-4 h-4 text-[#e6a8d6]" />
-                Create New Store Location
-              </h3>
-              <button
-                onClick={() => setIsAddBranchModalOpen(false)}
-                className="text-slate-400 hover:text-white p-1"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <form onSubmit={handleCreateBranchSubmit} className="space-y-3 text-left">
-              <div className="space-y-1.5">
-                <Label className="text-xs text-slate-300">Branch Name *</Label>
-                <Input
-                  required
-                  placeholder="e.g. Lekki Outlet, Abuja Warehouse"
-                  value={newBranchName}
-                  onChange={(e) => setNewBranchName(e.target.value)}
-                  className="bg-black/60 border-white/10 text-white text-xs"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className="text-xs text-slate-300">Branch Code (Optional)</Label>
-                <Input
-                  placeholder="e.g. LEKKI-01"
-                  value={newBranchCode}
-                  onChange={(e) => setNewBranchCode(e.target.value.toUpperCase())}
-                  className="bg-black/60 border-white/10 text-white text-xs font-mono"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className="text-xs text-slate-300">Street / Area (Optional)</Label>
-                <Input
-                  placeholder="e.g. Admiralty Way, Lekki"
-                  value={newBranchAddress}
-                  onChange={(e) => setNewBranchAddress(e.target.value)}
-                  className="bg-black/60 border-white/10 text-white text-xs"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className="text-xs text-slate-300">Contact Phone (Optional)</Label>
-                <Input
-                  placeholder="+234 800 000 0000"
-                  value={newBranchPhone}
-                  onChange={(e) => setNewBranchPhone(e.target.value)}
-                  className="bg-black/60 border-white/10 text-white text-xs"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/10">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setIsAddBranchModalOpen(false)}
-                  className="text-xs text-slate-400 hover:text-white cursor-pointer"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  size="sm"
-                  disabled={isCreatingBranch || !newBranchName.trim()}
-                  className="bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-semibold px-4 cursor-pointer"
-                >
-                  {isCreatingBranch ? 'Creating...' : 'Create Branch'}
-                </Button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <BranchCreationModal
+          isOpen={isAddBranchModalOpen}
+          workspaceId={workspaceId || ''}
+          applicationKey="inventory"
+          onClose={() => setIsAddBranchModalOpen(false)}
+          onSuccess={(newBranch) => {
+            fetchBranches();
+            if (workspaceId) {
+              refreshBranchStore(workspaceId, 'inventory');
+            }
+            if (newBranch?._id || newBranch?.id) {
+              setSelectedBranchId(newBranch._id || newBranch.id);
+            }
+          }}
+        />
       )}
 
       {/* Direct Branch Invite Modal */}
@@ -1790,8 +2289,8 @@ export const BranchSettingsPage: React.FC = () => {
         <ConfirmationModal
           isOpen={Boolean(removeMember)}
           title="Remove Staff Member from Branch"
-          message={`Are you sure you want to remove "${removeMember.name}" from this store? They will lose register and stock access for this location.`}
-          confirmText="Remove Staff"
+          description={`Are you sure you want to remove "${removeMember.name}" from this store? They will lose register and stock access for this location.`}
+          confirmButtonText="Remove Staff"
           onClose={() => setRemoveMember(null)}
           onConfirm={handleConfirmRemoveStaff}
         />
@@ -1872,6 +2371,23 @@ export const BranchSettingsPage: React.FC = () => {
           refreshBranchStore(workspaceId || '', 'inventory');
         }}
       />
+
+      {/* Branch Phone Verification Modal */}
+      {isPhoneVerifyModalOpen && (
+        <BranchPhoneVerification
+          isOpen={isPhoneVerifyModalOpen}
+          phone={profileForm.phone}
+          branchName={profileForm.name}
+          organizationId={workspaceId}
+          branchId={selectedBranchId}
+          onClose={() => setIsPhoneVerifyModalOpen(false)}
+          onSuccess={() => {
+            setProfileForm((prev) => ({ ...prev, phoneVerified: true, phoneStatus: 'verified' }));
+            setIsPhoneVerifyModalOpen(false);
+            fetchBranchDetails();
+          }}
+        />
+      )}
     </div>
   );
 };

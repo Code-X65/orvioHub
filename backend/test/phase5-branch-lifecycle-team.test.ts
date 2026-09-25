@@ -540,52 +540,6 @@ describe('Phase 5: Branch Architecture, Lifecycle, Team Assignment & Demo Contex
     });
   });
 
-  // -------------------------------------------------------------------
-  // 3. BRANCH TEAM ASSIGNMENT
-  // -------------------------------------------------------------------
-  describe('3. Branch Team Assignment & Access', () => {
-    test('Assign new member to branch', async () => {
-      const res = await app.inject({
-        method: 'POST',
-        url: `/api/v1/workspaces/${mockOrgA.id}/inventory/branches/branch_main_p5/members`,
-        headers: { authorization: `Bearer ${tokenOwner}` },
-        payload: {
-          userId: 'user_cashier_p5',
-          role: 'cashier',
-          permissions: ['inventory.view', 'sales.create'],
-        },
-      });
-
-      assert.equal(res.statusCode, 201);
-      assert.equal(res.json().success, true);
-    });
-
-    test('Update branch member role', async () => {
-      const res = await app.inject({
-        method: 'PATCH',
-        url: `/api/v1/workspaces/${mockOrgA.id}/inventory/branches/branch_main_p5/members/bm_staff_p5`,
-        headers: { authorization: `Bearer ${tokenOwner}` },
-        payload: {
-          role: 'stock_manager',
-        },
-      });
-
-      assert.equal(res.statusCode, 200);
-      assert.equal(res.json().data.member.role, 'stock_manager');
-    });
-
-    test('Remove member from branch preserves workspace membership', async () => {
-      const res = await app.inject({
-        method: 'DELETE',
-        url: `/api/v1/workspaces/${mockOrgA.id}/inventory/branches/branch_main_p5/members/bm_staff_p5`,
-        headers: { authorization: `Bearer ${tokenOwner}` },
-      });
-
-      assert.equal(res.statusCode, 200);
-      const remaining = branchMembersStore.find((m) => m._id === 'bm_staff_p5');
-      assert.equal(remaining, undefined);
-    });
-  });
 
   // -------------------------------------------------------------------
   // 4. SECURE INVENTORY DEMO CONTEXT

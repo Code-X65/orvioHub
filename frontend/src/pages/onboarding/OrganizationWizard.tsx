@@ -1,12 +1,12 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useTransition } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '@/stores/useAuthStore';
-import { useLocationStore } from '@/stores/useLocationStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { useOrganizationEligibility } from '@/hooks/useOrganizationEligibility';
 import { OrganizationQuotaIndicator } from '@/components/organization/OrganizationQuotaIndicator';
 import { OrganizationLimitReachedState } from '@/components/organization/OrganizationLimitReachedState';
 import { FreeTrialLimitNotice } from '@/components/organization/FreeTrialLimitNotice';
+import { useWizardDraft } from '@/hooks/useWizardDraft';
 import { api } from '@/lib/api';
 import { getHomeUrl, getCrossSubdomainUrl } from '@/lib/domain';
 import { Header } from '@/components/landing/Header';
@@ -16,6 +16,10 @@ import { Label } from '@/components/ui/label';
 import { CustomSelect, type SelectOption } from '@/components/ui/custom-select';
 import { Spinner } from '@/components/ui/spinner';
 import { toast } from 'sonner';
+import { validateNigerianPhone } from '@/lib/phoneValidation';
+import { cleanPhone } from '@/components/branch/branchFormUtils';
+import { detectNigerianStateHint } from '@/lib/geolocation';
+import { AddressForm, type NigerianAddress } from '@/components/location/AddressForm';
 import {
   Building2,
   Phone,
@@ -32,6 +36,8 @@ import {
   Layers,
   Crown,
   Lock,
+  ChevronDown,
+  Info,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -86,13 +92,27 @@ const PRIMARY_USER_OPTIONS = [
   { id: 'other', label: 'Other Staff' },
 ];
 
+// Supported Operating Currencies
+const SUPPORTED_CURRENCY_OPTIONS: SelectOption[] = [
+  { value: 'NGN', label: 'NGN (₦) - Nigerian Naira', badge: 'Default' },
+  { value: 'USD', label: 'USD ($) - US Dollar', badge: 'Global' },
+  { value: 'GBP', label: 'GBP (£) - British Pound' },
+  { value: 'EUR', label: 'EUR (€) - Euro' },
+  { value: 'GHS', label: 'GHS (₵) - Ghanaian Cedi' },
+  { value: 'KES', label: 'KES (KSh) - Kenyan Shilling' },
+];
+
 export const OrganizationWizard: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user, refreshSession } = useAuthStore();
-  const { states, fetchStates } = useLocationStore();
 
-  const [step, setStep] = useState<number>(1);
+  const urlStep = Number(searchParams.get('step'));
+  const [step, setStep] = useState<number>(urlStep >= 1 && urlStep <= 4 ? urlStep : 1);
+  const [direction, setDirection] = useState<'forward' | 'backward'>('forward');
+  const [, startTransition] = useTransition();
   const [isLoading, setIsLoading] = useState(false);
+  const [isNavigatingToInventory, setIsNavigatingToInventory] = useState(false);
   const [createdOrgData, setCreatedOrgData] = useState<{
     organizationId: string;
     name: string;
@@ -100,19 +120,31 @@ export const OrganizationWizard: React.FC = () => {
     planKey: string;
   } | null>(null);
 
+  // Hardened & Debounced Wizard Draft Persistence
+  const { hasDraft, getSavedDraft, saveDraft, clearDraft } = useWizardDraft();
+
   // Step 1: Core Fields (Required)
   const [name, setName] = useState('');
-  const [phone, setPhone] = useState(user?.phone || '');
+  const initialPhoneDigits = user?.phone ? cleanPhone(user.phone) : '';
+  const [phoneDigits, setPhoneDigits] = useState(initialPhoneDigits);
   const [category, setCategory] = useState('Provision Store');
   const [currency, setCurrency] = useState('NGN');
   const [street, setStreet] = useState('');
   const [city, setCity] = useState('');
-  const [stateName, setStateName] = useState('Lagos');
+  const [stateName, setStateName] = useState('');
   const [country] = useState('Nigeria');
+  const [stateCode, setStateCode] = useState('');
+  const [lga, setLga] = useState('');
+  const [blockNumber, setBlockNumber] = useState('');
+  const [area, setArea] = useState('');
+  const [landmark, setLandmark] = useState('');
+  const [postalCode, setPostalCode] = useState('');
 
   // Step 2: Plan Selection
   const [planKey, setPlanKey] = useState<'free_trial' | 'standard'>('free_trial');
   const [billingCycle, setBillingCycle] = useState<'monthly' | 'annual'>('monthly');
+  const [isFreeTrialExpanded, setIsFreeTrialExpanded] = useState(false);
+  const [isStandardExpanded, setIsStandardExpanded] = useState(false);
   const [freeTrialStatus, setFreeTrialStatus] = useState<{
     hasFreeTrial: boolean;
     organizationName?: string;
@@ -126,10 +158,140 @@ export const OrganizationWizard: React.FC = () => {
   const [productCountRange, setProductCountRange] = useState<string>('');
   const [primaryUsers, setPrimaryUsers] = useState<string[]>(['owner']);
 
+  const goToStep = (nextStep: number, isBackward = false) => {
+    setDirection(isBackward ? 'backward' : 'forward');
+    startTransition(() => {
+      setStep(nextStep);
+    });
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('step', String(nextStep));
+      return next;
+    }, { replace: true });
+
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  // Sync step from browser Back / Forward buttons
   useEffect(() => {
-    fetchStates();
+    const s = Number(searchParams.get('step'));
+    if (s >= 1 && s <= 4 && s !== step) {
+      setDirection(s < step ? 'backward' : 'forward');
+      startTransition(() => {
+        setStep(s);
+      });
+      if (typeof window !== 'undefined') {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    }
+  }, [searchParams, step]);
+
+  // Check and prompt for draft resume on mount
+  useEffect(() => {
+    const draft = getSavedDraft();
+    if (draft && (draft.name || draft.phoneDigits || draft.street || draft.city)) {
+      toast('Resume your saved draft?', {
+        description: draft.name ? `Saved draft for "${draft.name}"` : 'You have an unsaved organization draft.',
+        action: {
+          label: 'Resume',
+          onClick: () => {
+            if (draft.name) setName(draft.name);
+            if (draft.phoneDigits) setPhoneDigits(draft.phoneDigits);
+            if (draft.category) setCategory(draft.category);
+            if (draft.currency) setCurrency(draft.currency);
+            if (draft.street) setStreet(draft.street);
+            if (draft.city) setCity(draft.city);
+            if (draft.stateName) setStateName(draft.stateName);
+            if (draft.stateCode) setStateCode(draft.stateCode);
+            if (draft.lga) setLga(draft.lga);
+            if (draft.blockNumber) setBlockNumber(draft.blockNumber);
+            if (draft.area) setArea(draft.area);
+            if (draft.landmark) setLandmark(draft.landmark);
+            if (draft.postalCode) setPostalCode(draft.postalCode);
+            if (draft.planKey) setPlanKey(draft.planKey);
+            if (draft.billingCycle) setBillingCycle(draft.billingCycle);
+            if (draft.businessType) setBusinessType(draft.businessType);
+            if (draft.branchCountRange) setBranchCountRange(draft.branchCountRange);
+            if (draft.productCountRange) setProductCountRange(draft.productCountRange);
+            if (draft.primaryUsers) setPrimaryUsers(draft.primaryUsers);
+            toast.success('Draft restored');
+          },
+        },
+        cancel: {
+          label: 'Discard',
+          onClick: () => {
+            clearDraft();
+            toast.info('Draft discarded');
+          },
+        },
+      });
+    }
+  }, [getSavedDraft, clearDraft]);
+
+  // IP-based geolocation hint for initial state selection
+  useEffect(() => {
+    let mounted = true;
+    detectNigerianStateHint().then((hint) => {
+      if (mounted) {
+        setStateName((prev) => prev || hint || 'Lagos');
+      }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Persist draft with 500ms debouncing via useWizardDraft
+  useEffect(() => {
+    saveDraft({
+      name,
+      phoneDigits,
+      category,
+      currency,
+      street,
+      city,
+      stateName,
+      stateCode,
+      lga,
+      blockNumber,
+      area,
+      landmark,
+      postalCode,
+      planKey,
+      billingCycle,
+      businessType,
+      branchCountRange,
+      productCountRange,
+      primaryUsers,
+    });
+  }, [
+    name,
+    phoneDigits,
+    category,
+    currency,
+    street,
+    city,
+    stateName,
+    stateCode,
+    lga,
+    blockNumber,
+    area,
+    landmark,
+    postalCode,
+    planKey,
+    billingCycle,
+    businessType,
+    branchCountRange,
+    productCountRange,
+    primaryUsers,
+    saveDraft,
+  ]);
+
+  useEffect(() => {
     checkUserFreeTrialStatus();
-  }, [fetchStates]);
+  }, []);
 
   useEffect(() => {
     if (!isFreeTrialAvailable) {
@@ -156,21 +318,6 @@ export const OrganizationWizard: React.FC = () => {
     }
   };
 
-  const stateOptions: SelectOption[] = states.length > 0
-    ? states.map((s) => ({ value: s.name, label: s.name }))
-    : [
-        { value: 'Lagos', label: 'Lagos' },
-        { value: 'Abuja (FCT)', label: 'Abuja (FCT)' },
-        { value: 'Rivers', label: 'Rivers' },
-        { value: 'Oyo', label: 'Oyo' },
-        { value: 'Kano', label: 'Kano' },
-        { value: 'Delta', label: 'Delta' },
-        { value: 'Ogun', label: 'Ogun' },
-        { value: 'Anambra', label: 'Anambra' },
-        { value: 'Kaduna', label: 'Kaduna' },
-        { value: 'Enugu', label: 'Enugu' },
-      ];
-
   const handleTogglePrimaryUser = (userId: string) => {
     if (primaryUsers.includes(userId)) {
       setPrimaryUsers(primaryUsers.filter((u) => u !== userId));
@@ -189,8 +336,14 @@ export const OrganizationWizard: React.FC = () => {
       toast.error('Please enter a valid business name (at least 2 characters).');
       return;
     }
-    if (!phone.trim()) {
+    const cleanDigits = cleanPhone(phoneDigits);
+    if (!cleanDigits) {
       toast.error('Please enter a business phone number.');
+      return;
+    }
+    const phoneVal = validateNigerianPhone('0' + cleanDigits);
+    if (!phoneVal.valid) {
+      toast.error(phoneVal.error || 'Please enter a valid 11-digit Nigerian mobile number.');
       return;
     }
     if (!street.trim()) {
@@ -201,8 +354,16 @@ export const OrganizationWizard: React.FC = () => {
       toast.error('Please enter the city.');
       return;
     }
+    if (!stateName.trim() || !lga.trim()) {
+      toast.error('Please select the state and Local Government Area.');
+      return;
+    }
+    if (!blockNumber.trim()) {
+      toast.error('Please enter the building, block, or house number.');
+      return;
+    }
 
-    setStep(2);
+    goToStep(2);
   };
 
   const handleStep2Submit = () => {
@@ -211,31 +372,40 @@ export const OrganizationWizard: React.FC = () => {
       setPlanKey('standard');
       return;
     }
-    setStep(3);
+    goToStep(3);
   };
 
   const handleFinalSubmit = async (skipOptional: boolean = false) => {
     if (planKey === 'free_trial' && (!isFreeTrialAvailable || freeTrialStatus?.hasFreeTrial)) {
       toast.error('You already have an organization on Free Trial. Please choose Standard for this new organization.');
       setPlanKey('standard');
-      setStep(2);
+      goToStep(2, true);
       return;
     }
 
     setIsLoading(true);
     try {
-      const fullAddress = [street.trim(), city.trim(), stateName, country]
+      const fullAddress = [blockNumber.trim(), street.trim(), area.trim(), city.trim(), lga, stateName, country]
         .filter(Boolean)
         .join(', ');
 
+      const cleanDigits = cleanPhone(phoneDigits);
+      const formattedPhone = cleanDigits ? `+234${cleanDigits}` : '';
+
       const payload = {
         name: name.trim(),
-        phone: phone.trim(),
+        phone: formattedPhone,
         category,
         currency,
         street: street.trim(),
         city: city.trim(),
         state: stateName,
+        stateCode,
+        lga,
+        blockNumber: blockNumber.trim(),
+        area: area.trim() || undefined,
+        landmark: landmark.trim() || undefined,
+        postalCode: postalCode.trim() || undefined,
         country,
         address: fullAddress,
         businessType: skipOptional ? undefined : businessType || undefined,
@@ -269,13 +439,16 @@ export const OrganizationWizard: React.FC = () => {
         localStorage.setItem('orvio_active_workspace_id', res.organizationId);
       } catch {}
 
-      if (planKey === 'standard') {
-        toast.info(`Organization created. Redirecting to payment checkout for Standard plan...`);
-        const paymentUrl = `/onboard/payment?orgId=${res.organizationId}&plan=standard&cycle=${billingCycle}&orgName=${encodeURIComponent(res.name || name.trim())}`;
+      const resolvedPlanKey = (res.planKey || planKey || 'free_trial').toLowerCase();
+      clearDraft();
+      if (resolvedPlanKey === 'standard' || resolvedPlanKey === 'premium') {
+        const planDisplayName = resolvedPlanKey.charAt(0).toUpperCase() + resolvedPlanKey.slice(1);
+        toast.info(`Organization created. Redirecting to payment checkout for ${planDisplayName} plan...`);
+        const paymentUrl = `/onboard/payment?orgId=${res.organizationId}&plan=${encodeURIComponent(resolvedPlanKey)}&cycle=${encodeURIComponent(billingCycle)}&orgName=${encodeURIComponent(res.name || name.trim())}`;
         navigate(paymentUrl);
       } else {
         toast.success(`Organization "${name}" registered successfully!`);
-        setStep(4);
+        goToStep(4);
       }
     } catch (err: any) {
       const code = err?.response?.data?.error?.code || err?.code;
@@ -286,7 +459,7 @@ export const OrganizationWizard: React.FC = () => {
       } else if (code === 'FREE_TRIAL_LIMIT_REACHED' || message?.includes('FREE_TRIAL_LIMIT_REACHED')) {
         toast.error('You already have an organization on Free Trial. Please choose Standard for this new organization.');
         setPlanKey('standard');
-        setStep(2);
+        goToStep(2, true);
       } else {
         toast.error(message || 'Failed to create organization. Please check your inputs.');
       }
@@ -301,33 +474,49 @@ export const OrganizationWizard: React.FC = () => {
 
       <main className="flex-1 max-w-4xl w-full mx-auto px-4 sm:px-6 py-8 space-y-8">
         {/* Progress Tracker */}
-        {step < 4 && !isLimitReached && (
+        {step <= 4 && !isLimitReached && (
           <div className="space-y-4">
             <div className="flex items-center justify-between border-b border-white/5 pb-4">
-              <div>
-                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#714b67]/20 border border-[#714b67]/30 text-[#c79dbd] text-[11px] font-bold mb-1.5">
+              <div className="min-h-[88px] sm:min-h-[80px] flex flex-col justify-center">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#714b67]/20 border border-[#714b67]/30 text-[#c79dbd] text-[11px] font-bold mb-1.5 w-fit">
                   <Sparkles className="w-3 h-3 text-[#FDB02F]" />
                   <span>Organization Billing Wizard</span>
                 </div>
-                <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
+                <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight transition-all duration-200">
                   {step === 1 && 'Create Your Organization'}
                   {step === 2 && `Choose Plan for ${name || 'Your Organization'}`}
                   {step === 3 && 'Tailor Your Experience'}
+                  {step === 4 && 'Organization Ready'}
                 </h1>
-                <p className="text-xs sm:text-sm text-slate-400 mt-1">
+                <p className="text-xs sm:text-sm text-slate-400 mt-1 transition-all duration-200">
                   {step === 1 && 'Enter your business details to set up your organization on Orviohub.'}
                   {step === 2 && 'Subscriptions are billed per organization and power all your integrated applications and branches.'}
                   {step === 3 && 'Optional context questions to help us tailor inventory and operations for your team.'}
+                  {step === 4 && 'Your organization has been successfully created and configured.'}
                 </p>
               </div>
-              <div className="text-right flex flex-col items-end gap-1">
-                <span className="text-xs font-semibold text-slate-400">Step {step} of 3</span>
+              <div className="text-right flex flex-col items-end gap-1.5 shrink-0 ml-4">
+                <div className="flex items-center gap-2">
+                  {hasDraft && step < 4 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        clearDraft();
+                        toast.info('Saved draft cleared');
+                      }}
+                      className="text-[11px] text-slate-400 hover:text-rose-400 underline decoration-slate-600 hover:decoration-rose-400 transition-colors cursor-pointer"
+                    >
+                      Clear Draft
+                    </button>
+                  )}
+                  <span className="text-xs font-semibold text-slate-400">Step {step} of 4</span>
+                </div>
                 <OrganizationQuotaIndicator eligibility={eligibility} variant="minimal" />
               </div>
             </div>
 
             {/* Steps Progress Bar */}
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-4 gap-2">
               <div
                 className={cn(
                   'h-1.5 rounded-full transition-all duration-300',
@@ -344,6 +533,12 @@ export const OrganizationWizard: React.FC = () => {
                 className={cn(
                   'h-1.5 rounded-full transition-all duration-300',
                   step >= 3 ? 'bg-[#714b67]' : 'bg-white/10'
+                )}
+              />
+              <div
+                className={cn(
+                  'h-1.5 rounded-full transition-all duration-300',
+                  step >= 4 ? 'bg-[#714b67]' : 'bg-white/10'
                 )}
               />
             </div>
@@ -364,7 +559,14 @@ export const OrganizationWizard: React.FC = () => {
               }}
             />
           ) : (
-          <form onSubmit={handleStep1Submit} className="space-y-6">
+          <form
+            key="org-step-1"
+            onSubmit={handleStep1Submit}
+            className={cn(
+              "space-y-6 animate-in fade-in duration-200 fill-mode-both",
+              direction === 'forward' ? 'slide-in-from-right-3' : 'slide-in-from-left-3'
+            )}
+          >
             {/* Organization Limit Reached Alert */}
             {eligibility && !eligibility.allowed && (
               <div className="p-4 rounded-2xl bg-[#1d101b] border border-[#714b67]/50 flex items-start gap-3.5 text-xs text-slate-200 shadow-lg shadow-[#714b67]/10">
@@ -419,14 +621,25 @@ export const OrganizationWizard: React.FC = () => {
                   <Label htmlFor="orgPhone" className="text-xs font-semibold text-slate-200">
                     Business Phone <span className="text-rose-400">*</span>
                   </Label>
-                  <div className="relative">
-                    <Phone className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
-                    <Input
+                  <div className="relative flex items-center h-10 bg-black/40 border border-white/10 rounded-md text-xs transition-all focus-within:ring-1 focus-within:ring-[#714b67] focus-within:border-[#714b67]">
+                    <div className="flex items-center gap-1.5 pl-3 pr-2.5 h-full border-r border-white/10 text-slate-300 select-none shrink-0 bg-white/[0.02]">
+                      <Phone className="w-3.5 h-3.5 text-slate-500" />
+                      <span className="text-xs font-medium text-slate-200">+234</span>
+                    </div>
+                    <input
                       id="orgPhone"
-                      placeholder="e.g. 08012345678 or +234..."
-                      value={phone}
-                      onChange={(e) => setPhone(e.target.value)}
-                      className="pl-9 bg-black/40 border-white/10 text-white placeholder:text-slate-600 focus:border-[#714b67]"
+                      type="tel"
+                      placeholder="801 234 5678"
+                      value={phoneDigits}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        let clean = val;
+                        if (clean.startsWith('+234')) clean = clean.slice(4);
+                        else if (clean.startsWith('234')) clean = clean.slice(3);
+                        else if (clean.startsWith('0') && clean.length > 1) clean = clean.slice(1);
+                        setPhoneDigits(clean);
+                      }}
+                      className="w-full h-full bg-transparent px-3 text-white placeholder:text-slate-600 text-xs focus:outline-none"
                       required
                     />
                   </div>
@@ -445,97 +658,46 @@ export const OrganizationWizard: React.FC = () => {
                 </div>
               </div>
 
-              {/* Address Fields */}
+              {/* Structured Address Fields */}
               <div className="space-y-4 pt-2">
                 <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
                   <MapPin className="w-4 h-4 text-[#FDB02F]" />
                   <span>Physical Location & Address</span>
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="street" className="text-xs font-medium text-slate-300">
-                    Street / Area Address <span className="text-rose-400">*</span>
-                  </Label>
-                  <Input
-                    id="street"
-                    placeholder="e.g. 14 Marina Road, Victoria Island"
-                    value={street}
-                    onChange={(e) => setStreet(e.target.value)}
-                    className="bg-black/40 border-white/10 text-white placeholder:text-slate-600 focus:border-[#714b67]"
-                    required
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="city" className="text-xs font-medium text-slate-300">
-                      City / Town <span className="text-rose-400">*</span>
-                    </Label>
-                    <Input
-                      id="city"
-                      placeholder="e.g. Ikeja"
-                      value={city}
-                      onChange={(e) => setCity(e.target.value)}
-                      className="bg-black/40 border-white/10 text-white placeholder:text-slate-600 focus:border-[#714b67]"
-                      required
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label className="text-xs font-medium text-slate-300">
-                      State <span className="text-rose-400">*</span>
-                    </Label>
-                    <CustomSelect
-                      value={stateName}
-                      onChange={setStateName}
-                      options={stateOptions}
-                      placeholder="Select State"
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label className="text-xs font-medium text-slate-300">Country</Label>
-                    <Input
-                      value={country}
-                      disabled
-                      className="bg-white/5 border-white/10 text-slate-400 cursor-not-allowed"
-                    />
-                  </div>
-                </div>
+                <AddressForm
+                  countryFixed
+                  value={{ country, state: stateName, stateCode, lga, city, street, blockNumber, area, landmark, postalCode }}
+                  onChange={(next: NigerianAddress) => {
+                    setStateName(next.state);
+                    setStateCode(next.stateCode || '');
+                    setLga(next.lga);
+                    setCity(next.city);
+                    setStreet(next.street);
+                    setBlockNumber(next.blockNumber);
+                    setArea(next.area || '');
+                    setLandmark(next.landmark || '');
+                    setPostalCode(next.postalCode || '');
+                  }}
+                />
               </div>
 
               {/* Currency Selector */}
               <div className="pt-2 space-y-2">
                 <Label className="text-xs font-semibold text-slate-200">
-                  Operating Currency
+                  Operating Currency <span className="text-rose-400">*</span>
                 </Label>
-                <div className="flex gap-2 max-w-sm">
-                  <button
-                    type="button"
-                    onClick={() => setCurrency('NGN')}
-                    className={cn(
-                      'flex-1 py-2 px-3 rounded-xl border text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer',
-                      currency === 'NGN'
-                        ? 'bg-[#714b67] border-[#714b67] text-white shadow-md'
-                        : 'bg-black/40 border-white/10 text-slate-400 hover:border-white/20'
-                    )}
-                  >
-                    <Coins className="w-3.5 h-3.5" />
-                    <span>NGN (₦) - Default</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCurrency('USD')}
-                    className={cn(
-                      'flex-1 py-2 px-3 rounded-xl border text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer',
-                      currency === 'USD'
-                        ? 'bg-[#714b67] border-[#714b67] text-white shadow-md'
-                        : 'bg-black/40 border-white/10 text-slate-400 hover:border-white/20'
-                    )}
-                  >
-                    <span>USD ($)</span>
-                  </button>
+                <div className="max-w-md">
+                  <CustomSelect
+                    value={currency}
+                    onChange={setCurrency}
+                    options={SUPPORTED_CURRENCY_OPTIONS}
+                    placeholder="Select operating currency"
+                  />
                 </div>
+                <p className="text-[11px] text-slate-400">
+                  Primary operating currency used for stock valuation, sales transactions, and financial reports.
+                </p>
               </div>
             </div>
 
@@ -567,7 +729,13 @@ export const OrganizationWizard: React.FC = () => {
 
         {/* STEP 2: Plan Selection Per Organization (US-B1 & US-B3) */}
         {step === 2 && (
-          <div className="space-y-6">
+          <div
+            key="org-step-2"
+            className={cn(
+              "space-y-6 animate-in fade-in duration-200 fill-mode-both",
+              direction === 'forward' ? 'slide-in-from-right-3' : 'slide-in-from-left-3'
+            )}
+          >
             {/* Warning if user already has a Free Trial organization */}
             {(!isFreeTrialAvailable || freeTrialStatus?.hasFreeTrial) && (
               <FreeTrialLimitNotice
@@ -617,6 +785,55 @@ export const OrganizationWizard: React.FC = () => {
               </div>
             </div>
 
+            {/* Timeline Roadmap: Trial-to-Standard Progression */}
+            <div className="p-4 rounded-2xl bg-[#120b10] border border-white/10 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-[#FDB02F]" />
+                  <span className="text-xs font-bold text-white tracking-wide">
+                    Plan Progression Pathway
+                  </span>
+                </div>
+                <span className="text-[11px] text-slate-400">
+                  Transparent limits &bull; Upgrade anytime without interruption
+                </span>
+              </div>
+
+              {/* Timeline Sequence: 30 Days Free → ₦0 → 1 App / 1 Branch / 2 Members → Upgrade to Standard for 3 Branches / 10 Members */}
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 p-3 rounded-xl bg-black/40 border border-white/5">
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-bold">
+                    30 Days Free
+                  </span>
+                </div>
+                <ArrowRight className="w-3.5 h-3.5 text-slate-500 shrink-0 hidden sm:block" />
+                <span className="text-slate-500 text-xs sm:hidden self-center">&darr;</span>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-bold">
+                    &#8358;0 Upfront
+                  </span>
+                </div>
+                <ArrowRight className="w-3.5 h-3.5 text-slate-500 shrink-0 hidden sm:block" />
+                <span className="text-slate-500 text-xs sm:hidden self-center">&darr;</span>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-bold">
+                    1 App / 1 Branch / 2 Members
+                  </span>
+                </div>
+                <ArrowRight className="w-3.5 h-3.5 text-slate-500 shrink-0 hidden sm:block" />
+                <span className="text-slate-500 text-xs sm:hidden self-center">&darr;</span>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="px-2.5 py-1 rounded-lg bg-[#714b67]/20 border border-[#714b67]/40 text-[#f0d8e8] text-xs font-bold flex items-center gap-1.5">
+                    <span>Upgrade to Standard:</span>
+                    <span className="text-white">3 Branches / 10 Members</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+
             {/* Plan Cards Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {/* 1. FREE TRIAL CARD */}
@@ -657,6 +874,19 @@ export const OrganizationWizard: React.FC = () => {
                     <span className="text-xs text-slate-400 ml-1.5 font-medium">/ 30 days</span>
                   </div>
 
+                  {/* Warning callout on the Free Trial card */}
+                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-start gap-2.5 text-left">
+                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                    <div className="space-y-0.5">
+                      <p className="text-xs font-semibold text-amber-200">
+                        ⚠️ Only 1 branch allowed. Upgrade anytime.
+                      </p>
+                      <p className="text-[11px] text-slate-300 leading-snug">
+                        Trial organizations are restricted to 1 app and 1 branch location.
+                      </p>
+                    </div>
+                  </div>
+
                   {/* Feature Limits */}
                   <ul className="space-y-2.5 text-xs text-slate-300">
                     <li className="flex items-center gap-2">
@@ -676,6 +906,51 @@ export const OrganizationWizard: React.FC = () => {
                       <span>Up to 2 team members</span>
                     </li>
                   </ul>
+
+                  {/* "What this means" Expandable Section */}
+                  <div className="pt-2 border-t border-white/5">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsFreeTrialExpanded(!isFreeTrialExpanded);
+                      }}
+                      className="w-full flex items-center justify-between text-xs text-slate-400 hover:text-white transition-colors py-1 cursor-pointer"
+                    >
+                      <span className="font-semibold flex items-center gap-1.5 text-slate-300">
+                        <Info className="w-3.5 h-3.5 text-[#FDB02F]" />
+                        <span>What this means</span>
+                      </span>
+                      <ChevronDown
+                        className={cn(
+                          'w-4 h-4 transition-transform duration-200',
+                          isFreeTrialExpanded && 'rotate-180 text-white'
+                        )}
+                      />
+                    </button>
+                    {isFreeTrialExpanded && (
+                      <div className="mt-2.5 p-3 rounded-xl bg-black/40 border border-white/10 space-y-2 text-left animate-in fade-in duration-200">
+                        <div className="space-y-0.5">
+                          <p className="text-[11px] font-bold text-white">Single Branch Location</p>
+                          <p className="text-[11px] text-slate-400 leading-relaxed">
+                            You can operate only 1 branch. Adding warehouse or second shop branches requires upgrading to Standard.
+                          </p>
+                        </div>
+                        <div className="space-y-0.5">
+                          <p className="text-[11px] font-bold text-white">1 Active Application</p>
+                          <p className="text-[11px] text-slate-400 leading-relaxed">
+                            Deploy 1 business app (e.g. Inventory) to manage stock and sales during the trial.
+                          </p>
+                        </div>
+                        <div className="space-y-0.5">
+                          <p className="text-[11px] font-bold text-white">Seamless Transition</p>
+                          <p className="text-[11px] text-slate-400 leading-relaxed">
+                            No upfront charges. You can upgrade anytime to preserve data and unlock multi-branch scaling.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <div className="pt-6">
@@ -772,6 +1047,51 @@ export const OrganizationWizard: React.FC = () => {
                       <span>Priority support & instant payment activation</span>
                     </li>
                   </ul>
+
+                  {/* "What this means" Expandable Section */}
+                  <div className="pt-2 border-t border-white/5">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsStandardExpanded(!isStandardExpanded);
+                      }}
+                      className="w-full flex items-center justify-between text-xs text-slate-400 hover:text-white transition-colors py-1 cursor-pointer"
+                    >
+                      <span className="font-semibold flex items-center gap-1.5 text-slate-300">
+                        <Info className="w-3.5 h-3.5 text-[#FDB02F]" />
+                        <span>What this means</span>
+                      </span>
+                      <ChevronDown
+                        className={cn(
+                          'w-4 h-4 transition-transform duration-200',
+                          isStandardExpanded && 'rotate-180 text-white'
+                        )}
+                      />
+                    </button>
+                    {isStandardExpanded && (
+                      <div className="mt-2.5 p-3 rounded-xl bg-black/40 border border-white/10 space-y-2 text-left animate-in fade-in duration-200">
+                        <div className="space-y-0.5">
+                          <p className="text-[11px] font-bold text-white">Multi-Branch Architecture</p>
+                          <p className="text-[11px] text-slate-400 leading-relaxed">
+                            Includes 3 branches/warehouses with branch switching, transfers, and centralized analytics.
+                          </p>
+                        </div>
+                        <div className="space-y-0.5">
+                          <p className="text-[11px] font-bold text-white">Full Application Suite</p>
+                          <p className="text-[11px] text-slate-400 leading-relaxed">
+                            Simultaneously access Inventory, POS, Tasks, and all integrated Orviohub modules.
+                          </p>
+                        </div>
+                        <div className="space-y-0.5">
+                          <p className="text-[11px] font-bold text-white">Team &amp; Priority Support</p>
+                          <p className="text-[11px] text-slate-400 leading-relaxed">
+                            Invite up to 10 team members with role-based permissions and direct priority support.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <div className="pt-6">
@@ -795,12 +1115,21 @@ export const OrganizationWizard: React.FC = () => {
               </div>
             </div>
 
+            {/* Free Trial Limitation Callout if Free Trial is Selected */}
+            {isFreeTrialAvailable && !freeTrialStatus?.hasFreeTrial && planKey === 'free_trial' && (
+              <FreeTrialLimitNotice
+                variant="plan_limits"
+                onUpgrade={() => setPlanKey('standard')}
+                className="mt-2"
+              />
+            )}
+
             {/* Navigation Buttons */}
             <div className="flex items-center justify-between pt-2">
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setStep(1)}
+                onClick={() => goToStep(1, true)}
                 disabled={isLoading}
                 className="border-white/10 text-slate-300 hover:bg-white/5 text-xs cursor-pointer"
               >
@@ -826,7 +1155,13 @@ export const OrganizationWizard: React.FC = () => {
 
         {/* STEP 3: Optional Context Questions */}
         {step === 3 && (
-          <div className="space-y-6">
+          <div
+            key="org-step-3"
+            className={cn(
+              "space-y-6 animate-in fade-in duration-200 fill-mode-both",
+              direction === 'forward' ? 'slide-in-from-right-3' : 'slide-in-from-left-3'
+            )}
+          >
             <div className="p-6 sm:p-8 rounded-2xl bg-[#120b10] border border-white/10 shadow-xl space-y-8">
               <div className="flex items-center justify-between pb-4 border-b border-white/5">
                 <div className="flex items-center gap-3">
@@ -967,12 +1302,12 @@ export const OrganizationWizard: React.FC = () => {
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setStep(2)}
+                onClick={() => goToStep(2, true)}
                 disabled={isLoading}
                 className="border-white/10 text-slate-300 hover:bg-white/5 text-xs cursor-pointer"
               >
                 <ArrowLeft className="w-4 h-4 mr-1.5" />
-                <span>Back to Plan</span>
+                <span>Back</span>
               </Button>
 
               <div className="flex items-center gap-3">
@@ -1047,13 +1382,34 @@ export const OrganizationWizard: React.FC = () => {
                 <Building2 className="w-4 h-4" />
                 <span>Go to Dashboard</span>
               </a>
-              <a
-                href={getCrossSubdomainUrl('inventory', `/onboard/activate?org=${createdOrgData?.organizationId || ''}`)}
-                className="w-full sm:w-1/2 py-3 px-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs font-semibold transition-all flex items-center justify-center gap-2"
+              <button
+                type="button"
+                disabled={isNavigatingToInventory}
+                onClick={() => {
+                  setIsNavigatingToInventory(true);
+                  const targetOrgId = createdOrgData?.organizationId || '';
+                  if (targetOrgId) {
+                    try {
+                      localStorage.setItem('orvio_active_workspace_id', targetOrgId);
+                    } catch {}
+                  }
+                  const targetUrl = getCrossSubdomainUrl('inventory', `/setup?org=${targetOrgId}`);
+                  window.location.href = targetUrl;
+                }}
+                className="w-full sm:w-1/2 py-3 px-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
               >
-                <Package className="w-4 h-4 text-[#FDB02F]" />
-                <span>Activate Inventory</span>
-              </a>
+                {isNavigatingToInventory ? (
+                  <>
+                    <Spinner size="sm" className="text-[#FDB02F]" />
+                    <span>Opening Inventory...</span>
+                  </>
+                ) : (
+                  <>
+                    <Package className="w-4 h-4 text-[#FDB02F]" />
+                    <span>Activate Inventory</span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
         )}

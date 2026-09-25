@@ -99,9 +99,8 @@ export class AnalyticsService {
 
     for (const key of Object.keys(sanitized)) {
       if (forbiddenKeys.some((f) => key.toLowerCase().includes(f.toLowerCase()))) {
-        delete (sanitized as any)[key];
-      } else if (typeof sanitized[key] === 'object' && sanitized[key] !== null && !Array.isArray(sanitized[key])) {
-        sanitized[key] = this.sanitizeAnalyticsPayload(sanitized[key]);
+      } else if (typeof (sanitized as any)[key] === 'object' && (sanitized as any)[key] !== null && !Array.isArray((sanitized as any)[key])) {
+        (sanitized as any)[key] = this.sanitizeAnalyticsPayload((sanitized as any)[key]);
       }
     }
 

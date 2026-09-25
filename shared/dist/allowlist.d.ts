@@ -17,6 +17,7 @@ export declare const preproductionOrigins: string[];
 export declare function getAllowedOrigins(env: Environment): string[];
 /**
  * Validates if an origin is permitted by CORS.
+ * Strictly verifies against registered surfaces, blocking lookalikes, arbitrary subdomains, and admin.
  */
 export declare function isAllowedOrigin(origin: string, env: Environment): boolean;
 /**
@@ -27,4 +28,8 @@ export declare function isAllowedReturnTo(returnTo: string, env?: Environment): 
  * Alias for isAllowedReturnTo
  */
 export declare const isValidReturnUrl: typeof isAllowedReturnTo;
+/**
+ * Dynamically derives all allowed host strings (for Vite allowedHosts, host checking, and proxies)
+ */
+export declare function getAllowedHosts(env?: Environment): string[];
 //# sourceMappingURL=allowlist.d.ts.map

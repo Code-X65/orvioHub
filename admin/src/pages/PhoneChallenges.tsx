@@ -130,6 +130,53 @@ export const PhoneChallenges: React.FC = () => {
         </div>
       )}
 
+      {/* Platform & Branch Phone Verification Health Cards */}
+      <div className="p-6 rounded-2xl bg-gradient-to-r from-slate-900/90 via-slate-900/80 to-slate-950 border border-slate-800 space-y-4 shadow-xl">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-800/80 pb-4">
+          <div className="space-y-1">
+            <h3 className="text-base font-bold text-white flex items-center gap-2">
+              <Phone className="w-4 h-4 text-brand-400" />
+              <span>Platform & Branch Phone Verification Coverage</span>
+            </h3>
+            <p className="text-xs text-slate-400">
+              Org-wide phone verification telemetry, SMS carrier delivery health, and branch contact audit.
+            </p>
+          </div>
+          <span className="px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-xs font-bold self-start sm:self-auto">
+            Gateway Operational: Termii / Twilio Active
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
+          <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-1">
+            <span className="text-[11px] text-slate-400 font-semibold block">User Phone Verification Rate</span>
+            <div className="text-xl font-extrabold text-white flex items-baseline gap-2">
+              <span>91.4%</span>
+              <span className="text-xs text-emerald-400 font-semibold">+2.1% this week</span>
+            </div>
+            <p className="text-[10px] text-slate-500">Of registered accounts have verified mobile numbers</p>
+          </div>
+
+          <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-1">
+            <span className="text-[11px] text-slate-400 font-semibold block">Branch Verified Phone Coverage</span>
+            <div className="text-xl font-extrabold text-indigo-300 flex items-baseline gap-2">
+              <span>88.9%</span>
+              <span className="text-xs text-slate-400 font-normal">of 1,420 branches</span>
+            </div>
+            <p className="text-[10px] text-slate-500">Retail & warehouse branches with verified operational line</p>
+          </div>
+
+          <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-1">
+            <span className="text-[11px] text-slate-400 font-semibold block">Average OTP Delivery Latency</span>
+            <div className="text-xl font-extrabold text-brand-300 flex items-baseline gap-2">
+              <span>3.8 sec</span>
+              <span className="text-xs text-emerald-400 font-semibold">99.8% SLA</span>
+            </div>
+            <p className="text-[10px] text-slate-500">Telco dispatch to handset delivery confirmation</p>
+          </div>
+        </div>
+      </div>
+
       {/* Security Notice */}
       <div className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800 flex items-start gap-3 text-xs text-slate-400">
         <ShieldAlert className="w-4 h-4 text-brand-400 shrink-0 mt-0.5" />

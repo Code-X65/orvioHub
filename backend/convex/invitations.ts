@@ -24,6 +24,8 @@ export const getInvitationByToken = query({
     return {
       id: invite._id,
       email: invite.email,
+      phone: invite.phone || null,
+      phoneNormalized: invite.phoneNormalized || null,
       role: invite.role,
       status: invite.status,
       expiresAt: invite.expiresAt,
@@ -89,6 +91,7 @@ export const createInvitations = mutation({
         ),
         token: v.string(),
         expiresAt: v.number(),
+        phone: v.optional(v.string()),
       })
     ),
   },
@@ -218,6 +221,7 @@ export const createInvitations = mutation({
       const inviteId = await ctx.db.insert("invitations", {
         organizationId: args.organizationId,
         email,
+        phone: inv.phone || undefined,
         role: inv.role,
         token: inv.token,
         status: "PENDING",
@@ -331,6 +335,13 @@ export const acceptInvitation = mutation({
       throw new Error("INVITATION_EMAIL_MISMATCH");
     }
 
+    const existingMembership = await ctx.db
+      .query("organizationMemberships")
+      .withIndex("by_org_and_user", (q: any) =>
+        q.eq("organizationId", invite.organizationId).eq("userId", user._id)
+      )
+      .first();
+
     // 3. Check seat capacity before activating a new membership
     const isAlreadyActive =
       existingMembership &&
@@ -410,70 +421,6 @@ export const acceptInvitation = mutation({
           invitedBy: invite.invitedBy,
           invitedAt: invite.createdAt,
           acceptedAt: now,
-          createdAt: now,
-          updatedAt: now,
-        });
-      }
-    }
-
-    // Sync with branchMemberships
-    let branchesToAssign = invite.allowedBranches || (invite.primaryBranchId ? [invite.primaryBranchId] : []);
-    if (branchesToAssign.length === 0) {
-      const orgBranches = await ctx.db
-        .query("branches")
-        .withIndex("by_organizationId", (q: any) => q.eq("organizationId", invite.organizationId))
-        .collect();
-      if (orgBranches.length > 0) {
-        const primaryB = orgBranches.find((b: any) => b.isPrimary) || orgBranches[0];
-        branchesToAssign = [primaryB._id];
-      } else if (targetWorkspaceId) {
-        const wsBranches = await ctx.db
-          .query("branches")
-          .withIndex("by_workspace", (q: any) => q.eq("workspaceId", targetWorkspaceId))
-          .collect();
-        if (wsBranches.length > 0) {
-          const primaryB = wsBranches.find((b: any) => b.isPrimary) || wsBranches[0];
-          branchesToAssign = [primaryB._id];
-        }
-      }
-    }
-
-    const roleUpper = (invite.role || "").toUpperCase();
-    let mappedRole = "inventory_viewer";
-    if (roleUpper === "OWNER") mappedRole = "inventory_owner";
-    else if (roleUpper === "ADMIN" || roleUpper === "MANAGER") mappedRole = "inventory_manager";
-    else if (roleUpper === "CASHIER" || roleUpper === "SALES_ATTENDANT") mappedRole = "cashier";
-    else if (roleUpper === "STOCK_MANAGER") mappedRole = "stock_manager";
-    else if (roleUpper === "ACCOUNTANT") mappedRole = "accountant";
-
-    for (const bId of branchesToAssign) {
-      const existingBm = await ctx.db
-        .query("branchMemberships")
-        .withIndex("by_user_branch", (q: any) =>
-          q.eq("userId", user._id).eq("branchId", String(bId))
-        )
-        .first();
-
-      if (existingBm) {
-        await ctx.db.patch(existingBm._id, {
-          role: mappedRole,
-          status: "active",
-          assignedByUserId: invite.invitedBy,
-          assignedAt: now,
-          updatedAt: now,
-        });
-      } else {
-        await ctx.db.insert("branchMemberships", {
-          workspaceId: String(targetWorkspaceId || invite.organizationId),
-          organizationId: invite.organizationId,
-          applicationKey: "inventory",
-          branchId: String(bId),
-          userId: user._id,
-          role: mappedRole,
-          permissions: [],
-          status: "active",
-          assignedByUserId: invite.invitedBy,
-          assignedAt: now,
           createdAt: now,
           updatedAt: now,
         });

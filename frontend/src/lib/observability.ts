@@ -1,5 +1,6 @@
 import * as Sentry from '@sentry/react';
 import { Logtail } from '@logtail/browser';
+import { reportClientError } from './clientLogger';
 
 const sentryDsn = import.meta.env.VITE_SENTRY_DSN;
 const logtailToken = import.meta.env.VITE_BETTERSTACK_LOGTAIL_TOKEN;
@@ -25,4 +26,5 @@ export function logError(err: unknown, context?: Record<string, unknown>) {
   if (logtail) {
     logtail.error(err instanceof Error ? err.message : String(err), context);
   }
+  reportClientError(err, { context });
 }

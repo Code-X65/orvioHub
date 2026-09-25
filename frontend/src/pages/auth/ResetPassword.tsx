@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -9,12 +9,19 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
+import { PasswordStrength } from '@/components/auth/PasswordStrength';
 import { toast } from 'sonner';
 import { Lock, EyeOff, Eye, ArrowRight, CheckCircle2, AlertCircle } from 'lucide-react';
 
 const resetPasswordSchema = z
   .object({
-    password: z.string().min(8, 'Password must be at least 8 characters'),
+    password: z
+      .string()
+      .min(8, 'Password must be at least 8 characters')
+      .regex(/[A-Z]/, 'Must include an uppercase letter')
+      .regex(/[a-z]/, 'Must include a lowercase letter')
+      .regex(/[0-9]/, 'Must include a number')
+      .regex(/[^A-Za-z0-9]/, 'Must include a special character'),
     confirmPassword: z.string().min(1, 'Please confirm your password'),
   })
   .refine((data) => data.password === data.confirmPassword, {
@@ -27,21 +34,36 @@ type ResetPasswordFormData = z.infer<typeof resetPasswordSchema>;
 export const ResetPassword: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const token = searchParams.get('token');
-  const email = searchParams.get('email');
+  const [token] = useState(() => searchParams.get('token') || '');
+  const [email] = useState(() => searchParams.get('email') || '');
 
   const [isLoading, setIsLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
+  const [passwordReuseError, setPasswordReuseError] = useState<string | null>(null);
 
   const {
     register,
     handleSubmit,
+    watch,
     formState: { errors },
   } = useForm<ResetPasswordFormData>({
     resolver: zodResolver(resetPasswordSchema),
   });
+
+  const passwordValue = watch('password') || '';
+
+  useEffect(() => {
+    // Strip sensitive token parameter from browser URL and history
+    if (window.location.search.includes('token=')) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('token');
+      const cleanUrl =
+        url.pathname + (url.searchParams.toString() ? `?${url.searchParams.toString()}` : '');
+      window.history.replaceState({}, document.title, cleanUrl);
+    }
+  }, []);
 
   const onSubmit = async (data: ResetPasswordFormData) => {
     if (!token) {
@@ -49,6 +71,7 @@ export const ResetPassword: React.FC = () => {
       return;
     }
 
+    setPasswordReuseError(null);
     setIsLoading(true);
     try {
       await api.post('/auth/reset-password', {
@@ -59,7 +82,19 @@ export const ResetPassword: React.FC = () => {
       setIsSuccess(true);
       toast.success('Password reset successfully!');
     } catch (error: any) {
-      toast.error(error.message || 'Failed to reset password. The link may have expired.');
+      if (
+        error.code === 'PASSWORD_REUSED' ||
+        error.response?.data?.error?.code === 'PASSWORD_REUSED' ||
+        error.message?.includes('cannot be the same') ||
+        error.message?.includes('previous password')
+      ) {
+        const msg =
+          'Your new password cannot be the same as your previous password. Please choose a different password.';
+        setPasswordReuseError(msg);
+        toast.error(msg);
+      } else {
+        toast.error(error.message || 'Failed to reset password. The link may have expired.');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -139,6 +174,13 @@ export const ResetPassword: React.FC = () => {
           </p>
         </div>
 
+        {passwordReuseError && (
+          <div className="p-3 rounded-xs bg-rose-950/50 border border-rose-500/40 text-rose-300 text-xs flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+            <span>{passwordReuseError}</span>
+          </div>
+        )}
+
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-3.5">
           <div className="space-y-1">
             <Label htmlFor="password" className="text-xs font-medium text-slate-300">
@@ -152,7 +194,7 @@ export const ResetPassword: React.FC = () => {
                 placeholder="••••••••••••"
                 {...register('password')}
                 className={`pl-10 pr-10 h-10 bg-[#0a0609] border-[#2d1b27] text-white placeholder:text-slate-600 rounded-xs text-xs focus:ring-1 focus:ring-[#714b67] ${
-                  errors.password ? 'border-rose-500/80' : ''
+                  errors.password || passwordReuseError ? 'border-rose-500/80' : ''
                 }`}
                 disabled={isLoading}
               />
@@ -166,6 +208,9 @@ export const ResetPassword: React.FC = () => {
               </button>
             </div>
             {errors.password && <p className="text-[11px] text-rose-400">{errors.password.message}</p>}
+
+            {/* Live Password Strength Checklist */}
+            <PasswordStrength password={passwordValue} showRequirements={true} />
           </div>
 
           <div className="space-y-1">
@@ -204,7 +249,9 @@ export const ResetPassword: React.FC = () => {
             disabled={isLoading}
           >
             {isLoading ? <Spinner size="sm" className="mr-1 text-white" /> : null}
-            {isLoading ? 'Updating password...' : (
+            {isLoading ? (
+              'Updating password...'
+            ) : (
               <>
                 <span>Update Password</span>
                 <ArrowRight className="w-3.5 h-3.5" />
@@ -223,3 +270,4 @@ export const ResetPassword: React.FC = () => {
     </AuthLayout>
   );
 };
+

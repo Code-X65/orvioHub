@@ -51,12 +51,12 @@ export class MembershipService extends BaseRepository {
     const { organizationId, email, role, invitedBy } = params;
 
     // 1. Quota check: Ensure organization has available member seats
-    const usage = await entitlementService.getOrganizationUsageSummary(organizationId, invitedBy);
-    if (usage && usage.metrics.members.isReached) {
+    const usage: any = await entitlementService.getOrganizationUsageSummary(organizationId, invitedBy);
+    if (usage && (usage.metrics?.members?.isReached || usage.usage?.members?.isReached)) {
       const err: any = new Error('Member seat limit reached for organization.');
       err.code = ERROR_CODES.PLAN_LIMIT_REACHED;
       err.statusCode = 403;
-      err.details = usage.metrics.members;
+      err.details = usage.metrics?.members || usage.usage?.members;
       throw err;
     }
 

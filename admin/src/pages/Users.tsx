@@ -48,10 +48,109 @@ export const Users: React.FC = () => {
 
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
+  const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
 
   // Modals for structured suspension and deletion
   const [suspendModalUser, setSuspendModalUser] = useState<any>(null);
   const [deleteModalUser, setDeleteModalUser] = useState<any>(null);
+  const [isBulkSuspendModalOpen, setIsBulkSuspendModalOpen] = useState(false);
+  const [bulkSuspendReason, setBulkSuspendReason] = useState("Administrative policy enforcement");
+  const [bulkSuspendNotes, setBulkSuspendNotes] = useState("");
+
+  const toggleSelectUser = (userId: string) => {
+    setSelectedUserIds((prev) =>
+      prev.includes(userId) ? prev.filter((id) => id !== userId) : [...prev, userId]
+    );
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedUserIds.length === users.length) {
+      setSelectedUserIds([]);
+    } else {
+      setSelectedUserIds(users.map((u) => u.id));
+    }
+  };
+
+  const handleBulkSuspend = async () => {
+    if (!sessionToken || selectedUserIds.length === 0) return;
+    setActionLoading(true);
+    try {
+      for (const userId of selectedUserIds) {
+        await adminUsersApi.suspendUser(sessionToken, userId, bulkSuspendReason, bulkSuspendNotes);
+      }
+      setIsBulkSuspendModalOpen(false);
+      setSelectedUserIds([]);
+      await loadUsers();
+    } catch (err: any) {
+      alert(err.message || "Failed to bulk suspend users.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleBulkRevokeSessions = async () => {
+    if (!sessionToken || selectedUserIds.length === 0) return;
+    if (!confirm(`Revoke all active sessions for ${selectedUserIds.length} selected users?`)) return;
+    setActionLoading(true);
+    try {
+      for (const userId of selectedUserIds) {
+        await adminUsersApi.revokeUserSessions(sessionToken, userId, "Bulk session revocation by superadmin");
+      }
+      setSelectedUserIds([]);
+      alert(`Successfully revoked sessions for ${selectedUserIds.length} user(s).`);
+      await loadUsers();
+    } catch (err: any) {
+      alert(err.message || "Failed to bulk revoke sessions.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleBulkVerifyEmail = async () => {
+    if (!sessionToken || selectedUserIds.length === 0) return;
+    if (!confirm(`Manually mark email as verified for ${selectedUserIds.length} selected users?`)) return;
+    setActionLoading(true);
+    try {
+      for (const userId of selectedUserIds) {
+        await adminUsersApi.verifyUserEmail(sessionToken, userId);
+      }
+      setSelectedUserIds([]);
+      await loadUsers();
+    } catch (err: any) {
+      alert(err.message || "Failed to bulk verify emails.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleExportCSV = () => {
+    const targetUsers = selectedUserIds.length > 0
+      ? users.filter((u) => selectedUserIds.includes(u.id))
+      : users;
+
+    const headers = ["ID", "Name", "Email", "Role", "UserType", "EmailVerified", "Status", "OwnedOrgs", "JoinedOrgs", "CreatedAt"];
+    const rows = targetUsers.map((u) => [
+      u.id,
+      `"${(u.name || "").replace(/"/g, '""')}"`,
+      u.email,
+      u.role || "user",
+      u.userType || "standard",
+      u.emailVerified ? "true" : "false",
+      u.status || "active",
+      u.ownedOrganizationsCount || 0,
+      u.memberOrganizationsCount || 0,
+      new Date(u.createdAt).toISOString(),
+    ]);
+
+    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `users_export_${new Date().toISOString().slice(0, 10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   // General Dialog State
   const [dialogConfig, setDialogConfig] = useState<{
@@ -383,12 +482,80 @@ export const Users: React.FC = () => {
         </div>
       </div>
 
+      {/* Bulk Action Toolbar */}
+      {selectedUserIds.length > 0 && (
+        <div className="p-4 rounded-2xl bg-indigo-950/80 border border-indigo-500/30 shadow-xl flex flex-wrap items-center justify-between gap-3 animate-in fade-in duration-200">
+          <div className="flex items-center gap-3">
+            <span className="px-2.5 py-1 rounded-lg bg-indigo-600 text-white font-bold text-xs">
+              {selectedUserIds.length} Selected
+            </span>
+            <span className="text-xs text-indigo-200">
+              Bulk actions apply to all highlighted user accounts.
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsBulkSuspendModalOpen(true)}
+              className="px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer"
+            >
+              <Ban className="w-3.5 h-3.5" />
+              <span>Bulk Suspend</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleBulkRevokeSessions}
+              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Revoke Sessions</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleBulkVerifyEmail}
+              className="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer"
+            >
+              <MailCheck className="w-3.5 h-3.5" />
+              <span>Verify Emails</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleExportCSV}
+              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span>Export CSV</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setSelectedUserIds([])}
+              className="px-2.5 py-1.5 rounded-xl text-slate-400 hover:text-white text-xs font-semibold transition cursor-pointer"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Users Table */}
       <div className="rounded-2xl bg-slate-900/80 border border-slate-800 overflow-hidden shadow-xl">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="border-b border-slate-800 bg-slate-950/60 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                <th className="py-3.5 px-4 w-10 text-center">
+                  <input
+                    type="checkbox"
+                    checked={users.length > 0 && selectedUserIds.length === users.length}
+                    onChange={toggleSelectAll}
+                    className="rounded border-slate-700 bg-slate-900 text-indigo-600 focus:ring-0 cursor-pointer"
+                  />
+                </th>
                 <th className="py-3.5 px-5">User & Identity</th>
                 <th className="py-3.5 px-4">Org / App / Branch</th>
                 <th className="py-3.5 px-4">Contact & Location</th>
@@ -400,14 +567,14 @@ export const Users: React.FC = () => {
             <tbody className="divide-y divide-slate-800/80 text-xs text-slate-300">
               {loading ? (
                 <tr>
-                  <td colSpan={6} className="py-16 text-center text-slate-500">
+                  <td colSpan={7} className="py-16 text-center text-slate-500">
                     <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-brand-400" />
                     Loading users...
                   </td>
                 </tr>
               ) : users.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-16 text-center text-slate-500">
+                  <td colSpan={7} className="py-16 text-center text-slate-500">
                     No users matching criteria.
                   </td>
                 </tr>
@@ -417,9 +584,25 @@ export const Users: React.FC = () => {
                   const memberCount = u.memberOrganizationsCount ?? 0;
                   const isSuperadmin = u.role === "superadmin" || u.role === "admin";
                   const quota = u.ownershipQuota;
+                  const isSelected = selectedUserIds.includes(u.id);
 
                   return (
-                    <tr key={u.id} className="hover:bg-slate-800/40 transition">
+                    <tr
+                      key={u.id}
+                      className={`hover:bg-slate-800/40 transition ${
+                        isSelected ? "bg-indigo-950/20" : ""
+                      }`}
+                    >
+                      {/* Selection Checkbox */}
+                      <td className="py-4 px-4 text-center">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelectUser(u.id)}
+                          className="rounded border-slate-700 bg-slate-900 text-indigo-600 focus:ring-0 cursor-pointer"
+                        />
+                      </td>
+
                       {/* User & Identity */}
                       <td className="py-4 px-5">
                         <div className="flex items-center gap-3">
@@ -670,6 +853,72 @@ export const Users: React.FC = () => {
           onPageChange={setPage}
         />
       </div>
+
+      {/* Bulk Suspend Modal */}
+      {isBulkSuspendModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-5">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400">
+                <Ban className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">Bulk Suspend Users</h3>
+                <p className="text-xs text-slate-400">
+                  Suspend {selectedUserIds.length} selected user account(s).
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-slate-300 block mb-1.5">
+                  Suspension Reason
+                </label>
+                <input
+                  type="text"
+                  value={bulkSuspendReason}
+                  onChange={(e) => setBulkSuspendReason(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs focus:outline-none focus:border-amber-500"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-300 block mb-1.5">
+                  Internal Governance Notes (Optional)
+                </label>
+                <textarea
+                  rows={3}
+                  value={bulkSuspendNotes}
+                  onChange={(e) => setBulkSuspendNotes(e.target.value)}
+                  placeholder="Reference ticket or policy violation details..."
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs focus:outline-none focus:border-amber-500 resize-none"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setIsBulkSuspendModalOpen(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={actionLoading}
+                onClick={handleBulkSuspend}
+                className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold shadow-lg shadow-amber-600/20 transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+              >
+                {actionLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Ban className="w-3.5 h-3.5" />}
+                <span>Confirm Bulk Suspend ({selectedUserIds.length})</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Structured Suspend User Modal */}
       {suspendModalUser && (

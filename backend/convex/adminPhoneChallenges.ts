@@ -1,21 +1,9 @@
 import { query } from "./_generated/server.js";
 import { v } from "convex/values";
+import { requireAdminPermission } from "./adminAuth.js";
 
 async function verifyAdminSession(ctx: any, sessionToken?: string) {
-  if (!sessionToken) throw new Error("Admin authentication required.");
-  const session = await ctx.db
-    .query("adminSessions")
-    .withIndex("by_token", (q: any) => q.eq("sessionToken", sessionToken))
-    .first();
-
-  if (!session || session.expiresAt < Date.now()) {
-    throw new Error("Invalid or expired session.");
-  }
-  const admin = await ctx.db.get(session.adminId);
-  if (!admin || !admin.isActive) {
-    throw new Error("Unauthorized admin account.");
-  }
-  return { admin, session };
+  return requireAdminPermission(ctx, sessionToken, "admin.branches.view");
 }
 
 // Helper to mask phone for safe admin listing

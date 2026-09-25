@@ -1,22 +1,10 @@
 import { mutation, query } from "./_generated/server.js";
 import { v } from "convex/values";
+import { requireAdminPermission } from "./adminAuth.js";
 
 // Helper to authenticate admin
-async function verifyAdminSession(ctx: any, sessionToken?: string) {
-  if (!sessionToken) throw new Error("Admin authentication required.");
-  const session = await ctx.db
-    .query("adminSessions")
-    .withIndex("by_token", (q: any) => q.eq("sessionToken", sessionToken))
-    .first();
-
-  if (!session || session.expiresAt < Date.now()) {
-    throw new Error("Invalid or expired session.");
-  }
-  const admin = await ctx.db.get(session.adminId);
-  if (!admin || !admin.isActive) {
-    throw new Error("Unauthorized admin account.");
-  }
-  return { admin, session };
+async function verifyAdminSession(ctx: any, sessionToken?: string, permission = "admin.applications.view") {
+  return requireAdminPermission(ctx, sessionToken, permission);
 }
 
 async function logAudit(ctx: any, adminId: any, action: string, resourceId?: string, details?: any) {
@@ -119,7 +107,7 @@ export const enableProductGlobally = mutation({
     productId: v.id("products"),
   },
   handler: async (ctx, args) => {
-    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.applications.manage");
 
     const product = await ctx.db.get(args.productId);
     if (!product) throw new Error("Product not found.");
@@ -149,7 +137,7 @@ export const disableProductGlobally = mutation({
     newStatus: v.union(v.literal("BETA"), v.literal("COMING_SOON")),
   },
   handler: async (ctx, args) => {
-    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.applications.manage");
 
     const product = await ctx.db.get(args.productId);
     if (!product) throw new Error("Product not found.");
@@ -180,7 +168,7 @@ export const grantExtendedTrial = mutation({
     additionalDays: v.number(),
   },
   handler: async (ctx, args) => {
-    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.trial_extensions.create");
 
     const wp = await ctx.db
       .query("workspaceProducts")
@@ -223,7 +211,7 @@ export const listApplicationWorkspaces = query({
     search: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    await verifyAdminSession(ctx, args.sessionToken);
+    await verifyAdminSession(ctx, args.sessionToken, "admin.members.view");
 
     // 1. Fetch all workspaceProducts matching appKey
     const allWp = await ctx.db
@@ -354,7 +342,7 @@ export const getApplicationStats = query({
     appKey: v.string(),
   },
   handler: async (ctx, args) => {
-    await verifyAdminSession(ctx, args.sessionToken);
+    await verifyAdminSession(ctx, args.sessionToken, "admin.members.view");
 
     const allWp = await ctx.db
       .query("workspaceProducts")
@@ -400,8 +388,7 @@ export const getApplicationStats = query({
 });
 
 /**
- * listAllBranchMembers (Admin)
- * Lists branch team assignments across workspaces with populated user & branch details
+ * listAllBranchMembers (Admin) - Deprecated, team management removed
  */
 export const listAllBranchMembers = query({
   args: {
@@ -413,72 +400,12 @@ export const listAllBranchMembers = query({
   },
   handler: async (ctx, args) => {
     await verifyAdminSession(ctx, args.sessionToken);
-
-    let memberships = await ctx.db.query("branchMemberships").collect();
-
-    if (args.workspaceId) {
-      memberships = memberships.filter((m) => m.workspaceId === args.workspaceId);
-    }
-    if (args.role && args.role !== "all") {
-      memberships = memberships.filter((m) => m.role === args.role);
-    }
-    if (args.status && args.status !== "all") {
-      memberships = memberships.filter((m) => m.status === args.status);
-    }
-
-    const populated = await Promise.all(
-      memberships.map(async (m) => {
-        const user = await ctx.db.get(m.userId);
-        let branch: any = null;
-        let ws: any = null;
-        try {
-          branch = await ctx.db.get(m.branchId as any);
-        } catch {}
-        try {
-          ws = await ctx.db.get(m.workspaceId as any);
-        } catch {}
-
-        return {
-          id: m._id,
-          workspaceId: m.workspaceId,
-          workspaceName: ws?.name || "Workspace",
-          applicationKey: m.applicationKey,
-          branchId: m.branchId,
-          branchName: branch?.name || "Main Branch",
-          userId: m.userId,
-          userName: user?.name || user?.displayName || user?.email || "Unknown User",
-          userEmail: user?.email || "",
-          userAvatar: user?.avatar || user?.avatarUrl,
-          role: m.role,
-          permissions: m.permissions,
-          status: m.status,
-          assignedAt: m.assignedAt,
-          transferredFromBranchId: m.transferredFromBranchId,
-          transferredFromRole: m.transferredFromRole,
-          createdAt: m.createdAt,
-        };
-      })
-    );
-
-    if (args.search) {
-      const q = args.search.toLowerCase();
-      return populated.filter(
-        (p) =>
-          p.userName.toLowerCase().includes(q) ||
-          p.userEmail.toLowerCase().includes(q) ||
-          p.workspaceName.toLowerCase().includes(q) ||
-          p.branchName.toLowerCase().includes(q) ||
-          p.role.toLowerCase().includes(q)
-      );
-    }
-
-    return populated.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    return [];
   },
 });
 
 /**
- * listAllBranchTransfers (Admin)
- * Lists staff branch transfer logs across workspaces
+ * listAllBranchTransfers (Admin) - Deprecated, team management removed
  */
 export const listAllBranchTransfers = query({
   args: {
@@ -488,67 +415,7 @@ export const listAllBranchTransfers = query({
   },
   handler: async (ctx, args) => {
     await verifyAdminSession(ctx, args.sessionToken);
-
-    let transfers = await ctx.db.query("branchTransfers").order("desc").collect();
-
-    if (args.workspaceId) {
-      transfers = transfers.filter((t) => t.workspaceId === args.workspaceId);
-    }
-
-    const populated = await Promise.all(
-      transfers.map(async (t) => {
-        const user = await ctx.db.get(t.userId);
-        const adminUser = await ctx.db.get(t.transferredBy);
-        let srcBranch: any = null;
-        let dstBranch: any = null;
-        let ws: any = null;
-
-        try {
-          srcBranch = await ctx.db.get(t.sourceBranchId as any);
-        } catch {}
-        try {
-          dstBranch = await ctx.db.get(t.targetBranchId as any);
-        } catch {}
-        try {
-          ws = await ctx.db.get(t.workspaceId as any);
-        } catch {}
-
-        return {
-          id: t._id,
-          workspaceId: t.workspaceId,
-          workspaceName: ws?.name || "Workspace",
-          userId: t.userId,
-          userName: user?.name || user?.email || "Unknown User",
-          userEmail: user?.email,
-          userAvatar: user?.avatar || user?.avatarUrl,
-          sourceBranchId: t.sourceBranchId,
-          sourceBranchName: srcBranch?.name || "Previous Branch",
-          targetBranchId: t.targetBranchId,
-          targetBranchName: dstBranch?.name || "Target Branch",
-          previousRole: t.previousRole,
-          newRole: t.newRole,
-          transferredByName: adminUser?.name || adminUser?.email || "Admin",
-          effectiveDate: t.effectiveDate,
-          message: t.message,
-          createdAt: t.createdAt,
-        };
-      })
-    );
-
-    if (args.search) {
-      const q = args.search.toLowerCase();
-      return populated.filter(
-        (p) =>
-          p.userName.toLowerCase().includes(q) ||
-          (p.userEmail && p.userEmail.toLowerCase().includes(q)) ||
-          p.workspaceName.toLowerCase().includes(q) ||
-          p.sourceBranchName.toLowerCase().includes(q) ||
-          p.targetBranchName.toLowerCase().includes(q)
-      );
-    }
-
-    return populated;
+    return [];
   },
 });
-
 

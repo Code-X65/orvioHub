@@ -385,6 +385,11 @@ export const createOrganizationWithOnboarding = mutation({
     }
 
     // 1. Create organizations record
+    const phoneTrimmed = args.phone.trim();
+    const isUserVerifiedPhone = Boolean(user.phoneVerifiedAt && user.phone === phoneTrimmed);
+    const phoneStatus = isUserVerifiedPhone ? "verified" : "unverified";
+    const phoneVerifiedAt = isUserVerifiedPhone ? (user.phoneVerifiedAt || now) : undefined;
+
     const organizationId = await ctx.db.insert("organizations", {
       name: args.name.trim(),
       slug,
@@ -393,7 +398,10 @@ export const createOrganizationWithOnboarding = mutation({
       country,
       timezone,
       currency,
-      phone: args.phone.trim(),
+      phone: phoneTrimmed,
+      phoneNormalized: phoneTrimmed,
+      phoneStatus,
+      phoneVerifiedAt,
       street: args.street,
       city: args.city,
       state: args.state,
@@ -445,12 +453,16 @@ export const createOrganizationWithOnboarding = mutation({
       city: args.city,
       timezone,
       currency,
+      phone: phoneTrimmed,
+      phoneNormalized: phoneTrimmed,
+      phoneStatus,
+      phoneVerifiedAt,
       status: "active",
       planId: "free_trial",
       isDefault: true,
       enabledModules: [],
       settings: {
-        phone: args.phone,
+        phone: phoneTrimmed,
         category: args.category,
         address: fullAddress,
       },
@@ -769,6 +781,117 @@ export const saveInventoryOnboarding = mutation({
 });
 
 /**
+ * US-2/Gap 9: Mark inventory onboarding & branch setup as completed
+ */
+export const completeInventoryOnboarding = mutation({
+  args: {
+    organizationId: v.union(v.id("organizations"), v.id("workspaces"), v.string()),
+    branchId: v.optional(v.string()),
+    userId: v.optional(v.id("users")),
+  },
+  handler: async (ctx, args) => {
+    const { org, orgId } = await resolveOrganization(ctx, args.organizationId);
+    if (!org || !orgId) throw new Error("ORGANIZATION_NOT_FOUND");
+
+    const now = Date.now();
+    const inventoryApp = await ctx.db
+      .query("applications")
+      .withIndex("by_key", (q: any) => q.eq("key", "inventory"))
+      .first();
+
+    if (!inventoryApp) throw new Error("APPLICATION_NOT_FOUND");
+
+    const existingOrgApp = await ctx.db
+      .query("orgApplications")
+      .withIndex("by_org_and_app", (q: any) =>
+        q.eq("organizationId", orgId).eq("applicationId", inventoryApp._id)
+      )
+      .first();
+
+    // Enforce First Sale Tutorial acceptance criteria:
+    // User cannot mark Inventory onboarding as complete until this step is completed (or explicitly skipped).
+    const wsId = ctx.db.normalizeId("workspaces", orgId);
+    let invFlow = null;
+    if (wsId) {
+      invFlow = await ctx.db
+        .query("onboardingFlows")
+        .withIndex("by_workspace_product", (q: any) =>
+          q.eq("workspaceId", wsId).eq("productKey", "inventory")
+        )
+        .first();
+    }
+    if (!invFlow && args.userId) {
+      const uId = ctx.db.normalizeId("users", args.userId);
+      if (uId) {
+        invFlow = await ctx.db
+          .query("onboardingFlows")
+          .withIndex("by_user", (q: any) => q.eq("userId", uId))
+          .filter((q: any) => q.eq(q.field("productKey"), "inventory"))
+          .first();
+      }
+    }
+
+    if (invFlow && !(args as any).skipTutorialCheck) {
+      const completed = invFlow.completedSteps || [];
+      const skipped = invFlow.skippedSteps || [];
+      const hasTutorial = completed.includes("first_sale_tutorial") || skipped.includes("first_sale_tutorial");
+      if (!hasTutorial) {
+        throw new Error("FIRST_SALE_TUTORIAL_REQUIRED: Cannot complete inventory onboarding until first_sale_tutorial is completed or skipped.");
+      }
+    }
+
+    if (!existingOrgApp) {
+      await ctx.db.insert("orgApplications", {
+        organizationId: orgId,
+        applicationId: inventoryApp._id,
+        enabled: true,
+        config: { onboardingCompleted: true, branchSetupCompleted: true, completedAt: now, initialBranchId: args.branchId },
+        createdAt: now,
+        updatedAt: now,
+      });
+    } else {
+      await ctx.db.patch(existingOrgApp._id, {
+        enabled: true,
+        config: {
+          ...(existingOrgApp.config || {}),
+          onboardingCompleted: true,
+          branchSetupCompleted: true,
+          completedAt: now,
+          initialBranchId: args.branchId || existingOrgApp.config?.initialBranchId,
+        },
+        updatedAt: now,
+      });
+    }
+
+    if (invFlow) {
+      await ctx.db.patch(invFlow._id, {
+        status: "completed",
+        currentStep: "completed",
+        completedAt: now,
+        lastUpdatedAt: now,
+      });
+      if (invFlow.userId) {
+        await ctx.db.insert("onboardingEvents", {
+          userId: invFlow.userId,
+          workspaceId: invFlow.workspaceId,
+          productKey: "inventory",
+          step: "completed",
+          eventType: "flow_completed",
+          createdAt: now,
+        });
+      }
+    }
+
+    return {
+      success: true,
+      organizationId: orgId,
+      branchId: args.branchId,
+      completedAt: now,
+    };
+  },
+});
+
+/**
  * Query: Check if inventory onboarding has been completed for an org
  */
 export const getInventoryOnboardingStatus = query({
@@ -793,9 +916,31 @@ export const getInventoryOnboardingStatus = query({
       )
       .first();
 
+    const existingOrgApp = await ctx.db
+      .query("orgApplications")
+      .withIndex("by_org_and_app", (q: any) =>
+        q.eq("organizationId", orgId).eq("applicationId", inventoryApp._id)
+      )
+      .first();
+
+    const branches = await ctx.db
+      .query("branches")
+      .withIndex("by_organizationId", (q: any) => q.eq("organizationId", orgId))
+      .collect();
+
+    const activeBranches = branches.filter(
+      (b) => b.status !== "deleted" && b.status !== "archived" && b.status !== "inactive"
+    );
+
+    const isFullyCompleted =
+      Boolean(existingOrgApp?.config?.branchSetupCompleted) ||
+      (!!responses && activeBranches.length > 0);
+
     return {
-      completed: !!responses,
+      completed: isFullyCompleted,
       responses,
+      hasBranches: activeBranches.length > 0,
+      branchCount: activeBranches.length,
       organization: org,
       inventoryApp,
     };

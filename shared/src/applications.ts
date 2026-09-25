@@ -8,15 +8,21 @@ export type ApplicationKey =
   | "booking"
   | "gym"
   | "billing"
-  | "taskmanagement"
-  | "task_management";
+  | "taskmanagement";
 
 export type ApplicationStatus = "available" | "coming_soon" | "disabled";
+export type ApplicationType = "subdomain" | "path";
+export type AppAvailability = "available" | "coming_soon" | "beta";
+
+export const KNOWN_PLAN_KEYS = ["free_trial", "standard", "premium", "enterprise", "free"] as const;
+export type KnownPlanKey = (typeof KNOWN_PLAN_KEYS)[number];
 
 export type ApplicationDefinition = {
   key: ApplicationKey;
   name: string;
-  subdomain: string; // "" for the root marketing domain
+  type: ApplicationType;
+  subdomain: string; // "" for the root marketing domain, or parent subdomain
+  path?: string; // Path for path-based applications (e.g. "/pos", "/apps/booking")
   productionUrl: string;
   preproductionUrl?: string;
   developmentUrl: string;
@@ -24,6 +30,13 @@ export type ApplicationDefinition = {
   status: ApplicationStatus;
   isVisibleToUsers: boolean;
   isActivatable: boolean;
+  // Canonical display and activation metadata
+  availability?: AppAvailability;
+  description?: string;
+  badge?: string; // Marketing label only (e.g. "Flagship", "Popular")
+  planRequirements?: string[];
+  iconName?: string;
+  displayOrder?: number;
 };
 
 export const DEV_ROOT = "orviohub.localhost";
@@ -77,133 +90,211 @@ export const applications: Record<ApplicationKey, ApplicationDefinition> = {
   marketing: {
     key: "marketing",
     name: "Orviohub",
+    type: "subdomain",
     subdomain: "",
     productionUrl: "https://orviohub.com",
     preproductionUrl: "https://preprod.orviohub.com",
     developmentUrl: resolveDevUrl(""),
     enabled: true,
     status: "available",
+    availability: "available",
     isVisibleToUsers: true,
     isActivatable: false,
+    description: "Public marketing website and enterprise product portal.",
+    iconName: "Globe",
+    planRequirements: [],
+    displayOrder: 100,
   },
   accounts: {
     key: "accounts",
     name: "Orviohub Accounts",
+    type: "subdomain",
     subdomain: "account",
     productionUrl: "https://accounts.orviohub.com",
     preproductionUrl: "https://accounts.preprod.orviohub.com",
     developmentUrl: resolveDevUrl("account"),
     enabled: true,
     status: "available",
+    availability: "available",
     isVisibleToUsers: true,
     isActivatable: false,
+    description: "Identity, authentication, and user profile management.",
+    iconName: "Shield",
+    planRequirements: [],
+    displayOrder: 101,
   },
   home: {
     key: "home",
     name: "Orviohub Home",
+    type: "subdomain",
     subdomain: "home",
     productionUrl: "https://home.orviohub.com",
     preproductionUrl: "https://home.preprod.orviohub.com",
     developmentUrl: resolveDevUrl("home"),
     enabled: true,
     status: "available",
+    availability: "available",
     isVisibleToUsers: true,
     isActivatable: false,
+    description: "Unified organization workspace and administration dashboard.",
+    iconName: "LayoutGrid",
+    planRequirements: [],
+    displayOrder: 102,
   },
   launcher: {
     key: "launcher",
     name: "Orviohub App Launcher",
+    type: "subdomain",
     subdomain: "app",
     productionUrl: "https://app.orviohub.com",
     preproductionUrl: "https://app.preprod.orviohub.com",
-    developmentUrl: resolveDevUrl("home"),
+    developmentUrl: resolveDevUrl("app"),
     enabled: true,
     status: "available",
+    availability: "available",
     isVisibleToUsers: true,
     isActivatable: false,
+    description: "Enterprise application switcher and discovery portal.",
+    iconName: "Rocket",
+    planRequirements: [],
+    displayOrder: 103,
   },
   inventory: {
     key: "inventory",
     name: "Inventory",
+    type: "subdomain",
     subdomain: "inventory",
     productionUrl: "https://inventory.orviohub.com",
     preproductionUrl: "https://inventory.preprod.orviohub.com",
     developmentUrl: resolveDevUrl("inventory"),
     enabled: true,
     status: "available",
+    availability: "available",
     isVisibleToUsers: true,
     isActivatable: true,
+    description: "Full inventory management: stock tracking, purchases, sales POS, and reports.",
+    badge: "Flagship",
+    planRequirements: ["free_trial", "standard", "premium", "enterprise"],
+    iconName: "Boxes",
+    displayOrder: 1,
   },
   pos: {
     key: "pos",
     name: "Point of Sale",
+    type: "path",
     subdomain: "inventory",
+    path: "/pos",
     productionUrl: "https://inventory.orviohub.com/pos",
     preproductionUrl: "https://inventory.preprod.orviohub.com/pos",
     developmentUrl: resolveDevUrl("inventory", "/pos"),
     enabled: false,
     status: "coming_soon",
+    availability: "coming_soon",
     isVisibleToUsers: false,
     isActivatable: false,
+    description: "Point-of-sale terminal with receipts, cash management, and shift reports.",
+    planRequirements: ["standard", "premium", "enterprise"],
+    iconName: "ShoppingCart",
+    displayOrder: 2,
   },
   booking: {
     key: "booking",
     name: "Booking & Appointments",
+    type: "path",
     subdomain: "home",
+    path: "/apps/booking",
     productionUrl: "https://home.orviohub.com/apps/booking",
     preproductionUrl: "https://home.preprod.orviohub.com/apps/booking",
     developmentUrl: resolveDevUrl("home", "/apps/booking"),
     enabled: false,
     status: "coming_soon",
+    availability: "coming_soon",
     isVisibleToUsers: false,
     isActivatable: false,
+    description: "Appointment and reservation management with automated reminders.",
+    planRequirements: ["standard", "premium", "enterprise"],
+    iconName: "Calendar",
+    displayOrder: 3,
   },
   gym: {
     key: "gym",
     name: "Gym Management",
+    type: "path",
     subdomain: "home",
+    path: "/apps/gym",
     productionUrl: "https://home.orviohub.com/apps/gym",
     preproductionUrl: "https://home.preprod.orviohub.com/apps/gym",
     developmentUrl: resolveDevUrl("home", "/apps/gym"),
     enabled: false,
     status: "coming_soon",
+    availability: "coming_soon",
     isVisibleToUsers: false,
     isActivatable: false,
+    description: "Membership management, class scheduling, and trainer assignment.",
+    planRequirements: ["standard", "premium", "enterprise"],
+    iconName: "Dumbbell",
+    displayOrder: 4,
   },
   billing: {
     key: "billing",
     name: "Billing & Subscriptions",
+    type: "subdomain",
     subdomain: "billing",
     productionUrl: "https://billing.orviohub.com",
     preproductionUrl: "https://billing.preprod.orviohub.com",
     developmentUrl: resolveDevUrl("billing"),
     enabled: true,
     status: "available",
+    availability: "available",
     isVisibleToUsers: true,
     isActivatable: false,
+    description: "Subscription billing, invoicing, and payment management.",
+    planRequirements: ["standard", "premium", "enterprise"],
+    iconName: "CreditCard",
+    displayOrder: 5,
   },
   taskmanagement: {
     key: "taskmanagement",
     name: "Task Management",
+    type: "subdomain",
     subdomain: "taskmanagement",
     productionUrl: "https://taskmanagement.orviohub.com",
     preproductionUrl: "https://taskmanagement.preprod.orviohub.com",
     developmentUrl: resolveDevUrl("taskmanagement"),
     enabled: false,
     status: "coming_soon",
+    availability: "coming_soon",
     isVisibleToUsers: false,
     isActivatable: false,
-  },
-  task_management: {
-    key: "task_management",
-    name: "Task Management",
-    subdomain: "taskmanagement",
-    productionUrl: "https://taskmanagement.orviohub.com",
-    preproductionUrl: "https://taskmanagement.preprod.orviohub.com",
-    developmentUrl: resolveDevUrl("taskmanagement"),
-    enabled: false,
-    status: "coming_soon",
-    isVisibleToUsers: false,
-    isActivatable: false,
+    description: "Team task tracking, assignments, and workflow boards.",
+    planRequirements: ["standard", "premium", "enterprise"],
+    iconName: "ClipboardList",
+    displayOrder: 6,
   },
 };
+
+/**
+ * Serialized JSON representation of the canonical applications configuration.
+ * Consumed across client and build-time tooling to guarantee single-source integrity.
+ */
+export const applicationsJson = JSON.stringify(applications, null, 2);
+
+/**
+ * Ordered list of all user-facing application keys.
+ */
+export const USER_FACING_APP_KEYS: ApplicationKey[] = [
+  "inventory",
+  "pos",
+  "booking",
+  "gym",
+  "billing",
+  "taskmanagement",
+];
+
+/**
+ * Retrieves an application definition by key (case-insensitive).
+ */
+export function getApplication(key: string): ApplicationDefinition | undefined {
+  return applications[key.toLowerCase() as ApplicationKey];
+}
+

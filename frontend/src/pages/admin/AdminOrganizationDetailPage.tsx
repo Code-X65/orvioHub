@@ -29,6 +29,10 @@ import {
   AlertTriangle,
   MapPin,
   Calendar,
+  Phone,
+  ShieldCheck,
+  PhoneOff,
+  Check,
 } from 'lucide-react';
 
 export const AdminOrganizationDetailPage: React.FC = () => {
@@ -36,7 +40,7 @@ export const AdminOrganizationDetailPage: React.FC = () => {
   const navigate = useNavigate();
 
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'apps' | 'branches' | 'members' | 'billing' | 'onboarding' | 'audit' | 'notes'
+    'overview' | 'apps' | 'branches' | 'members' | 'phone' | 'billing' | 'onboarding' | 'audit' | 'notes'
   >('overview');
 
   const [org, setOrg] = useState<any>(null);
@@ -50,6 +54,14 @@ export const AdminOrganizationDetailPage: React.FC = () => {
   const [supportNotes, setSupportNotes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Phone override modal state
+  const [phoneOverrideModal, setPhoneOverrideModal] = useState<{
+    type: 'mark_verified' | 'unlink';
+    user: { id: string; name: string; phone?: string };
+  } | null>(null);
+  const [phoneReason, setPhoneReason] = useState('');
+  const [isPhoneSubmitting, setIsPhoneSubmitting] = useState(false);
+
   // Modals
   const [actionModal, setActionModal] = useState<{
     type: 'suspend' | 'restore' | 'archive' | 'extend_trial' | 'revoke_sessions';
@@ -57,6 +69,7 @@ export const AdminOrganizationDetailPage: React.FC = () => {
   } | null>(null);
 
   const [trialDaysToAdd, setTrialDaysToAdd] = useState(14);
+  const [platformApps, setPlatformApps] = useState<any[]>([]);
 
   const loadData = useCallback(async () => {
     if (!workspaceId) return;
@@ -64,6 +77,7 @@ export const AdminOrganizationDetailPage: React.FC = () => {
     try {
       const [
         orgRes,
+        platformAppsRes,
         appsRes,
         branchesRes,
         membersRes,
@@ -74,6 +88,7 @@ export const AdminOrganizationDetailPage: React.FC = () => {
         notesRes,
       ] = await Promise.all([
         api.get<any>(`/admin/organizations/${workspaceId}`).catch(() => null),
+        api.get<any>('/platform/applications').catch(() => null),
         api.get<any>(`/admin/organizations/${workspaceId}/applications`).catch(() => ({ data: { applications: [] } })),
         api.get<any>(`/admin/organizations/${workspaceId}/branches`).catch(() => ({ data: { branches: [] } })),
         api.get<any>(`/admin/organizations/${workspaceId}/members`).catch(() => ({ data: { members: [] } })),
@@ -86,6 +101,18 @@ export const AdminOrganizationDetailPage: React.FC = () => {
 
       const orgData = orgRes?.data || orgRes?.organization || orgRes;
       setOrg(orgData || { id: workspaceId, name: 'Organization', status: 'active', planKey: 'free_trial' });
+      const regApps =
+        platformAppsRes?.data?.applications ||
+        platformAppsRes?.applications ||
+        platformAppsRes?.data ||
+        [
+          { key: 'inventory', name: 'Inventory & POS', status: 'active', isCore: true, description: 'Multi-branch Nigerian retail setup, stock tracking, and sales demo.' },
+          { key: 'pos', name: 'POS Terminal', status: 'coming_soon', isCore: false, description: 'Point-of-sale terminal with receipts, cash management, and shift reports.' },
+          { key: 'booking', name: 'Booking & Appointments', status: 'coming_soon', isCore: false, description: 'Appointment and reservation management with automated reminders.' },
+          { key: 'gym', name: 'Gym Management', status: 'coming_soon', isCore: false, description: 'Membership management, class scheduling, and trainer assignment.' },
+          { key: 'taskmanagement', name: 'Task Management', status: 'coming_soon', isCore: false, description: 'Team task tracking, assignments, and workflow board.' },
+        ];
+      setPlatformApps(regApps);
       setApps(appsRes?.data?.applications || appsRes?.applications || []);
       setBranches(branchesRes?.data?.branches || branchesRes?.branches || []);
       setMembers(membersRes?.data?.members || membersRes?.members || []);
@@ -144,6 +171,34 @@ export const AdminOrganizationDetailPage: React.FC = () => {
       loadData();
     } catch (err: any) {
       toast.error(err.message || 'Failed to record note.');
+    }
+  };
+
+  const handlePhoneOverrideSubmit = async () => {
+    if (!phoneOverrideModal || !phoneReason.trim()) {
+      toast.error('Please provide an administrative reason for this action.');
+      return;
+    }
+    setIsPhoneSubmitting(true);
+    try {
+      if (phoneOverrideModal.type === 'mark_verified') {
+        await api.post(`/admin/users/${phoneOverrideModal.user.id}/phone/mark-verified`, {
+          reason: phoneReason.trim(),
+        });
+        toast.success(`User phone marked as verified.`);
+      } else {
+        await api.post(`/admin/users/${phoneOverrideModal.user.id}/phone/unlink`, {
+          reason: phoneReason.trim(),
+        });
+        toast.success(`User phone unlinked successfully.`);
+      }
+      setPhoneOverrideModal(null);
+      setPhoneReason('');
+      loadData();
+    } catch (err: any) {
+      toast.error(err.message || 'Action failed.');
+    } finally {
+      setIsPhoneSubmitting(false);
     }
   };
 
@@ -212,11 +267,26 @@ export const AdminOrganizationDetailPage: React.FC = () => {
                   {org?.id}
                 </span>
               </div>
-              <p className="text-xs text-slate-400 mt-1">
-                Owner: <span className="text-slate-200">{org?.ownerEmail || '—'}</span> · Country:{' '}
-                <span className="text-slate-200">{org?.country || 'Nigeria'}</span> · Timezone:{' '}
-                <span className="text-slate-200">{org?.timezone || 'Africa/Lagos'}</span>
-              </p>
+              <div className="text-xs text-slate-400 mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span>Owner: <span className="text-slate-200">{org?.ownerEmail || '—'}</span></span>
+                <span>·</span>
+                <span>Phone: <span className="text-slate-200">{org?.phone || '—'}</span></span>
+                {org?.phone && (
+                  org?.phoneVerified || org?.phoneVerifiedAt || org?.phoneStatus === 'verified' ? (
+                    <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                      ✓ Verified
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                      Unverified
+                    </span>
+                  )
+                )}
+                <span>·</span>
+                <span>Country: <span className="text-slate-200">{org?.country || 'Nigeria'}</span></span>
+                <span>·</span>
+                <span>Timezone: <span className="text-slate-200">{org?.timezone || 'Africa/Lagos'}</span></span>
+              </div>
             </div>
           </div>
 
@@ -240,6 +310,7 @@ export const AdminOrganizationDetailPage: React.FC = () => {
             { id: 'apps', label: 'Applications', icon: Layers },
             { id: 'branches', label: `Branches (${branches.length})`, icon: Store },
             { id: 'members', label: `Team (${members.length})`, icon: Users },
+            { id: 'phone', label: 'Phone Governance', icon: Phone },
             { id: 'billing', label: 'Billing & Entitlements', icon: CreditCard },
             { id: 'onboarding', label: 'Onboarding Flow', icon: CheckCircle2 },
             { id: 'audit', label: `Audit Trail (${auditLogs.length})`, icon: FileText },
@@ -305,45 +376,50 @@ export const AdminOrganizationDetailPage: React.FC = () => {
             {/* 2. Applications Tab */}
             {activeTab === 'apps' && (
               <div className="space-y-4">
-                <div className="p-4 rounded-xl border border-indigo-500/30 bg-indigo-500/5 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2.5 rounded-lg bg-indigo-500/20 text-indigo-300">
-                      <Layers className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <div className="text-xs font-bold text-white flex items-center gap-2">
-                        Inventory & POS (Flagship MVP)
-                        <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                          Active & Activated
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-slate-400 mt-0.5">
-                        Multi-branch Nigerian retail setup, stock tracking, and sales demo.
-                      </p>
-                    </div>
-                  </div>
-                </div>
+                {platformApps.map((regApp) => {
+                  const activated = apps.find(
+                    (a) => (a.key || a.productKey || a.applicationKey || '').toLowerCase() === regApp.key.toLowerCase()
+                  );
+                  const isLiveActive = regApp.status === 'active' || (activated && activated.status !== 'inactive');
 
-                {['POS Terminal', 'Booking & Appointments', 'Gym Management', 'Task Management'].map((appName) => (
-                  <div key={appName} className="p-4 rounded-xl border border-white/5 bg-black/20 flex items-center justify-between opacity-60">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2.5 rounded-lg bg-white/5 text-slate-400">
-                        <Lock className="w-5 h-5" />
-                      </div>
-                      <div>
-                        <div className="text-xs font-bold text-slate-300 flex items-center gap-2">
-                          {appName}
-                          <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-slate-800 text-slate-400">
-                            Coming Soon (Disabled)
-                          </span>
+                  return (
+                    <div
+                      key={regApp.key}
+                      className={`p-4 rounded-xl border flex items-center justify-between transition ${
+                        isLiveActive
+                          ? 'border-indigo-500/30 bg-indigo-500/5'
+                          : 'border-white/5 bg-black/20 opacity-60'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div
+                          className={`p-2.5 rounded-lg ${
+                            isLiveActive ? 'bg-indigo-500/20 text-indigo-300' : 'bg-white/5 text-slate-400'
+                          }`}
+                        >
+                          {isLiveActive ? <Layers className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
                         </div>
-                        <p className="text-[11px] text-slate-500 mt-0.5">
-                          Future application module, strictly hidden and non-activatable.
-                        </p>
+                        <div>
+                          <div className="text-xs font-bold text-white flex items-center gap-2">
+                            {regApp.name}
+                            {isLiveActive ? (
+                              <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                {regApp.isCore ? 'Active & Core' : 'Active & Activated'}
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-slate-800 text-slate-400">
+                                {regApp.status === 'coming_soon' ? 'Coming Soon (Disabled)' : regApp.status}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            {regApp.description || `${regApp.name} application module.`}
+                          </p>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 
@@ -368,6 +444,20 @@ export const AdminOrganizationDetailPage: React.FC = () => {
                       <div className="text-[11px] text-slate-400 flex items-center gap-1.5">
                         <MapPin className="w-3 h-3 text-slate-500" />
                         {b.street || b.address || 'Standard Location'}, {b.lga || 'Ikeja'}, {b.state || 'Lagos'}, Nigeria
+                      </div>
+                      <div className="text-[11px] text-slate-400 flex items-center gap-2">
+                        <span>Phone: <span className="text-slate-200">{b.phone || '—'}</span></span>
+                        {b.phone && (
+                          b.phoneVerified || b.phoneVerifiedAt || b.phoneStatus === 'verified' ? (
+                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[9px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                              ✓ Verified
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[9px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                              Unverified
+                            </span>
+                          )
+                        )}
                       </div>
                     </div>
 
@@ -400,6 +490,184 @@ export const AdminOrganizationDetailPage: React.FC = () => {
                     </span>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* Phone Governance Tab */}
+            {activeTab === 'phone' && (
+              <div className="space-y-6">
+                {/* 1. Organization Contact Phone */}
+                <div className="p-5 rounded-xl border border-white/10 bg-black/40 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                        <Building2 className="w-4 h-4 text-[#e6a8d6]" />
+                        Official Organization Business Phone
+                      </h3>
+                      <p className="text-[11px] text-slate-400">
+                        Primary registered contact for billing, regulatory notifications, and corporate administration.
+                      </p>
+                    </div>
+                    {org?.phone ? (
+                      org?.phoneVerified || org?.phoneVerifiedAt || org?.phoneStatus === 'verified' ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
+                          <ShieldCheck className="w-3.5 h-3.5" />
+                          Verified
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30">
+                          Unverified
+                        </span>
+                      )
+                    ) : (
+                      <span className="text-xs text-slate-500 italic">Not set</span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-white/5 text-xs">
+                    <div>
+                      <span className="text-slate-400 block text-[11px]">Phone Number</span>
+                      <span className="font-mono text-white font-medium">{org?.phone || '—'}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block text-[11px]">Normalized Format</span>
+                      <span className="font-mono text-slate-300">{org?.phoneNormalized || org?.phone || '—'}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. Branch Contact Phones */}
+                <div className="p-5 rounded-xl border border-white/10 bg-black/40 space-y-4">
+                  <div>
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                      <Store className="w-4 h-4 text-emerald-400" />
+                      Branch Contact Phones ({branches.length})
+                    </h3>
+                    <p className="text-[11px] text-slate-400">
+                      Physical retail & warehouse branch locations and their operational contact phone numbers.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {branches.map((b) => (
+                      <div key={b.id || b._id} className="p-3.5 rounded-lg border border-white/5 bg-white/[0.02] space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-bold text-white">{b.name}</span>
+                            {b.isPrimary && (
+                              <span className="text-[9px] px-1.5 py-0.2 rounded font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                Primary
+                              </span>
+                            )}
+                          </div>
+                          {b.phone ? (
+                            b.phoneVerified || b.phoneVerifiedAt || b.phoneStatus === 'verified' ? (
+                              <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                <ShieldCheck className="w-3 h-3" />
+                                Verified
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                Unverified
+                              </span>
+                            )
+                          ) : (
+                            <span className="text-[10px] text-slate-500 italic">No phone</span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-slate-400 font-mono">
+                          {b.phone || 'No phone attached'}
+                        </div>
+                        <div className="text-[10px] text-slate-500 flex items-center gap-1">
+                          <MapPin className="w-3 h-3" />
+                          {b.city || 'Lagos'}, {b.state || 'Nigeria'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 3. Team Member Phones & Administrative Overrides */}
+                <div className="p-5 rounded-xl border border-white/10 bg-black/40 space-y-4">
+                  <div>
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                      <Users className="w-4 h-4 text-indigo-400" />
+                      Team Members & Administrative Overrides ({members.length})
+                    </h3>
+                    <p className="text-[11px] text-slate-400">
+                      View personal phone statuses, manually mark verified for confirmed identities, or unlink compromised numbers.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2.5">
+                    {members.map((m) => {
+                      const isVerified = m.phoneVerified || m.phoneStatus === 'verified';
+                      const hasPhone = !!m.phone;
+                      return (
+                        <div key={m.id || m.userId} className="p-3 rounded-lg border border-white/5 bg-white/[0.02] flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                          <div className="flex items-center gap-3">
+                            <div className="w-8 h-8 rounded-full bg-[#714b67]/30 border border-[#714b67]/50 flex items-center justify-center text-xs font-bold text-[#e6a8d6]">
+                              {(m.name || m.email || 'M').charAt(0).toUpperCase()}
+                            </div>
+                            <div>
+                              <div className="font-bold text-white flex items-center gap-2">
+                                {m.name}
+                                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-white/10 text-slate-300">
+                                  {m.role?.toUpperCase()}
+                                </span>
+                              </div>
+                              <div className="text-[11px] text-slate-400 font-mono flex items-center gap-2 mt-0.5">
+                                <span>{m.email}</span>
+                                <span>·</span>
+                                <span className="text-slate-300 font-semibold">{m.phone || 'No phone'}</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 self-end sm:self-center">
+                            {hasPhone ? (
+                              isVerified ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                  <ShieldCheck className="w-3 h-3" />
+                                  Verified
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                  Unverified
+                                </span>
+                              )
+                            ) : (
+                              <span className="text-[10px] text-slate-500 italic">No phone attached</span>
+                            )}
+
+                            {hasPhone && !isVerified && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setPhoneOverrideModal({ type: 'mark_verified', user: m })}
+                                className="h-7 text-[10px] border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10 px-2 cursor-pointer"
+                              >
+                                <Check className="w-3 h-3 mr-1" />
+                                Mark Verified
+                              </Button>
+                            )}
+
+                            {hasPhone && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setPhoneOverrideModal({ type: 'unlink', user: m })}
+                                className="h-7 text-[10px] border-rose-500/30 text-rose-300 hover:bg-rose-500/10 px-2 cursor-pointer"
+                              >
+                                <PhoneOff className="w-3 h-3 mr-1" />
+                                Unlink Phone
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
             )}
 
@@ -503,6 +771,82 @@ export const AdminOrganizationDetailPage: React.FC = () => {
           confirmLabel="Confirm Action"
           isDangerous={actionModal.type === 'suspend' || actionModal.type === 'archive'}
         />
+      )}
+
+      {/* Phone Override Reason Modal */}
+      {phoneOverrideModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="w-full max-w-md bg-slate-900 border border-white/10 rounded-2xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                {phoneOverrideModal.type === 'mark_verified' ? (
+                  <>
+                    <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                    Mark User Phone as Verified
+                  </>
+                ) : (
+                  <>
+                    <PhoneOff className="w-4 h-4 text-rose-400" />
+                    Administratively Unlink User Phone
+                  </>
+                )}
+              </h3>
+              <button
+                onClick={() => { setPhoneOverrideModal(null); setPhoneReason(''); }}
+                className="text-slate-400 hover:text-white text-xs cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="text-xs text-slate-300 space-y-2">
+              <p>
+                Target User: <strong className="text-white">{phoneOverrideModal.user.name}</strong> ({phoneOverrideModal.user.phone || 'No phone'})
+              </p>
+              <p className="text-slate-400 text-[11px]">
+                {phoneOverrideModal.type === 'mark_verified'
+                  ? 'This overrides the OTP challenge requirement and marks this phone number as verified in the database with an administrative audit log.'
+                  : 'This removes the phone number link, clears verification timestamps, and requires the user to link and verify a new phone number.'}
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs text-slate-300 font-semibold">
+                Reason for Override <span className="text-rose-400">*</span>
+              </Label>
+              <Input
+                placeholder="e.g. Identity verified via customer support call with owner"
+                value={phoneReason}
+                onChange={(e) => setPhoneReason(e.target.value)}
+                className="bg-black/50 border-white/10 text-xs text-white placeholder:text-slate-600"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/10">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { setPhoneOverrideModal(null); setPhoneReason(''); }}
+                className="text-xs text-slate-400 hover:text-white cursor-pointer"
+                disabled={isPhoneSubmitting}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                onClick={handlePhoneOverrideSubmit}
+                disabled={isPhoneSubmitting || !phoneReason.trim()}
+                className={`text-xs font-semibold cursor-pointer ${
+                  phoneOverrideModal.type === 'mark_verified'
+                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                    : 'bg-rose-600 hover:bg-rose-500 text-white'
+                }`}
+              >
+                {isPhoneSubmitting ? 'Processing...' : phoneOverrideModal.type === 'mark_verified' ? 'Confirm Verification' : 'Confirm Unlink'}
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

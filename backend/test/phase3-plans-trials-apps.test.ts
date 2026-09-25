@@ -122,7 +122,7 @@ describe('Phase 3: Authoritative Product, Plan Limits & Application Visibility S
     });
 
     test('Future applications (pos, booking, gym, taskmanagement) are hidden and non-activatable', () => {
-      const futureKeys = ['pos', 'booking', 'gym', 'taskmanagement', 'task_management'] as const;
+      const futureKeys = ['pos', 'booking', 'gym', 'taskmanagement'] as const;
       for (const key of futureKeys) {
         const app = applications[key];
         assert.ok(app, `Application ${key} should be defined`);

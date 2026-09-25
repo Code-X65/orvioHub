@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '@/stores/useAuthStore';
-import { api } from '@/lib/api';
+import { api, setMemoryAuthToken } from '@/lib/api';
 import { AuthResponse } from '@/lib/types';
 import { useHost } from '@/host/useHost';
+import { isAllowedReturnTo } from '@orviohub/shared';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -26,6 +27,9 @@ export const AuthCallback: React.FC = () => {
   const { setAuthData, refreshSession } = useAuthStore();
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  const returnToParam = searchParams.get('returnTo') || searchParams.get('return_to') || searchParams.get('redirect');
+  const validReturnTo = returnToParam && isAllowedReturnTo(returnToParam, host.environment) ? returnToParam : null;
+
   useEffect(() => {
     const processCallback = async () => {
       const errorParam = searchParams.get('error');
@@ -42,11 +46,8 @@ export const AuthCallback: React.FC = () => {
 
       if (tokenParam) {
         try {
-          // Set access & refresh tokens for initial hydration if query params provided
-          localStorage.setItem('orvio_auth_token', tokenParam);
-          if (refreshTokenParam) {
-            localStorage.setItem('orvio_refresh_token', refreshTokenParam);
-          }
+          // Set access token in memory for immediate API hydration
+          setMemoryAuthToken(tokenParam);
 
           // Hydrate user session from /me
           const meResponse = await api.get<{
@@ -64,16 +65,24 @@ export const AuthCallback: React.FC = () => {
           };
 
           setAuthData(authResponse);
-          await refreshSession();
 
           toast.success(`Welcome back, ${meResponse.user.name || 'there'}!`);
 
-          // Route according to onboarding status
+          // Route to returnTo if present and onboarding is completed
+          if (validReturnTo) {
+            window.location.replace(validReturnTo);
+            return;
+          }
+
+          // Route directly and smoothly based on user state
           if (meResponse.onboarding?.status === 'COMPLETED') {
             navigate('/inventory/dashboard', { replace: true });
             return;
+          } else if (meResponse.user?.personalOnboardingCompleted === false) {
+            navigate('/onboard/personal', { replace: true });
+            return;
           } else {
-            navigate('/onboarding', { replace: true });
+            navigate('/onboard/organization', { replace: true });
             return;
           }
         } catch (err: any) {
@@ -95,11 +104,19 @@ export const AuthCallback: React.FC = () => {
             navigate('/verify-email', { replace: true });
             return;
           }
+          if (validReturnTo) {
+            window.location.replace(validReturnTo);
+            return;
+          }
           if (currentAuth.onboardingStatus?.status === 'COMPLETED') {
             navigate('/inventory/dashboard', { replace: true });
             return;
           }
-          navigate('/onboarding', { replace: true });
+          if (currentAuth.user?.personalOnboardingCompleted === false) {
+            navigate('/onboard/personal', { replace: true });
+            return;
+          }
+          navigate('/onboard/organization', { replace: true });
           return;
         }
       } catch {
@@ -111,7 +128,7 @@ export const AuthCallback: React.FC = () => {
     };
 
     processCallback();
-  }, [searchParams, navigate, setAuthData, refreshSession, host.environment]);
+  }, [searchParams, navigate, setAuthData, refreshSession, host.environment, validReturnTo]);
 
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center space-y-4 px-4">
@@ -122,11 +139,20 @@ export const AuthCallback: React.FC = () => {
         </div>
       ) : (
         <div className="text-center space-y-4">
-          <Loader2 className="w-10 h-10 text-[#6C3BFF] animate-spin mx-auto" />
+          <Loader2 className="w-10 h-10 text-[#714b67] animate-spin mx-auto" />
           <p className="text-slate-200 font-medium text-lg">Authenticating with orvioHub...</p>
           <p className="text-slate-500 text-sm">Securing your session and setting up workspace</p>
         </div>
       )}
+
+      <div className="pt-2">
+        <a
+          href={validReturnTo || '/login'}
+          className="text-xs text-[#c79dbd] hover:underline"
+        >
+          {validReturnTo ? '← Back to where you were' : '← Back to Sign in'}
+        </a>
+      </div>
     </div>
   );
 };

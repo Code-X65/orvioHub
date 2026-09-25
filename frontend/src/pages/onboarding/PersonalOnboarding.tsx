@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useTransition, memo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { api } from '@/lib/api';
@@ -96,23 +96,191 @@ const STEPS = [
   { step: 4, title: 'Discovery', description: 'How you found us' },
 ];
 
+// --- Memoized Subcomponents to eliminate full grid re-renders on selection ---
+
+const UseCaseCard = memo<{
+  item: UseCaseOption;
+  isSelected: boolean;
+  onToggle: (id: string) => void;
+}>(({ item, isSelected, onToggle }) => {
+  const Icon = item.icon;
+  return (
+    <div
+      onClick={() => onToggle(item.id)}
+      className={cn(
+        'group relative p-4 rounded-xl border transition-all duration-150 cursor-pointer flex items-start gap-3.5 select-none',
+        isSelected
+          ? 'bg-gradient-to-br from-[#241321] to-[#140b12] border-[#714b67] shadow-lg shadow-[#714b67]/20 ring-1 ring-[#714b67]'
+          : 'bg-[#160f14] border-white/10 hover:border-[#714b67]/40 hover:bg-[#1d121b]'
+      )}
+    >
+      <div
+        className={cn(
+          'w-9 h-9 rounded-lg flex items-center justify-center shrink-0 transition-colors',
+          isSelected
+            ? 'bg-[#714b67] text-white'
+            : 'bg-white/5 text-slate-400 group-hover:text-white'
+        )}
+      >
+        <Icon className="w-5 h-5" />
+      </div>
+
+      <div className="flex-1 min-w-0 pr-6">
+        <h4 className="text-xs font-bold text-white tracking-tight">{item.title}</h4>
+        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+          {item.description}
+        </p>
+      </div>
+
+      <div
+        className={cn(
+          'absolute top-4 right-4 w-5 h-5 rounded-full flex items-center justify-center transition-colors',
+          isSelected ? 'bg-[#FDB02F] text-black' : 'border border-white/20'
+        )}
+      >
+        {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
+      </div>
+    </div>
+  );
+});
+UseCaseCard.displayName = 'UseCaseCard';
+
+const RoleOption = memo<{
+  item: { id: string; label: string };
+  isSelected: boolean;
+  onSelect: (id: string) => void;
+}>(({ item, isSelected, onSelect }) => (
+  <button
+    type="button"
+    onClick={() => onSelect(item.id)}
+    className={cn(
+      'p-4 rounded-xl border text-left transition-all duration-150 flex items-center justify-between cursor-pointer select-none',
+      isSelected
+        ? 'bg-[#714b67]/25 border-[#714b67] text-white font-bold ring-1 ring-[#714b67] shadow-md shadow-[#714b67]/20'
+        : 'bg-[#160f14] border-white/10 text-slate-300 hover:text-white hover:border-white/20 hover:bg-[#1d121b]'
+    )}
+  >
+    <span className="text-xs font-semibold">{item.label}</span>
+    {isSelected ? (
+      <CheckCircle2 className="w-5 h-5 text-[#FDB02F]" />
+    ) : (
+      <div className="w-4 h-4 rounded-full border border-white/20" />
+    )}
+  </button>
+));
+RoleOption.displayName = 'RoleOption';
+
+const BusinessOption = memo<{
+  isYes: boolean;
+  isSelected: boolean;
+  onSelect: (val: boolean) => void;
+}>(({ isYes, isSelected, onSelect }) => (
+  <button
+    type="button"
+    onClick={() => onSelect(isYes)}
+    className={cn(
+      'p-5 rounded-2xl border text-left transition-all duration-150 cursor-pointer select-none space-y-2',
+      isSelected
+        ? 'bg-gradient-to-br from-[#241321] to-[#140b12] border-[#714b67] ring-1 ring-[#714b67] shadow-lg shadow-[#714b67]/25'
+        : 'bg-[#160f14] border-white/10 hover:border-white/20 hover:bg-[#1d121b]'
+    )}
+  >
+    <div className="flex items-center justify-between">
+      <span className="text-sm font-bold text-white">
+        {isYes ? 'Yes, I currently manage a business' : 'Not currently'}
+      </span>
+      {isSelected ? (
+        <CheckCircle2 className="w-5 h-5 text-[#FDB02F]" />
+      ) : (
+        <div className="w-4 h-4 rounded-full border border-white/20" />
+      )}
+    </div>
+    <p className="text-[11px] text-slate-400 leading-relaxed">
+      {isYes
+        ? 'I own or manage an active shop, wholesale store, warehouse, or retail outfit.'
+        : 'I am exploring for future ventures, learning the platform, or awaiting an invitation.'}
+    </p>
+  </button>
+));
+BusinessOption.displayName = 'BusinessOption';
+
+const DiscoveryOption = memo<{
+  source: { id: string; label: string };
+  isSelected: boolean;
+  onSelect: (id: string) => void;
+}>(({ source, isSelected, onSelect }) => (
+  <button
+    type="button"
+    onClick={() => onSelect(source.id)}
+    className={cn(
+      'p-3.5 rounded-xl border text-xs font-semibold text-left transition-all duration-150 cursor-pointer flex items-center justify-between select-none',
+      isSelected
+        ? 'bg-[#714b67]/25 border-[#714b67] text-white ring-1 ring-[#714b67] shadow-md shadow-[#714b67]/20'
+        : 'bg-[#160f14] border-white/10 text-slate-300 hover:text-white hover:border-white/20 hover:bg-[#1d121b]'
+    )}
+  >
+    <span className="truncate">{source.label}</span>
+    {isSelected ? (
+      <CheckCircle2 className="w-4 h-4 text-[#FDB02F] shrink-0 ml-2" />
+    ) : (
+      <div className="w-4 h-4 rounded-full border border-white/20 shrink-0 ml-2" />
+    )}
+  </button>
+));
+DiscoveryOption.displayName = 'DiscoveryOption';
+
 export const PersonalOnboarding: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { user, updateUser } = useAuthStore();
+  const personalOnboardingCompleted = useAuthStore((s) => s.user?.personalOnboardingCompleted);
+  const updateUser = useAuthStore((s) => s.updateUser);
 
   const [loadingInitial, setLoadingInitial] = useState<boolean>(true);
-  const [currentStep, setCurrentStep] = useState<number>(1);
+  const initialUrlStep = Number(searchParams.get('step'));
+  const [currentStep, setCurrentStep] = useState<number>(
+    initialUrlStep >= 1 && initialUrlStep <= 4 ? initialUrlStep : 1
+  );
   const [selectedUseCases, setSelectedUseCases] = useState<string[]>(['inventory']);
   const [role, setRole] = useState<string>('Owner');
   const [managesBusiness, setManagesBusiness] = useState<boolean>(true);
   const [acquisitionSource, setAcquisitionSource] = useState<string>('friend');
   const [acquisitionSourceOther, setAcquisitionSourceOther] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [, startTransition] = useTransition();
+
+  // Sync step changes from browser Back/Forward buttons
+  useEffect(() => {
+    const stepFromUrl = Number(searchParams.get('step'));
+    if (stepFromUrl >= 1 && stepFromUrl <= 4 && stepFromUrl !== currentStep) {
+      setCurrentStep(stepFromUrl);
+      if (typeof window !== 'undefined') {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    }
+  }, [searchParams, currentStep]);
+
+  // Debounced non-blocking draft progress syncer
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syncDraftProgress = useCallback((payload: Record<string, any>) => {
+    if (draftTimerRef.current) {
+      clearTimeout(draftTimerRef.current);
+    }
+    draftTimerRef.current = setTimeout(() => {
+      api.post('/onboarding/personal/progress', payload).catch(() => {});
+    }, 350);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (draftTimerRef.current) {
+        clearTimeout(draftTimerRef.current);
+      }
+    };
+  }, []);
 
   // 1. Initial Mount: Check if already completed and restore draft progress
-  React.useEffect(() => {
-    if (user?.personalOnboardingCompleted) {
+  useEffect(() => {
+    if (personalOnboardingCompleted) {
       const inviteToken = searchParams.get('invite_token') || searchParams.get('token');
       if (inviteToken) {
         navigate(`/invite/${inviteToken}`, { replace: true });
@@ -149,8 +317,10 @@ export const PersonalOnboarding: React.FC = () => {
 
         const draft = res?.data;
         if (draft) {
-          if (draft.currentStep && draft.currentStep >= 1 && draft.currentStep <= 4) {
+          const stepParam = searchParams.get('step');
+          if (!stepParam && draft.currentStep && draft.currentStep >= 1 && draft.currentStep <= 4) {
             setCurrentStep(draft.currentStep);
+            navigate(`?step=${draft.currentStep}`, { replace: true });
           }
           if (draft.profile) {
             const p = draft.profile;
@@ -184,13 +354,25 @@ export const PersonalOnboarding: React.FC = () => {
     return () => {
       isMounted = false;
     };
-  }, [navigate, searchParams, updateUser, user?.personalOnboardingCompleted]);
+  }, [navigate, searchParams, updateUser, personalOnboardingCompleted]);
 
-  const toggleUseCase = (id: string) => {
+  const toggleUseCase = useCallback((id: string) => {
     setSelectedUseCases((prev) =>
       prev.includes(id) ? (prev.length > 1 ? prev.filter((item) => item !== id) : prev) : [...prev, id]
     );
-  };
+  }, []);
+
+  const handleSelectRole = useCallback((newRole: string) => {
+    setRole(newRole);
+  }, []);
+
+  const handleSelectBusiness = useCallback((manage: boolean) => {
+    setManagesBusiness(manage);
+  }, []);
+
+  const handleSelectSource = useCallback((src: string) => {
+    setAcquisitionSource(src);
+  }, []);
 
   const handleNext = () => {
     if (currentStep === 1 && selectedUseCases.length === 0) {
@@ -200,18 +382,22 @@ export const PersonalOnboarding: React.FC = () => {
 
     if (currentStep < 4) {
       const nextStep = currentStep + 1;
-      setCurrentStep(nextStep);
+      startTransition(() => {
+        setCurrentStep(nextStep);
+      });
+      navigate(`?step=${nextStep}`);
+      if (typeof window !== 'undefined') {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
 
-      // Persist real-time draft progress so user can resume seamlessly if interrupted
-      api.post('/onboarding/personal/progress', {
+      // Persist real-time draft progress debounced without blocking main thread
+      syncDraftProgress({
         currentStep: nextStep,
         useCases: selectedUseCases,
         role,
         managesBusiness,
         acquisitionSource,
         acquisitionSourceOther: acquisitionSource === 'other' ? acquisitionSourceOther.trim() : undefined,
-      }).catch((err) => {
-        console.warn('Silent draft sync error:', err);
       });
     }
   };
@@ -219,17 +405,23 @@ export const PersonalOnboarding: React.FC = () => {
   const handleBack = () => {
     if (currentStep > 1) {
       const prevStep = currentStep - 1;
-      setCurrentStep(prevStep);
+      startTransition(() => {
+        setCurrentStep(prevStep);
+      });
+      navigate(`?step=${prevStep}`);
+      if (typeof window !== 'undefined') {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
 
-      // Persist current step backwards
-      api.post('/onboarding/personal/progress', {
+      // Persist current step backwards debounced
+      syncDraftProgress({
         currentStep: prevStep,
         useCases: selectedUseCases,
         role,
         managesBusiness,
         acquisitionSource,
         acquisitionSourceOther: acquisitionSource === 'other' ? acquisitionSourceOther.trim() : undefined,
-      }).catch(() => {});
+      });
     }
   };
 
@@ -349,50 +541,14 @@ export const PersonalOnboarding: React.FC = () => {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {USE_CASES.map((item) => {
-                  const Icon = item.icon;
-                  const isSelected = selectedUseCases.includes(item.id);
-
-                  return (
-                    <div
-                      key={item.id}
-                      onClick={() => toggleUseCase(item.id)}
-                      className={cn(
-                        'group relative p-4 rounded-xl border transition-all duration-200 cursor-pointer flex items-start gap-3.5 select-none',
-                        isSelected
-                          ? 'bg-gradient-to-br from-[#241321] to-[#140b12] border-[#714b67] shadow-lg shadow-[#714b67]/20 ring-1 ring-[#714b67]'
-                          : 'bg-[#160f14] border-white/10 hover:border-[#714b67]/40 hover:bg-[#1d121b]'
-                      )}
-                    >
-                      <div
-                        className={cn(
-                          'w-9 h-9 rounded-lg flex items-center justify-center shrink-0 transition-colors',
-                          isSelected
-                            ? 'bg-[#714b67] text-white'
-                            : 'bg-white/5 text-slate-400 group-hover:text-white'
-                        )}
-                      >
-                        <Icon className="w-5 h-5" />
-                      </div>
-
-                      <div className="flex-1 min-w-0 pr-6">
-                        <h4 className="text-xs font-bold text-white tracking-tight">{item.title}</h4>
-                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
-                          {item.description}
-                        </p>
-                      </div>
-
-                      <div
-                        className={cn(
-                          'absolute top-4 right-4 w-5 h-5 rounded-full flex items-center justify-center transition-colors',
-                          isSelected ? 'bg-[#FDB02F] text-black' : 'border border-white/20'
-                        )}
-                      >
-                        {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
-                      </div>
-                    </div>
-                  );
-                })}
+                {USE_CASES.map((item) => (
+                  <UseCaseCard
+                    key={item.id}
+                    item={item}
+                    isSelected={selectedUseCases.includes(item.id)}
+                    onToggle={toggleUseCase}
+                  />
+                ))}
               </div>
             </div>
           )}
@@ -414,29 +570,14 @@ export const PersonalOnboarding: React.FC = () => {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {ROLES.map((r) => {
-                  const isSelected = role === r.id;
-                  return (
-                    <button
-                      key={r.id}
-                      type="button"
-                      onClick={() => setRole(r.id)}
-                      className={cn(
-                        'p-4 rounded-xl border text-left transition-all duration-150 flex items-center justify-between cursor-pointer select-none',
-                        isSelected
-                          ? 'bg-[#714b67]/25 border-[#714b67] text-white font-bold ring-1 ring-[#714b67] shadow-md shadow-[#714b67]/20'
-                          : 'bg-[#160f14] border-white/10 text-slate-300 hover:text-white hover:border-white/20 hover:bg-[#1d121b]'
-                      )}
-                    >
-                      <span className="text-xs font-semibold">{r.label}</span>
-                      {isSelected ? (
-                        <CheckCircle2 className="w-5 h-5 text-[#FDB02F]" />
-                      ) : (
-                        <div className="w-4 h-4 rounded-full border border-white/20" />
-                      )}
-                    </button>
-                  );
-                })}
+                {ROLES.map((r) => (
+                  <RoleOption
+                    key={r.id}
+                    item={r}
+                    isSelected={role === r.id}
+                    onSelect={handleSelectRole}
+                  />
+                ))}
               </div>
             </div>
           )}
@@ -458,51 +599,16 @@ export const PersonalOnboarding: React.FC = () => {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <button
-                  type="button"
-                  onClick={() => setManagesBusiness(true)}
-                  className={cn(
-                    'p-5 rounded-2xl border text-left transition-all cursor-pointer select-none space-y-2',
-                    managesBusiness
-                      ? 'bg-gradient-to-br from-[#241321] to-[#140b12] border-[#714b67] ring-1 ring-[#714b67] shadow-lg shadow-[#714b67]/25'
-                      : 'bg-[#160f14] border-white/10 hover:border-white/20 hover:bg-[#1d121b]'
-                  )}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-bold text-white">Yes, I currently manage a business</span>
-                    {managesBusiness ? (
-                      <CheckCircle2 className="w-5 h-5 text-[#FDB02F]" />
-                    ) : (
-                      <div className="w-4 h-4 rounded-full border border-white/20" />
-                    )}
-                  </div>
-                  <p className="text-[11px] text-slate-400 leading-relaxed">
-                    I own or manage an active shop, wholesale store, warehouse, or retail outfit.
-                  </p>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setManagesBusiness(false)}
-                  className={cn(
-                    'p-5 rounded-2xl border text-left transition-all cursor-pointer select-none space-y-2',
-                    !managesBusiness
-                      ? 'bg-gradient-to-br from-[#241321] to-[#140b12] border-[#714b67] ring-1 ring-[#714b67] shadow-lg shadow-[#714b67]/25'
-                      : 'bg-[#160f14] border-white/10 hover:border-white/20 hover:bg-[#1d121b]'
-                  )}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-bold text-white">Not currently</span>
-                    {!managesBusiness ? (
-                      <CheckCircle2 className="w-5 h-5 text-[#FDB02F]" />
-                    ) : (
-                      <div className="w-4 h-4 rounded-full border border-white/20" />
-                    )}
-                  </div>
-                  <p className="text-[11px] text-slate-400 leading-relaxed">
-                    I am exploring for future ventures, learning the platform, or awaiting an invitation.
-                  </p>
-                </button>
+                <BusinessOption
+                  isYes={true}
+                  isSelected={managesBusiness === true}
+                  onSelect={handleSelectBusiness}
+                />
+                <BusinessOption
+                  isYes={false}
+                  isSelected={managesBusiness === false}
+                  onSelect={handleSelectBusiness}
+                />
               </div>
             </div>
           )}
@@ -524,29 +630,14 @@ export const PersonalOnboarding: React.FC = () => {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                {ACQUISITION_SOURCES.map((source) => {
-                  const isSelected = acquisitionSource === source.id;
-                  return (
-                    <button
-                      key={source.id}
-                      type="button"
-                      onClick={() => setAcquisitionSource(source.id)}
-                      className={cn(
-                        'p-3.5 rounded-xl border text-xs font-semibold text-left transition-all cursor-pointer flex items-center justify-between select-none',
-                        isSelected
-                          ? 'bg-[#714b67]/25 border-[#714b67] text-white ring-1 ring-[#714b67] shadow-md shadow-[#714b67]/20'
-                          : 'bg-[#160f14] border-white/10 text-slate-300 hover:text-white hover:border-white/20 hover:bg-[#1d121b]'
-                      )}
-                    >
-                      <span className="truncate">{source.label}</span>
-                      {isSelected ? (
-                        <CheckCircle2 className="w-4 h-4 text-[#FDB02F] shrink-0 ml-2" />
-                      ) : (
-                        <div className="w-4 h-4 rounded-full border border-white/20 shrink-0 ml-2" />
-                      )}
-                    </button>
-                  );
-                })}
+                {ACQUISITION_SOURCES.map((source) => (
+                  <DiscoveryOption
+                    key={source.id}
+                    source={source}
+                    isSelected={acquisitionSource === source.id}
+                    onSelect={handleSelectSource}
+                  />
+                ))}
               </div>
 
               {/* Conditional Other Input */}

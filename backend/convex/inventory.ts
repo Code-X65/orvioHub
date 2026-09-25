@@ -186,6 +186,7 @@ export const recordSale = mutation({
     customerName: v.optional(v.string()),
     customerPhone: v.optional(v.string()),
     notes: v.optional(v.string()),
+    metadata: v.optional(v.any()),
     cashierUserId: v.id("users"),
   },
   handler: async (ctx, args) => {
@@ -356,6 +357,7 @@ export const recordSale = mutation({
       notes: args.notes,
       status: "COMPLETED",
       receiptSnapshot,
+      metadata: args.metadata,
       createdAt: now,
     });
 

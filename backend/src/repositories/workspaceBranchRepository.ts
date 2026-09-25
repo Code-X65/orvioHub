@@ -56,7 +56,6 @@ export class WorkspaceBranchRepository extends BaseRepository {
     phone?: string;
     phoneNormalized?: string;
     email?: string;
-    managerId?: string;
     callerUserId?: string;
   }) {
     return this.mutate('branches:createBranch', {
@@ -82,7 +81,6 @@ export class WorkspaceBranchRepository extends BaseRepository {
       phone: data.phone,
       phoneNormalized: data.phoneNormalized,
       email: data.email,
-      managerId: data.managerId as any,
       callerUserId: data.callerUserId as any,
     });
   }
@@ -109,7 +107,6 @@ export class WorkspaceBranchRepository extends BaseRepository {
       phone?: string;
       phoneNormalized?: string;
       email?: string;
-      managerId?: string;
       status?: string;
       productKey?: string;
       deletedAt?: number;
@@ -119,7 +116,6 @@ export class WorkspaceBranchRepository extends BaseRepository {
     return this.mutate('branches:updateBranch', {
       branchId: branchId as any,
       ...updates,
-      managerId: updates.managerId as any,
       callerUserId: updates.callerUserId as any,
     });
   }

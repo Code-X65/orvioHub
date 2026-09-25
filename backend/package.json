@@ -18,7 +18,12 @@
     "test:e2e-subdomain": "tsx --test test/e2e-subdomain-journey.test.ts",
     "test:logout": "tsx --test test/logout-and-wildcard-session.test.ts",
     "test:logout-ratelimit": "tsx --test test/logout-and-ratelimit.test.ts",
-    "test:error": "tsx --test test/error-handling.test.ts"
+    "test:error": "tsx --test test/error-handling.test.ts",
+    "test:remediation": "tsx --test test/auth-gap-analysis-remediation.test.ts",
+    "test:passkey": "tsx --test test/passkey-webauthn.test.ts",
+    "test:standards": "tsx --test test/section3-professional-standards.test.ts",
+    "test:oauth-device": "tsx --test test/oauth-refresh-and-fingerprinting.test.ts",
+    "test:edge-cases": "tsx --test test/edge-cases-4.test.ts"
   },
   "keywords": [],
   "author": "",

@@ -1,22 +1,35 @@
 import React from 'react';
-import { Header } from '@/components/landing/Header';
+import { OrivioLogo } from '@/components/brand/OrivioLogo';
+import { getMarketingUrl } from '@/lib/domain';
+import { Link } from 'react-router-dom';
 
 interface AuthLayoutProps {
   children: React.ReactNode;
   fullWidth?: boolean;
+  showHeader?: boolean;
 }
 
 export const AuthLayout: React.FC<AuthLayoutProps> = ({ children, fullWidth = false }) => {
+  const marketingUrl = getMarketingUrl();
+
   return (
     <div className="min-h-screen flex flex-col bg-black text-slate-100 selection:bg-[#714b67] selection:text-white relative overflow-x-hidden">
-      {/* Top Main Navigation Header (Present on all pages) */}
-      <Header />
+      {/* Clean Brand Top Header for Auth pages */}
+      <header className="w-full pt-8 pb-4 flex items-center justify-center">
+        <a
+          href={marketingUrl}
+          className="inline-flex items-center gap-2 group transition-transform hover:scale-[1.02] focus:outline-none"
+          aria-label="Orviohub Home"
+        >
+          <OrivioLogo size={36} />
+        </a>
+      </header>
 
       {/* Background Subtle Radial Glow */}
-      <div className="absolute top-20 left-1/2 -translate-x-1/2 w-full max-w-[1200px] h-[500px] bg-radial from-[#714b67]/15 to-transparent pointer-events-none -z-10" />
+      <div className="absolute top-12 left-1/2 -translate-x-1/2 w-full max-w-[1200px] h-[500px] bg-radial from-[#714b67]/15 to-transparent pointer-events-none -z-10" />
 
       {/* Main Content Area */}
-      <main className="flex-1 flex flex-col items-center justify-center px-4 sm:px-6 py-10">
+      <main className="flex-1 flex flex-col items-center justify-center px-4 sm:px-6 py-6 sm:py-8">
         <div className={`w-full ${fullWidth ? 'max-w-[1240px]' : 'max-w-[460px]'} mx-auto`}>
           {children}
         </div>
@@ -30,9 +43,9 @@ export const AuthLayout: React.FC<AuthLayoutProps> = ({ children, fullWidth = fa
           </div>
 
           <div className="flex items-center gap-6">
-            <a href="#privacy" className="hover:text-slate-300 transition-colors">Privacy Policy</a>
-            <a href="#terms" className="hover:text-slate-300 transition-colors">Terms of Service</a>
-            <a href="#help" className="hover:text-slate-300 transition-colors">Help</a>
+            <Link to="/privacy" className="hover:text-slate-300 transition-colors">Privacy Policy</Link>
+            <Link to="/terms" className="hover:text-slate-300 transition-colors">Terms of Service</Link>
+            <a href="mailto:support@orviohub.com" className="hover:text-slate-300 transition-colors">Help</a>
           </div>
         </div>
       </footer>

@@ -287,34 +287,6 @@ export const acceptWorkspaceInviteFromNotification = mutation({
             updatedAt: now,
           });
         }
-
-        // Branch access
-        for (const branchId of validBranchIds) {
-          const existingBranchAccess = await ctx.db
-            .query("appBranchAccess")
-            .withIndex("by_branch_user", (q) =>
-              q.eq("branchId", branchId as any).eq("userId", user._id)
-            )
-            .first();
-
-          if (existingBranchAccess) {
-            await ctx.db.patch(existingBranchAccess._id, {
-              status: "active",
-              updatedAt: now,
-            });
-          } else {
-            await ctx.db.insert("appBranchAccess", {
-              workspaceId: invite.workspaceId,
-              userId: user._id,
-              productKey: app.productKey,
-              branchId: branchId as any,
-              status: "active",
-              grantedBy: invite.invitedBy,
-              createdAt: now,
-              updatedAt: now,
-            });
-          }
-        }
       }
     } else if (invite.productKey) {
       const validInviteBranchIds = (invite.branchIds || []).filter(
@@ -763,72 +735,6 @@ export const acceptInviteUnified = mutation({
               updatedAt: now,
             });
           }
-
-          // Application memberships
-          const existingAppMem = await ctx.db
-            .query("applicationMemberships")
-            .withIndex("by_workspace_application_user", (q) =>
-              q.eq("workspaceId", String(wsInvite.workspaceId)).eq("applicationKey", app.productKey).eq("userId", user._id)
-            )
-            .first();
-
-          if (existingAppMem) {
-            await ctx.db.patch(existingAppMem._id, {
-              role: app.appRole,
-              status: "active",
-              assignedBy: wsInvite.invitedBy,
-              assignedAt: now,
-              updatedAt: now,
-            });
-          } else {
-            await ctx.db.insert("applicationMemberships", {
-              workspaceId: String(wsInvite.workspaceId),
-              userId: user._id,
-              applicationKey: app.productKey,
-              role: app.appRole,
-              permissions: [],
-              status: "active",
-              assignedBy: wsInvite.invitedBy,
-              assignedAt: now,
-              createdAt: now,
-              updatedAt: now,
-            });
-          }
-
-          // Branch memberships & access
-          for (const bId of validBranchIds) {
-            assignedBranches.push(String(bId));
-            const existingBm = await ctx.db
-              .query("branchMemberships")
-              .withIndex("by_user_branch", (q) =>
-                q.eq("userId", user._id).eq("branchId", String(bId))
-              )
-              .first();
-
-            if (existingBm) {
-              await ctx.db.patch(existingBm._id, {
-                role: app.appRole,
-                status: "active",
-                assignedByUserId: wsInvite.invitedBy,
-                assignedAt: now,
-                updatedAt: now,
-              });
-            } else {
-              await ctx.db.insert("branchMemberships", {
-                workspaceId: String(wsInvite.workspaceId),
-                applicationKey: app.productKey,
-                branchId: String(bId),
-                userId: user._id,
-                role: app.appRole,
-                permissions: [],
-                status: "active",
-                assignedByUserId: wsInvite.invitedBy,
-                assignedAt: now,
-                createdAt: now,
-                updatedAt: now,
-              });
-            }
-          }
         }
       } else if (wsInvite.productKey || wsInvite.branchIds?.length) {
         const pKey = wsInvite.productKey || "inventory";
@@ -836,106 +742,33 @@ export const acceptInviteUnified = mutation({
           (id: any) => typeof id === "string" && id.trim().length > 0 && id !== '""' && id !== "''"
         );
 
-        // Application membership
-        const existingAppMem = await ctx.db
-          .query("applicationMemberships")
-          .withIndex("by_workspace_application_user", (q) =>
-            q.eq("workspaceId", String(wsInvite.workspaceId)).eq("applicationKey", pKey).eq("userId", user._id)
+        const existingPm = await ctx.db
+          .query("productMemberships")
+          .withIndex("by_workspace_product_user", (q) =>
+            q.eq("workspaceId", wsInvite.workspaceId).eq("productKey", pKey).eq("userId", user._id)
           )
           .first();
 
-        if (existingAppMem) {
-          await ctx.db.patch(existingAppMem._id, {
+        if (existingPm) {
+          await ctx.db.patch(existingPm._id, {
             role: wsInvite.role,
+            branchIds: validBranchIds.length > 0 ? (validBranchIds as any) : undefined,
             status: "active",
-            assignedBy: wsInvite.invitedBy,
-            assignedAt: now,
             updatedAt: now,
           });
         } else {
-          await ctx.db.insert("applicationMemberships", {
-            workspaceId: String(wsInvite.workspaceId),
+          await ctx.db.insert("productMemberships", {
+            workspaceId: wsInvite.workspaceId,
             userId: user._id,
-            applicationKey: pKey,
+            productKey: pKey,
             role: wsInvite.role,
             permissions: [],
+            branchIds: validBranchIds.length > 0 ? (validBranchIds as any) : undefined,
             status: "active",
-            assignedBy: wsInvite.invitedBy,
-            assignedAt: now,
             createdAt: now,
             updatedAt: now,
           });
         }
-
-        // Branch memberships
-        for (const bId of validBranchIds) {
-          assignedBranches.push(String(bId));
-          const existingBm = await ctx.db
-            .query("branchMemberships")
-            .withIndex("by_user_branch", (q) =>
-              q.eq("userId", user._id).eq("branchId", String(bId))
-            )
-            .first();
-
-          if (existingBm) {
-            await ctx.db.patch(existingBm._id, {
-              role: wsInvite.role,
-              status: "active",
-              assignedByUserId: wsInvite.invitedBy,
-              assignedAt: now,
-              updatedAt: now,
-            });
-          } else {
-            await ctx.db.insert("branchMemberships", {
-              workspaceId: String(wsInvite.workspaceId),
-              applicationKey: pKey,
-              branchId: String(bId),
-              userId: user._id,
-              role: wsInvite.role,
-              permissions: [],
-              status: "active",
-              assignedByUserId: wsInvite.invitedBy,
-              assignedAt: now,
-              createdAt: now,
-              updatedAt: now,
-            });
-          }
-        }
-      }
-
-      // If no specific branch was assigned, assign primary branch for inventory
-      if (assignedBranches.length === 0) {
-        try {
-          const wsBranches = await ctx.db
-            .query("branches")
-            .withIndex("by_workspace", (q) => q.eq("workspaceId", wsInvite.workspaceId))
-            .collect();
-          if (wsBranches.length > 0) {
-            const primaryB = wsBranches.find((b) => b.isPrimary) || wsBranches[0];
-            const existingBm = await ctx.db
-              .query("branchMemberships")
-              .withIndex("by_user_branch", (q) =>
-                q.eq("userId", user._id).eq("branchId", String(primaryB._id))
-              )
-              .first();
-
-            if (!existingBm) {
-              await ctx.db.insert("branchMemberships", {
-                workspaceId: String(wsInvite.workspaceId),
-                applicationKey: "inventory",
-                branchId: String(primaryB._id),
-                userId: user._id,
-                role: wsInvite.role || "cashier",
-                permissions: [],
-                status: "active",
-                assignedByUserId: wsInvite.invitedBy,
-                assignedAt: now,
-                createdAt: now,
-                updatedAt: now,
-              });
-            }
-          }
-        } catch {}
       }
 
       // D. Mark Invitation Accepted
@@ -984,7 +817,7 @@ export const acceptInviteUnified = mutation({
           severity: "SUCCESS",
           channel: "IN_APP",
           status: "UNREAD",
-          category: "workspace",
+          category: "WORKSPACE",
           priority: "HIGH",
           data: {
             workspaceId: wsInvite.workspaceId,
@@ -1089,53 +922,6 @@ export const acceptInviteUnified = mutation({
         }
       }
 
-      // C. Branch Memberships
-      let branchesToAssign = orgInvite.allowedBranches || (orgInvite.primaryBranchId ? [orgInvite.primaryBranchId] : []);
-      if (branchesToAssign.length === 0) {
-        const orgBranches = await ctx.db
-          .query("branches")
-          .withIndex("by_organizationId", (q: any) => q.eq("organizationId", orgInvite.organizationId))
-          .collect();
-        if (orgBranches.length > 0) {
-          const primaryB = orgBranches.find((b: any) => b.isPrimary) || orgBranches[0];
-          branchesToAssign = [primaryB._id];
-        }
-      }
-
-      for (const bId of branchesToAssign) {
-        const existingBm = await ctx.db
-          .query("branchMemberships")
-          .withIndex("by_user_branch", (q: any) =>
-            q.eq("userId", user._id).eq("branchId", String(bId))
-          )
-          .first();
-
-        if (existingBm) {
-          await ctx.db.patch(existingBm._id, {
-            role: orgInvite.role,
-            status: "active",
-            assignedByUserId: orgInvite.invitedBy,
-            assignedAt: now,
-            updatedAt: now,
-          });
-        } else {
-          await ctx.db.insert("branchMemberships", {
-            workspaceId: String(targetWs?._id || orgInvite.organizationId),
-            organizationId: orgInvite.organizationId,
-            applicationKey: "inventory",
-            branchId: String(bId),
-            userId: user._id,
-            role: orgInvite.role,
-            permissions: [],
-            status: "active",
-            assignedByUserId: orgInvite.invitedBy,
-            assignedAt: now,
-            createdAt: now,
-            updatedAt: now,
-          });
-        }
-      }
-
       // D. Mark Accepted
       await ctx.db.patch(orgInvite._id, {
         status: "ACCEPTED",
@@ -1163,7 +949,7 @@ export const acceptInviteUnified = mutation({
           severity: "SUCCESS",
           channel: "IN_APP",
           status: "UNREAD",
-          category: "workspace",
+          category: "WORKSPACE",
           priority: "HIGH",
           data: {
             organizationId: orgInvite.organizationId,

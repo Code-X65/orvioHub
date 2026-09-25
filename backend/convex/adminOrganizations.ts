@@ -1,9 +1,12 @@
 import { mutation, query } from "./_generated/server.js";
 import { v } from "convex/values";
-import { verifyAndConsumeStepUpToken } from "./adminAuth.js";
+import { requireAdminPermission, verifyAndConsumeStepUpToken } from "./adminAuth.js";
 
 // Helper to authenticate admin
-async function verifyAdminSession(ctx: any, sessionToken?: string) {
+async function verifyAdminSession(ctx: any, sessionToken?: string, permission?: any) {
+  if (permission) {
+    return requireAdminPermission(ctx, sessionToken, permission);
+  }
   if (!sessionToken) throw new Error("Admin authentication required.");
   const session = await ctx.db
     .query("adminSessions")
@@ -74,7 +77,11 @@ export const listOrganizations = query({
   handler: async (ctx, args) => {
     await verifyAdminSession(ctx, args.sessionToken);
 
-    let workspaces = await ctx.db.query("workspaces").collect();
+    // The directory is an operational console, not an export endpoint. Bound
+    // every read so a growing tenant base cannot exhaust a single Convex call.
+    const ADMIN_DIRECTORY_SCAN_LIMIT = 500;
+    let workspaces = await ctx.db.query("workspaces").take(ADMIN_DIRECTORY_SCAN_LIMIT);
+    const directoryTruncated = workspaces.length === ADMIN_DIRECTORY_SCAN_LIMIT;
 
     // 1. Search Filter (name or slug)
     if (args.search && args.search.trim()) {
@@ -103,12 +110,14 @@ export const listOrganizations = query({
     }
 
     // Fetch related maps for all workspaces
-    const allMemberships = await ctx.db.query("workspaceMemberships").collect();
-    const allProducts = await ctx.db.query("workspaceProducts").collect();
-    const allBranches = await ctx.db.query("branches").collect();
-    const allSubscriptions = await ctx.db.query("subscriptions").collect();
-    const allOrgProfiles = await ctx.db.query("organizationProfiles").collect();
-    const allAppOnboardings = await ctx.db.query("applicationOnboardingResponses").collect();
+    const [allMemberships, allProducts, allBranches, allSubscriptions, allOrgProfiles, allAppOnboardings] = await Promise.all([
+      ctx.db.query("workspaceMemberships").take(ADMIN_DIRECTORY_SCAN_LIMIT),
+      ctx.db.query("workspaceProducts").take(ADMIN_DIRECTORY_SCAN_LIMIT),
+      ctx.db.query("branches").take(ADMIN_DIRECTORY_SCAN_LIMIT),
+      ctx.db.query("subscriptions").take(ADMIN_DIRECTORY_SCAN_LIMIT),
+      ctx.db.query("organizationProfiles").take(ADMIN_DIRECTORY_SCAN_LIMIT),
+      ctx.db.query("applicationOnboardingResponses").take(ADMIN_DIRECTORY_SCAN_LIMIT),
+    ]);
 
     const memberCountMap: Record<string, number> = {};
     for (const m of allMemberships) {
@@ -277,6 +286,8 @@ export const listOrganizations = query({
       page,
       pageSize,
       totalPages: Math.ceil(totalCount / pageSize),
+      isTruncated: directoryTruncated,
+      scanLimit: ADMIN_DIRECTORY_SCAN_LIMIT,
     };
   },
 });
@@ -601,7 +612,7 @@ export const suspendOrganization = mutation({
     notes: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.organizations.suspend");
 
     const ws = await resolveWorkspace(ctx, args.workspaceId);
     if (!ws) throw new Error("Organization not found.");
@@ -697,7 +708,7 @@ export const activateOrganization = mutation({
     workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
   },
   handler: async (ctx, args) => {
-    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.organizations.restore");
 
     const ws = await resolveWorkspace(ctx, args.workspaceId);
     if (!ws) throw new Error("Organization not found.");
@@ -775,7 +786,7 @@ export const deleteOrganization = mutation({
     stepUpToken: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.organizations.archive");
 
     const ws = await resolveWorkspace(ctx, args.workspaceId);
     if (!ws) throw new Error("Organization not found.");
@@ -953,7 +964,7 @@ export const transferOwnership = mutation({
     newOwnerUserId: v.id("users"),
   },
   handler: async (ctx, args) => {
-    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.members.manage_access");
 
     const ws = await ctx.db.get(args.workspaceId);
     if (!ws) throw new Error("Organization not found.");
@@ -1015,7 +1026,7 @@ export const enableProduct = mutation({
     productKey: v.string(),
   },
   handler: async (ctx, args) => {
-    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.applications.manage");
 
     const ws = await ctx.db.get(args.workspaceId);
     if (!ws) throw new Error("Organization not found.");
@@ -1061,7 +1072,7 @@ export const disableProduct = mutation({
     productKey: v.string(),
   },
   handler: async (ctx, args) => {
-    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.applications.manage");
 
     const ws = await ctx.db.get(args.workspaceId);
     if (!ws) throw new Error("Organization not found.");
@@ -1098,7 +1109,7 @@ export const resetOnboarding = mutation({
     workspaceId: v.id("workspaces"),
   },
   handler: async (ctx, args) => {
-    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.onboarding.manage");
 
     const flows = await ctx.db
       .query("onboardingFlows")
@@ -1134,7 +1145,7 @@ export const extendTrial = mutation({
     days: v.number(),
   },
   handler: async (ctx, args) => {
-    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.trial_extensions.create");
 
     const ws = await ctx.db.get(args.workspaceId);
     if (!ws) throw new Error("Organization not found.");
@@ -1222,7 +1233,7 @@ export const updateOrganizationPlan = mutation({
     status: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.manual_plan_grants.create");
 
     const ws = await ctx.db.get(args.workspaceId);
     if (!ws) throw new Error("Organization not found.");
@@ -1352,7 +1363,7 @@ export const adminTransferOrganizationOwnership = mutation({
     stepUpToken: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.members.manage_access");
 
     const ws = await resolveWorkspace(ctx, args.workspaceId);
     if (!ws) throw new Error("Workspace not found");
@@ -1446,7 +1457,7 @@ export const toggleBranchStatus = mutation({
     reason: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.branches.manage");
 
     const branch = await ctx.db.get(args.branchId);
     if (!branch) {
@@ -1475,4 +1486,241 @@ export const toggleBranchStatus = mutation({
   },
 });
 
+/**
+ * overrideWorkspacePhoneVerified
+ * Superadmin action to mark a workspace / organization phone verified
+ */
+export const overrideWorkspacePhoneVerified = mutation({
+  args: {
+    sessionToken: v.string(),
+    workspaceId: v.string(),
+    phone: v.optional(v.string()),
+    reason: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.members.manage_access");
+    const ws = await resolveWorkspace(ctx, args.workspaceId);
+    if (!ws) throw new Error("Workspace not found.");
 
+    const phoneToVerify = args.phone || ws.phone;
+    if (!phoneToVerify) throw new Error("Workspace has no phone number to mark verified.");
+
+    const now = Date.now();
+    const phoneDigits = phoneToVerify.replace(/\D/g, "");
+    const phoneNormalized = phoneDigits.startsWith("234")
+      ? `+${phoneDigits}`
+      : (phoneDigits.startsWith("0") ? `+234${phoneDigits.slice(1)}` : `+234${phoneDigits}`);
+
+    await ctx.db.patch(ws._id, {
+      phone: phoneToVerify,
+      phoneNormalized: ws.phoneNormalized || phoneNormalized,
+      phoneVerifiedAt: now,
+      phoneStatus: "verified",
+      updatedAt: now,
+    });
+
+    if (ws.organizationId) {
+      try {
+        const org: any = await ctx.db.get(ws.organizationId);
+        if (org) {
+          await ctx.db.patch(org._id, {
+            phone: phoneToVerify,
+            phoneNormalized: org.phoneNormalized || phoneNormalized,
+            phoneVerifiedAt: now,
+            phoneStatus: "verified",
+            updatedAt: now,
+          });
+        }
+      } catch {}
+    }
+
+    // Invalidate pending challenges
+    const pending = await ctx.db
+      .query("phoneVerificationChallenges")
+      .withIndex("by_workspace_purpose", (q) => q.eq("workspaceId", String(ws._id)))
+      .collect();
+    for (const ch of pending) {
+      if (ch.status === "pending") {
+        await ctx.db.patch(ch._id, { status: "cancelled" });
+      }
+    }
+
+    await logAudit(ctx, admin._id, "WORKSPACE_PHONE_OVERRIDE_VERIFIED", String(ws._id), {
+      phone: phoneToVerify,
+      phoneNormalized,
+      reason: args.reason,
+      severity: "warning",
+    });
+
+    return { success: true, verifiedAt: now, phone: phoneToVerify, phoneNormalized };
+  },
+});
+
+/**
+ * unlinkWorkspacePhone
+ * Superadmin action to unlink/reset a workspace / organization phone number
+ */
+export const unlinkWorkspacePhone = mutation({
+  args: {
+    sessionToken: v.string(),
+    workspaceId: v.string(),
+    reason: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.members.manage_access");
+    const ws = await resolveWorkspace(ctx, args.workspaceId);
+    if (!ws) throw new Error("Workspace not found.");
+
+    const now = Date.now();
+    const oldPhone = ws.phone;
+    const oldNormalized = ws.phoneNormalized;
+
+    await ctx.db.patch(ws._id, {
+      phone: undefined,
+      phoneNormalized: undefined,
+      phoneVerifiedAt: undefined,
+      phoneStatus: "not_set",
+      updatedAt: now,
+    });
+
+    if (ws.organizationId) {
+      try {
+        const org = await ctx.db.get(ws.organizationId);
+        if (org) {
+          await ctx.db.patch(org._id, {
+            phone: undefined,
+            phoneNormalized: undefined,
+            phoneVerifiedAt: undefined,
+            phoneStatus: "not_set",
+            updatedAt: now,
+          });
+        }
+      } catch {}
+    }
+
+    const pending = await ctx.db
+      .query("phoneVerificationChallenges")
+      .withIndex("by_workspace_purpose", (q) => q.eq("workspaceId", String(ws._id)))
+      .collect();
+    for (const ch of pending) {
+      if (ch.status === "pending") {
+        await ctx.db.patch(ch._id, { status: "cancelled" });
+      }
+    }
+
+    await logAudit(ctx, admin._id, "WORKSPACE_PHONE_UNLINKED", String(ws._id), {
+      previousPhone: oldPhone,
+      previousPhoneNormalized: oldNormalized,
+      reason: args.reason,
+      severity: "warning",
+    });
+
+    return { success: true };
+  },
+});
+
+/**
+ * overrideBranchPhoneVerified
+ * Superadmin action to mark a branch location phone verified
+ */
+export const overrideBranchPhoneVerified = mutation({
+  args: {
+    sessionToken: v.string(),
+    branchId: v.id("branches"),
+    phone: v.optional(v.string()),
+    reason: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.branches.manage");
+    const branch = await ctx.db.get(args.branchId);
+    if (!branch) throw new Error("Branch not found.");
+
+    const phoneToVerify = args.phone || branch.phone;
+    if (!phoneToVerify) throw new Error("Branch has no phone number to mark verified.");
+
+    const now = Date.now();
+    const phoneDigits = phoneToVerify.replace(/\D/g, "");
+    const phoneNormalized = phoneDigits.startsWith("234")
+      ? `+${phoneDigits}`
+      : (phoneDigits.startsWith("0") ? `+234${phoneDigits.slice(1)}` : `+234${phoneDigits}`);
+
+    await ctx.db.patch(args.branchId, {
+      phone: phoneToVerify,
+      phoneNormalized: branch.phoneNormalized || phoneNormalized,
+      phoneVerified: true,
+      phoneVerifiedAt: now,
+      phoneStatus: "verified",
+      updatedAt: now,
+    });
+
+    const pending = await ctx.db
+      .query("phoneVerificationChallenges")
+      .withIndex("by_branch_purpose", (q) => q.eq("branchId", String(args.branchId)))
+      .collect();
+    for (const ch of pending) {
+      if (ch.status === "pending") {
+        await ctx.db.patch(ch._id, { status: "cancelled" });
+      }
+    }
+
+    await logAudit(ctx, admin._id, "BRANCH_PHONE_OVERRIDE_VERIFIED", String(args.branchId), {
+      branchName: branch.name,
+      phone: phoneToVerify,
+      phoneNormalized,
+      reason: args.reason,
+      severity: "warning",
+    });
+
+    return { success: true, verifiedAt: now, branchId: args.branchId, phone: phoneToVerify, phoneNormalized };
+  },
+});
+
+/**
+ * unlinkBranchPhone
+ * Superadmin action to unlink/reset a branch location phone number
+ */
+export const unlinkBranchPhone = mutation({
+  args: {
+    sessionToken: v.string(),
+    branchId: v.id("branches"),
+    reason: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.branches.manage");
+    const branch = await ctx.db.get(args.branchId);
+    if (!branch) throw new Error("Branch not found.");
+
+    const now = Date.now();
+    const oldPhone = branch.phone;
+    const oldNormalized = branch.phoneNormalized;
+
+    await ctx.db.patch(args.branchId, {
+      phone: undefined,
+      phoneNormalized: undefined,
+      phoneVerified: false,
+      phoneVerifiedAt: undefined,
+      phoneStatus: "unverified",
+      updatedAt: now,
+    });
+
+    const pending = await ctx.db
+      .query("phoneVerificationChallenges")
+      .withIndex("by_branch_purpose", (q) => q.eq("branchId", String(args.branchId)))
+      .collect();
+    for (const ch of pending) {
+      if (ch.status === "pending") {
+        await ctx.db.patch(ch._id, { status: "cancelled" });
+      }
+    }
+
+    await logAudit(ctx, admin._id, "BRANCH_PHONE_UNLINKED", String(args.branchId), {
+      branchName: branch.name,
+      previousPhone: oldPhone,
+      previousPhoneNormalized: oldNormalized,
+      reason: args.reason,
+      severity: "warning",
+    });
+
+    return { success: true, branchId: args.branchId };
+  },
+});

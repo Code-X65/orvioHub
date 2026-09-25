@@ -4,13 +4,10 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/useAuthStore';
-import { useUserPhoneStore, type UserPhone } from '@/stores/useUserPhoneStore';
-import { formatPhoneForDisplay } from '@/lib/phoneValidation';
 import { ProfileLayout } from '@/components/profile/ProfileLayout';
-import { PhoneInput } from '@/components/phone/PhoneInput';
-import { OtpVerificationModal } from '@/components/phone/OtpVerificationModal';
 import { StateSelector } from '@/components/location/StateSelector';
 import { LgaSelector } from '@/components/location/LgaSelector';
+import { DEFAULT_NIGERIAN_STATES } from '@/stores/useLocationStore';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -18,22 +15,28 @@ import { Spinner } from '@/components/ui/spinner';
 import { toast } from 'sonner';
 import {
   Mail,
-  Phone,
   CheckCircle2,
   AlertCircle,
   Eye,
   EyeOff,
-  Plus,
-  Trash2,
-  Star,
-  ShieldCheck,
-  Smartphone,
 } from 'lucide-react';
+
+const resolveStateCode = (stateNameOrCode?: string): string => {
+  if (!stateNameOrCode) return '';
+  const match = DEFAULT_NIGERIAN_STATES.find(
+    (s) =>
+      s.code.toUpperCase() === stateNameOrCode.toUpperCase() ||
+      s.stateCode.toUpperCase() === stateNameOrCode.toUpperCase() ||
+      s.name.toLowerCase() === stateNameOrCode.toLowerCase()
+  );
+  return match ? match.code : stateNameOrCode;
+};
 
 const contactSchema = z.object({
   phoneVisibility: z.enum(['private', 'workspace']).default('private'),
   country: z.string().min(2, 'Country is required'),
   state: z.string().optional(),
+  stateCode: z.string().optional(),
   lga: z.string().optional(),
   city: z.string().optional(),
   timezone: z.string().default('Africa/Lagos'),
@@ -43,7 +46,6 @@ type ContactFormData = z.infer<typeof contactSchema>;
 
 export const ContactSettings: React.FC = () => {
   const { user, updateUser, refreshSession } = useAuthStore();
-  const { phones, fetchPhones, setPrimary, deletePhone, sendOtp } = useUserPhoneStore();
   const [isLoading, setIsLoading] = useState(false);
 
   // Email Change Modal State
@@ -51,13 +53,10 @@ export const ContactSettings: React.FC = () => {
   const [newEmail, setNewEmail] = useState('');
   const [isSendingEmailRequest, setIsSendingEmailRequest] = useState(false);
 
-  // Add Phone State
-  const [isAddingPhone, setIsAddingPhone] = useState(false);
-  const [newPhoneNumber, setNewPhoneNumber] = useState('');
-  const [phoneForOtp, setPhoneForOtp] = useState<string | null>(null);
-
   // Track stateCode separately — LgaSelector needs the code (e.g. "LA"), not the name ("Lagos")
-  const [selectedStateCode, setSelectedStateCode] = useState('');
+  const [selectedStateCode, setSelectedStateCode] = useState(() =>
+    user ? user.stateCode || resolveStateCode(user.state) : ''
+  );
 
   const {
     register,
@@ -72,7 +71,8 @@ export const ContactSettings: React.FC = () => {
       phoneVisibility: (user?.phoneVisibility as 'private' | 'workspace') || 'private',
       country: user?.country || 'Nigeria',
       state: user?.state || '',
-      lga: '',
+      stateCode: user?.stateCode || (user?.state ? resolveStateCode(user.state) : ''),
+      lga: user?.lga || '',
       city: user?.city || '',
       timezone: user?.timezone || 'Africa/Lagos',
     },
@@ -82,28 +82,34 @@ export const ContactSettings: React.FC = () => {
 
   useEffect(() => {
     if (user) {
+      const code = user.stateCode || resolveStateCode(user.state);
       reset({
         phoneVisibility: (user.phoneVisibility as 'private' | 'workspace') || 'private',
         country: user.country || 'Nigeria',
         state: user.state || '',
+        stateCode: code || '',
         lga: user.lga || '',
         city: user.city || '',
         timezone: user.timezone || 'Africa/Lagos',
       });
-      // Restore stateCode if saved
-      if (user.stateCode) setSelectedStateCode(user.stateCode);
+      setSelectedStateCode(code || '');
     }
   }, [user, reset]);
-
-  useEffect(() => {
-    fetchPhones();
-  }, [fetchPhones]);
 
   const onSubmit = async (data: ContactFormData) => {
     setIsLoading(true);
     try {
-      const res = await api.patch<{ user: any }>('/users/me/contact', data);
-      updateUser(res.user);
+      const code = selectedStateCode || resolveStateCode(data.state);
+      const payload = {
+        ...data,
+        stateCode: code,
+      };
+      const res = await api.patch<{ success: boolean; data?: any; user?: any }>('/users/me/contact', payload);
+      if (res?.user) {
+        updateUser(res.user);
+      } else if (res?.data) {
+        updateUser(res.data);
+      }
       await refreshSession();
       toast.success('Contact & location information saved.');
     } catch (err: any) {
@@ -137,19 +143,10 @@ export const ContactSettings: React.FC = () => {
     }
   };
 
-  const handleStartVerifyPhone = async (phoneNumber: string) => {
-    try {
-      await sendOtp(phoneNumber);
-      setPhoneForOtp(phoneNumber);
-    } catch {
-      // Error handled in store
-    }
-  };
-
   return (
     <ProfileLayout
       title="Contact & Location"
-      description="Manage your verified email, phone recovery details, and geographical region."
+      description="Manage your primary email, privacy preferences, and geographical region."
       activeSection="contact"
     >
       <div className="space-y-6">
@@ -193,133 +190,6 @@ export const ContactSettings: React.FC = () => {
           <p className="text-[11px] text-slate-500">
             Your email is your central login identifier. Changing it requires verification of the new address before activation.
           </p>
-        </div>
-
-        {/* Phone Numbers Management Card */}
-        <div className="p-5 rounded-xl bg-slate-900/50 border border-slate-800/80 space-y-4 shadow-sm">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-                <Smartphone className="w-5 h-5" />
-              </div>
-              <div>
-                <h4 className="text-sm font-semibold text-white">Registered Phone Numbers</h4>
-                <p className="text-xs text-slate-400">Manage verified phone numbers for security alerts and 2FA.</p>
-              </div>
-            </div>
-
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => setIsAddingPhone(!isAddingPhone)}
-              className="bg-[#714b67] hover:bg-[#85587a] text-white text-xs rounded-lg cursor-pointer flex items-center gap-1.5"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>{isAddingPhone ? 'Cancel' : 'Add Phone'}</span>
-            </Button>
-          </div>
-
-          {/* Add Phone Form */}
-          {isAddingPhone && (
-            <div className="p-4 rounded-lg bg-slate-950/80 border border-slate-800 space-y-3 animate-in fade-in duration-150">
-              <h5 className="text-xs font-semibold text-white">Add New Nigerian Mobile Number</h5>
-              <PhoneInput
-                value={newPhoneNumber}
-                onChange={(val) => setNewPhoneNumber(val)}
-                label="Mobile Phone"
-                placeholder="0801 234 5678"
-                onVerified={() => {
-                  setIsAddingPhone(false);
-                  setNewPhoneNumber('');
-                  fetchPhones();
-                }}
-              />
-            </div>
-          )}
-
-          {/* Phone List */}
-          <div className="space-y-2.5 pt-1">
-            {phones.length === 0 ? (
-              <div className="p-4 rounded-lg bg-slate-950/40 border border-slate-800/60 text-center text-xs text-slate-500">
-                No phone numbers registered yet. Add a phone number for account recovery.
-              </div>
-            ) : (
-              phones.map((phone: UserPhone) => (
-                <div
-                  key={phone._id}
-                  className="flex items-center justify-between p-3.5 rounded-lg bg-slate-950/70 border border-slate-800/80 hover:border-slate-700/80 transition-all"
-                >
-                  <div className="flex items-center gap-3">
-                    <Phone className="w-4 h-4 text-slate-400" />
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-mono font-medium text-white">
-                          {formatPhoneForDisplay(phone.phone)}
-                        </span>
-                        {phone.isPrimary && (
-                          <span className="px-2 py-0.5 rounded-md text-[9px] font-bold bg-[#714b67]/20 text-[#d4a8c9] border border-[#714b67]/40 flex items-center gap-1">
-                            <Star className="w-2.5 h-2.5 fill-[#d4a8c9]" />
-                            PRIMARY
-                          </span>
-                        )}
-                        {phone.isVerified ? (
-                          <span className="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-0.5">
-                            <ShieldCheck className="w-3 h-3" />
-                            Verified
-                          </span>
-                        ) : (
-                          <span className="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                            Unverified
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    {!phone.isVerified && (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => handleStartVerifyPhone(phone.phoneNormalized)}
-                        className="text-[11px] h-7 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 rounded-md"
-                      >
-                        Verify Now
-                      </Button>
-                    )}
-
-                    {phone.isVerified && !phone.isPrimary && (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => setPrimary(phone._id)}
-                        className="text-[11px] h-7 text-slate-400 hover:text-white rounded-md"
-                      >
-                        Make Primary
-                      </Button>
-                    )}
-
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => {
-                        if (confirm(`Remove phone number ${formatPhoneForDisplay(phone.phone)}?`)) {
-                          deletePhone(phone._id);
-                        }
-                      }}
-                      className="text-[11px] h-7 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-md p-1.5"
-                      title="Remove Phone"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
         </div>
 
         {/* Contact & Location Form */}
@@ -372,17 +242,18 @@ export const ContactSettings: React.FC = () => {
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
               <StateSelector
-                value={selectedStateCode || watch('state')}
+                value={selectedStateCode || resolveStateCode(watch('state'))}
                 onChange={(code, name) => {
                   setSelectedStateCode(code);
                   setValue('state', name, { shouldDirty: true });
+                  setValue('stateCode', code, { shouldDirty: true });
                   setValue('lga', '', { shouldDirty: true });
                 }}
                 label="State"
               />
 
               <LgaSelector
-                stateCode={selectedStateCode}
+                stateCode={selectedStateCode || resolveStateCode(watch('state'))}
                 value={selectedLga}
                 onChange={(lga) => setValue('lga', lga, { shouldDirty: true })}
                 label="LGA"
@@ -471,19 +342,7 @@ export const ContactSettings: React.FC = () => {
           </div>
         </div>
       )}
-
-      {/* OTP Verification Modal */}
-      {phoneForOtp && (
-        <OtpVerificationModal
-          isOpen={!!phoneForOtp}
-          phone={phoneForOtp}
-          onClose={() => setPhoneForOtp(null)}
-          onSuccess={() => {
-            setPhoneForOtp(null);
-            fetchPhones();
-          }}
-        />
-      )}
     </ProfileLayout>
   );
 };
+

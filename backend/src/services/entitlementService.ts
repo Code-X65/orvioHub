@@ -631,21 +631,47 @@ export class EntitlementService {
     workspaceId: string,
     productKey?: string
   ): Promise<EntitlementCheckResult> {
-    const targetNorm = (productKey || 'inventory').toLowerCase();
-    if (targetNorm !== 'inventory') {
+    const key = (productKey || 'inventory').toLowerCase();
+    const app = await dataService.getPlatformApplication(key);
+    if (!app) {
       return {
         allowed: false,
-        current: 1,
-        limit: 1,
         planKey: 'free_trial',
-        error: 'Only the Inventory application is currently available.',
+        error: 'Application not found.',
       };
     }
+    if (app.status !== 'active') {
+      return {
+        allowed: false,
+        planKey: 'free_trial',
+        error: `Application is ${app.status}.`,
+      };
+    }
+
+    const ctx = await this.getEntitlementContext(workspaceId);
+    const planKey = (ctx?.planKey || 'free_trial').toLowerCase();
+    const allowedPlans = (app.planRequirements || []).map((p: string) => p.toLowerCase());
+
+    // Normalize free / free_trial
+    const normalizedPlan = planKey === 'free' ? 'free_trial' : planKey;
+    const hasPlanAccess =
+      allowedPlans.length === 0 ||
+      allowedPlans.includes(planKey) ||
+      allowedPlans.includes(normalizedPlan);
+
+    if (!hasPlanAccess) {
+      return {
+        allowed: false,
+        planKey,
+        error: `Requires ${app.planRequirements.join(' or ')} plan.`,
+      };
+    }
+
     return {
       allowed: true,
       current: 1,
       limit: 1,
-      planKey: 'free_trial',
+      planKey,
     };
   }
 
@@ -719,6 +745,14 @@ export class EntitlementService {
 
   public async getOrganizationUsageSummary(organizationId: string, userId?: string) {
     return this.getWorkspaceUsageSummary(organizationId, userId);
+  }
+
+  public async getUserUsage(userId: string): Promise<any> {
+    try {
+      return await dataService.getUserUsage(userId);
+    } catch {
+      return { ownedOrganizations: 1, limit: 3 };
+    }
   }
 }
 

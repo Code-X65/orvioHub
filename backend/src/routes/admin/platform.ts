@@ -227,6 +227,218 @@ export const adminPlatformRoutes: FastifyPluginAsync = async (fastify) => {
       }
     }
   );
+
+  // GET /v1/admin/applications & /v1/admin/platform/applications - List all platform applications
+  const listAppsHandler = async (_request: any, reply: any) => {
+    try {
+      const apps = await dataService.listPlatformApplications();
+      return reply.send({
+        success: true,
+        data: { applications: apps || [] },
+      });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_SERVER_ERROR,
+          message: err.message || 'Failed to list applications.',
+        },
+      });
+    }
+  };
+
+  fastify.get('/applications', {
+    preHandler: [requireAdmin({ permission: 'admin.dashboard.view' })],
+    schema: {
+      tags: ['Superadmin'],
+      summary: 'List platform applications for administration',
+      security: [{ bearerAuth: [] }],
+    },
+  }, listAppsHandler);
+
+  fastify.get('/platform/applications', {
+    preHandler: [requireAdmin({ permission: 'admin.dashboard.view' })],
+    schema: {
+      tags: ['Superadmin'],
+      summary: 'List platform applications for administration',
+      security: [{ bearerAuth: [] }],
+    },
+  }, listAppsHandler);
+
+  // POST /v1/admin/applications - Create platform application
+  const createAppHandler = async (request: any, reply: any) => {
+    const body = request.body || {};
+    try {
+      const id = await dataService.createPlatformApplication({
+        key: body.key,
+        name: body.name,
+        status: body.status || 'coming_soon',
+        isCore: Boolean(body.isCore),
+        planRequirements: body.planRequirements || ['standard', 'premium'],
+        subdomain: body.subdomain || body.key,
+        icon: body.icon,
+        description: body.description,
+        badge: body.badge,
+        displayOrder: body.displayOrder,
+      });
+
+      // Record audit log
+      await dataService.createAuditLog?.({
+        action: 'platform_application.created',
+        actorId: request.user?.id || 'admin',
+        targetId: body.key,
+        metadata: { key: body.key, name: body.name, status: body.status },
+        timestamp: Date.now(),
+      }).catch(() => null);
+
+      return reply.send({
+        success: true,
+        message: `Platform application '${body.name}' created successfully.`,
+        data: { id, key: body.key },
+      });
+    } catch (err: any) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: 'APPLICATION_CREATE_FAILED',
+          message: err.message || 'Failed to create platform application.',
+        },
+      });
+    }
+  };
+
+  fastify.post('/applications', {
+    preHandler: [requireAdmin({ permission: 'admin.dashboard.view' })],
+    schema: {
+      tags: ['Superadmin'],
+      summary: 'Create a new platform application definition',
+      security: [{ bearerAuth: [] }],
+    },
+  }, createAppHandler);
+
+  fastify.post('/platform/applications', {
+    preHandler: [requireAdmin({ permission: 'admin.dashboard.view' })],
+    schema: {
+      tags: ['Superadmin'],
+      summary: 'Create a new platform application definition',
+      security: [{ bearerAuth: [] }],
+    },
+  }, createAppHandler);
+
+  // PATCH /v1/admin/applications/:key - Update platform application
+  const updateAppHandler = async (request: any, reply: any) => {
+    const { key } = request.params as { key: string };
+    const updates = request.body || {};
+
+    try {
+      const app = await dataService.getPlatformApplication(key);
+      if (!app) {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.NOT_FOUND,
+            message: `Platform application '${key}' not found.`,
+          },
+        });
+      }
+
+      await dataService.updatePlatformApplication(key, updates);
+
+      // Record audit log
+      await dataService.createAuditLog?.({
+        action: 'platform_application.updated',
+        actorId: request.user?.id || 'admin',
+        targetId: key,
+        metadata: { key, updates, previous: { status: app.status, isCore: app.isCore, planRequirements: app.planRequirements } },
+        timestamp: Date.now(),
+      }).catch(() => null);
+
+      const updated = await dataService.getPlatformApplication(key);
+      return reply.send({
+        success: true,
+        message: `Platform application '${key}' updated successfully.`,
+        data: { application: updated },
+      });
+    } catch (err: any) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: 'APPLICATION_UPDATE_FAILED',
+          message: err.message || 'Failed to update platform application.',
+        },
+      });
+    }
+  };
+
+  fastify.patch('/applications/:key', {
+    preHandler: [requireAdmin({ permission: 'admin.dashboard.view' })],
+    schema: {
+      tags: ['Superadmin'],
+      summary: 'Update a platform application status, core flag, and plan requirements',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['key'],
+        properties: { key: { type: 'string' } },
+      },
+    },
+  }, updateAppHandler);
+
+  fastify.patch('/platform/applications/:key', {
+    preHandler: [requireAdmin({ permission: 'admin.dashboard.view' })],
+    schema: {
+      tags: ['Superadmin'],
+      summary: 'Update a platform application status, core flag, and plan requirements',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['key'],
+        properties: { key: { type: 'string' } },
+      },
+    },
+  }, updateAppHandler);
+
+  // DELETE /v1/admin/applications/:key
+  const deleteAppHandler = async (request: any, reply: any) => {
+    const { key } = request.params as { key: string };
+    try {
+      const app = await dataService.getPlatformApplication(key);
+      if (!app) {
+        return reply.status(404).send({
+          success: false,
+          error: { code: ERROR_CODES.NOT_FOUND, message: `Application '${key}' not found.` },
+        });
+      }
+      if (app.isCore) {
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: 'CORE_APP_PROTECTED',
+            message: `${app.name} is a core application and cannot be deleted.`,
+          },
+        });
+      }
+
+      await dataService.deletePlatformApplication(key);
+      return reply.send({
+        success: true,
+        message: `Application '${key}' deleted successfully.`,
+      });
+    } catch (err: any) {
+      return reply.status(400).send({
+        success: false,
+        error: { code: 'APPLICATION_DELETE_FAILED', message: err.message },
+      });
+    }
+  };
+
+  fastify.delete('/applications/:key', {
+    preHandler: [requireAdmin({ permission: 'admin.dashboard.view' })],
+  }, deleteAppHandler);
+
+  fastify.delete('/platform/applications/:key', {
+    preHandler: [requireAdmin({ permission: 'admin.dashboard.view' })],
+  }, deleteAppHandler);
 };
 
 export default adminPlatformRoutes;

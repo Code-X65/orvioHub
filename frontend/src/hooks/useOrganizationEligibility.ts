@@ -49,14 +49,19 @@ const DEFAULT_ELIGIBILITY: OrganizationCreationEligibility = {
   recommendedPlan: 'free_trial',
 };
 
-export function useOrganizationEligibility() {
-  const [eligibility, setEligibility] = useState<OrganizationCreationEligibility>(DEFAULT_ELIGIBILITY);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
+let cachedEligibility: OrganizationCreationEligibility | null = null;
+let inFlightPromise: Promise<OrganizationCreationEligibility | null> | null = null;
+const listeners = new Set<(val: OrganizationCreationEligibility) => void>();
 
-  const fetchEligibility = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
+function notifyListeners(val: OrganizationCreationEligibility) {
+  cachedEligibility = val;
+  listeners.forEach((listener) => listener(val));
+}
+
+export async function prefetchOrganizationEligibility(): Promise<OrganizationCreationEligibility | null> {
+  if (inFlightPromise) return inFlightPromise;
+
+  inFlightPromise = (async () => {
     try {
       const res = await api.get<any>('/users/me/organization-creation-eligibility');
       const data = res?.data || res;
@@ -72,7 +77,7 @@ export function useOrganizationEligibility() {
           available: true,
         };
 
-        setEligibility({
+        const result: OrganizationCreationEligibility = {
           canCreate,
           allowed: canCreate,
           currentOwned,
@@ -94,7 +99,49 @@ export function useOrganizationEligibility() {
           override: data.override,
           code: data.code,
           message: data.message,
-        });
+        };
+
+        notifyListeners(result);
+        return result;
+      }
+      return cachedEligibility;
+    } catch {
+      return cachedEligibility;
+    } finally {
+      inFlightPromise = null;
+    }
+  })();
+
+  return inFlightPromise;
+}
+
+export function useOrganizationEligibility() {
+  const [eligibility, setEligibility] = useState<OrganizationCreationEligibility>(
+    () => cachedEligibility || DEFAULT_ELIGIBILITY
+  );
+  const [isLoading, setIsLoading] = useState<boolean>(!cachedEligibility);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const listener = (val: OrganizationCreationEligibility) => {
+      setEligibility(val);
+      setIsLoading(false);
+    };
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  }, []);
+
+  const fetchEligibility = useCallback(async () => {
+    if (!cachedEligibility) {
+      setIsLoading(true);
+    }
+    setError(null);
+    try {
+      const res = await prefetchOrganizationEligibility();
+      if (res) {
+        setEligibility(res);
       }
     } catch (err: any) {
       setError(err?.message || 'Failed to check organization creation eligibility');
@@ -107,12 +154,16 @@ export function useOrganizationEligibility() {
     fetchEligibility();
   }, [fetchEligibility]);
 
+  const isLimitReached = !eligibility.canCreate || !eligibility.allowed || eligibility.currentOwned >= eligibility.maximumOwned;
+  const isApproachingLimit = !isLimitReached && eligibility.remainingOwned <= 1;
+
   return {
     eligibility,
-    isLoading,
+    isLoading: isLoading && !cachedEligibility,
     error,
     refreshEligibility: fetchEligibility,
-    isLimitReached: !eligibility.canCreate || !eligibility.allowed,
+    isLimitReached,
+    isApproachingLimit,
     isFreeTrialAvailable: eligibility.freeTrial.available,
   };
 }

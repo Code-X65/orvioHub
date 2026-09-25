@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { validateNigerianPhone } from '@/lib/phoneValidation';
-import { useUserPhoneStore } from '@/stores/useUserPhoneStore';
+import { api } from '@/lib/api';
+import { toast } from 'sonner';
 import { OtpVerificationModal } from './OtpVerificationModal';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
@@ -34,7 +35,7 @@ export const PhoneInput: React.FC<PhoneInputProps> = ({
   className = '',
   error,
 }) => {
-  const { sendOtp, isSendingOtp } = useUserPhoneStore();
+  const [isSendingOtp, setIsSendingOtp] = useState(false);
   const [isOtpModalOpen, setIsOtpModalOpen] = useState(false);
   const [phoneToVerify, setPhoneToVerify] = useState('');
 
@@ -48,13 +49,20 @@ export const PhoneInput: React.FC<PhoneInputProps> = ({
 
   const handleSendOtp = async () => {
     if (!validation.valid) return;
+    setIsSendingOtp(true);
     try {
       const fullNumber = (validation as any).normalized || value;
       setPhoneToVerify(fullNumber);
-      await sendOtp(fullNumber);
+      await api.post('/users/me/phone/verification/start', {
+        phone: fullNumber,
+        purpose: 'user_phone_verification',
+      });
+      toast.success(`Verification code sent to ${fullNumber}`);
       setIsOtpModalOpen(true);
-    } catch {
-      // Handled in store
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to send verification code.');
+    } finally {
+      setIsSendingOtp(false);
     }
   };
 

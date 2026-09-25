@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
+  LayoutGrid,
   Users,
   Building2,
   Mail,
@@ -19,8 +20,11 @@ import {
   Trash2,
   Phone,
   ChevronDown,
+  TrendingUp,
+  Receipt,
 } from "lucide-react";
 import { useAuth } from "../hooks/useAuth";
+import { canAdmin } from "../auth/permissions";
 
 export const AdminLayout: React.FC = () => {
   const { admin, logout, refreshSession } = useAuth();
@@ -61,19 +65,22 @@ export const AdminLayout: React.FC = () => {
   };
 
   const navItems = [
-    { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-    { to: "/users", label: "Users & Admins", icon: Users },
-    { to: "/organizations", label: "Organizations", icon: Building2 },
-    { to: "/subscriptions", label: "Subscriptions", icon: CreditCard },
-    { to: "/plans", label: "Plans & Pricing", icon: Package },
-    { to: "/invitations", label: "Invitations", icon: Mail },
-    { to: "/onboarding", label: "Onboarding Funnel", icon: Compass },
-    { to: "/products", label: "Products Catalog", icon: Package },
-    { to: "/phone-challenges", label: "Phone Challenges", icon: Phone },
-    { to: "/audit-logs", label: "Audit Logs", icon: ScrollText },
-    { to: "/deletions", label: "Deletion Queue", icon: Trash2 },
-    { to: "/settings", label: "System & Flags", icon: Settings },
-  ];
+    { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, permission: "admin.dashboard.view" },
+    { to: "/billing/analytics", label: "Revenue Analytics", icon: TrendingUp, permission: "admin.revenue.view" },
+    { to: "/invoices", label: "Invoice Management", icon: Receipt, permission: "admin.billing.view" },
+    { to: "/users", label: "Users & Admins", icon: Users, permission: "admin.users.view" },
+    { to: "/organizations", label: "Organizations", icon: Building2, permission: "admin.organizations.view" },
+    { to: "/admin/applications", label: "Applications Registry", icon: LayoutGrid, permission: "admin.applications.view" },
+    { to: "/subscriptions", label: "Subscriptions", icon: CreditCard, permission: "admin.billing.view" },
+    { to: "/plans", label: "Plans & Pricing", icon: Package, permission: "admin.billing.manage" },
+    { to: "/invitations", label: "Invitations", icon: Mail, permission: "admin.members.view" },
+    { to: "/onboarding", label: "Onboarding Funnel", icon: Compass, permission: "admin.onboarding.view" },
+    { to: "/products", label: "Products Catalog", icon: Package, permission: "admin.applications.view" },
+    { to: "/phone-challenges", label: "Phone Challenges", icon: Phone, permission: "admin.branches.view" },
+    { to: "/audit-logs", label: "Audit Logs", icon: ScrollText, permission: "admin.audit.view" },
+    { to: "/deletions", label: "Deletion Queue", icon: Trash2, permission: "admin.organizations.archive" },
+    { to: "/settings", label: "System & Flags", icon: Settings, permission: "admin.dashboard.view" },
+  ].filter((item) => canAdmin(admin?.role, item.permission));
 
   const adminAvatar = admin?.avatarUrl || admin?.avatar;
 
@@ -337,4 +344,3 @@ export const AdminLayout: React.FC = () => {
 };
 
 export default AdminLayout;
-

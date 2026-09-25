@@ -41,6 +41,7 @@ export const startOnboardingFlow = mutation({
     productKey: v.optional(v.string()),
     initialStep: v.optional(v.string()),
     flowVersion: v.optional(v.string()),
+    status: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const uId = ctx.db.normalizeId("users", args.userId);
@@ -48,11 +49,32 @@ export const startOnboardingFlow = mutation({
     if (!uId) throw new Error("USER_NOT_FOUND");
 
     const now = Date.now();
-    const existing = await ctx.db
-      .query("onboardingFlows")
-      .withIndex("by_user", (q) => q.eq("userId", uId))
-      .order("desc")
-      .first();
+    let existing = null;
+
+    if (wsId && args.productKey) {
+      existing = await ctx.db
+        .query("onboardingFlows")
+        .withIndex("by_workspace_product", (q) =>
+          q.eq("workspaceId", wsId).eq("productKey", args.productKey!)
+        )
+        .filter((q) => q.eq(q.field("userId"), uId))
+        .first();
+      
+      if (!existing) {
+        existing = await ctx.db
+          .query("onboardingFlows")
+          .withIndex("by_workspace_product", (q) =>
+            q.eq("workspaceId", wsId).eq("productKey", args.productKey!)
+          )
+          .first();
+      }
+    } else {
+      existing = await ctx.db
+        .query("onboardingFlows")
+        .withIndex("by_user", (q) => q.eq("userId", uId))
+        .order("desc")
+        .first();
+    }
 
     if (existing && existing.status !== "completed" && existing.status !== "COMPLETED") {
       return existing;
@@ -64,7 +86,7 @@ export const startOnboardingFlow = mutation({
       workspaceId: wsId || undefined,
       productKey: args.productKey || "global",
       flowVersion: args.flowVersion || "1.0",
-      status: "in_progress",
+      status: (args.status as any) || "in_progress",
       currentStep: initialStep,
       completedSteps: [],
       skippedSteps: [],
@@ -90,7 +112,10 @@ export const updateStepProgress = mutation({
   args: {
     userId: v.optional(v.union(v.id("users"), v.id("onboardingFlows"), v.string())),
     flowId: v.optional(v.union(v.id("onboardingFlows"), v.string())),
+    workspaceId: v.optional(v.union(v.id("workspaces"), v.string())),
+    productKey: v.optional(v.string()),
     currentStep: v.string(),
+    status: v.optional(v.string()),
     stepData: v.optional(v.any()),
   },
   handler: async (ctx, args) => {
@@ -99,31 +124,41 @@ export const updateStepProgress = mutation({
       const fId = ctx.db.normalizeId("onboardingFlows", args.flowId);
       if (fId) flow = await ctx.db.get(fId);
     }
+
+    const wsId = args.workspaceId ? ctx.db.normalizeId("workspaces", args.workspaceId) : null;
+    const uId = args.userId ? ctx.db.normalizeId("users", args.userId) : null;
+
+    if (!flow && wsId && args.productKey) {
+      flow = await ctx.db
+        .query("onboardingFlows")
+        .withIndex("by_workspace_product", (q) =>
+          q.eq("workspaceId", wsId).eq("productKey", args.productKey!)
+        )
+        .first();
+    }
+
     if (!flow && args.userId) {
-      // Check if userId is actually a flow ID
       const directFlowId = ctx.db.normalizeId("onboardingFlows", args.userId);
       if (directFlowId) {
         flow = await ctx.db.get(directFlowId);
       }
-      if (!flow) {
-        const uId = ctx.db.normalizeId("users", args.userId);
-        if (uId) {
-          flow = await ctx.db
-            .query("onboardingFlows")
-            .withIndex("by_user", (q) => q.eq("userId", uId))
-            .order("desc")
-            .first();
-        }
+      if (!flow && uId) {
+        flow = await ctx.db
+          .query("onboardingFlows")
+          .withIndex("by_user", (q) => q.eq("userId", uId))
+          .order("desc")
+          .first();
       }
     }
 
     if (!flow) {
-      const uId = args.userId ? ctx.db.normalizeId("users", args.userId) : null;
       if (uId) {
         const flowId = await ctx.db.insert("onboardingFlows", {
           userId: uId,
+          workspaceId: wsId || undefined,
+          productKey: args.productKey || "global",
           flowVersion: "1.0",
-          status: "in_progress",
+          status: (args.status as any) || "in_progress",
           currentStep: args.currentStep,
           completedSteps: [],
           skippedSteps: [],
@@ -141,11 +176,16 @@ export const updateStepProgress = mutation({
       ...(args.stepData || {}),
     };
 
-    await ctx.db.patch(flow._id, {
+    const patchPayload: any = {
       currentStep: args.currentStep,
       stepData: mergedData,
       lastUpdatedAt: Date.now(),
-    });
+    };
+    if (args.status) {
+      patchPayload.status = args.status;
+    }
+
+    await ctx.db.patch(flow._id, patchPayload);
 
     return { success: true, flowId: flow._id };
   },
@@ -155,9 +195,12 @@ export const completeStep = mutation({
   args: {
     userId: v.optional(v.union(v.id("users"), v.id("onboardingFlows"), v.string())),
     flowId: v.optional(v.union(v.id("onboardingFlows"), v.string())),
+    workspaceId: v.optional(v.union(v.id("workspaces"), v.string())),
+    productKey: v.optional(v.string()),
     completedStepKey: v.string(),
     nextStepKey: v.optional(v.string()),
     stepData: v.optional(v.any()),
+    status: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     let flow = null;
@@ -165,25 +208,52 @@ export const completeStep = mutation({
       const fId = ctx.db.normalizeId("onboardingFlows", args.flowId);
       if (fId) flow = await ctx.db.get(fId);
     }
+
+    const wsId = args.workspaceId ? ctx.db.normalizeId("workspaces", args.workspaceId) : null;
+    const uId = args.userId ? ctx.db.normalizeId("users", args.userId) : null;
+
+    if (!flow && wsId && args.productKey) {
+      flow = await ctx.db
+        .query("onboardingFlows")
+        .withIndex("by_workspace_product", (q) =>
+          q.eq("workspaceId", wsId).eq("productKey", args.productKey!)
+        )
+        .first();
+    }
+
     if (!flow && args.userId) {
-      // Check if userId is actually a flow ID
       const directFlowId = ctx.db.normalizeId("onboardingFlows", args.userId);
       if (directFlowId) {
         flow = await ctx.db.get(directFlowId);
       }
-      if (!flow) {
-        const uId = ctx.db.normalizeId("users", args.userId);
-        if (uId) {
-          flow = await ctx.db
-            .query("onboardingFlows")
-            .withIndex("by_user", (q) => q.eq("userId", uId))
-            .order("desc")
-            .first();
-        }
+      if (!flow && uId) {
+        flow = await ctx.db
+          .query("onboardingFlows")
+          .withIndex("by_user", (q) => q.eq("userId", uId))
+          .order("desc")
+          .first();
       }
     }
 
-    if (!flow) throw new Error("ONBOARDING_FLOW_NOT_FOUND");
+    if (!flow) {
+      if (uId) {
+        const flowId = await ctx.db.insert("onboardingFlows", {
+          userId: uId,
+          workspaceId: wsId || undefined,
+          productKey: args.productKey || "global",
+          flowVersion: "1.0",
+          status: "in_progress",
+          currentStep: args.nextStepKey || args.completedStepKey,
+          completedSteps: [args.completedStepKey],
+          skippedSteps: [],
+          stepData: args.stepData || {},
+          startedAt: Date.now(),
+          lastUpdatedAt: Date.now(),
+        });
+        return { success: true, nextStep: args.nextStepKey || args.completedStepKey, flowId };
+      }
+      throw new Error("ONBOARDING_FLOW_NOT_FOUND");
+    }
 
     const completed = new Set(flow.completedSteps || []);
     completed.add(args.completedStepKey);
@@ -195,12 +265,17 @@ export const completeStep = mutation({
 
     const nextStep = args.nextStepKey || args.completedStepKey;
     const now = Date.now();
-    await ctx.db.patch(flow._id, {
+    const patchPayload: any = {
       currentStep: nextStep,
       completedSteps: Array.from(completed),
       stepData: mergedData,
       lastUpdatedAt: now,
-    });
+    };
+    if (args.status) {
+      patchPayload.status = args.status;
+    }
+
+    await ctx.db.patch(flow._id, patchPayload);
 
     if (flow.userId) {
       await ctx.db.insert("onboardingEvents", {
@@ -219,19 +294,36 @@ export const completeStep = mutation({
 
 export const skipStep = mutation({
   args: {
-    userId: v.optional(v.id("users")),
-    flowId: v.optional(v.id("onboardingFlows")),
+    userId: v.optional(v.union(v.id("users"), v.string())),
+    flowId: v.optional(v.union(v.id("onboardingFlows"), v.string())),
+    workspaceId: v.optional(v.union(v.id("workspaces"), v.string())),
+    productKey: v.optional(v.string()),
     skippedStepKey: v.string(),
     nextStepKey: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     let flow = null;
     if (args.flowId) {
-      flow = await ctx.db.get(args.flowId);
-    } else if (args.userId) {
+      const fId = ctx.db.normalizeId("onboardingFlows", args.flowId);
+      if (fId) flow = await ctx.db.get(fId);
+    }
+
+    const wsId = args.workspaceId ? ctx.db.normalizeId("workspaces", args.workspaceId) : null;
+    const uId = args.userId ? ctx.db.normalizeId("users", args.userId) : null;
+
+    if (!flow && wsId && args.productKey) {
       flow = await ctx.db
         .query("onboardingFlows")
-        .withIndex("by_user", (q) => q.eq("userId", args.userId!))
+        .withIndex("by_workspace_product", (q) =>
+          q.eq("workspaceId", wsId).eq("productKey", args.productKey!)
+        )
+        .first();
+    }
+
+    if (!flow && uId) {
+      flow = await ctx.db
+        .query("onboardingFlows")
+        .withIndex("by_user", (q) => q.eq("userId", uId))
         .order("desc")
         .first();
     }

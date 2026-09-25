@@ -5,6 +5,8 @@ import {
   setCrossSubdomainItem,
   removeCrossSubdomainItem,
 } from '@/lib/cookieStorage';
+import { getErrorMessage } from '@/lib/errorMapper';
+import { crossTabSync } from '@/lib/crossTabSync';
 
 export interface Branch {
   _id?: string;
@@ -29,6 +31,7 @@ export interface Branch {
   phoneNormalized?: string;
   phoneVerified?: boolean;
   phoneVerifiedAt?: number;
+  phoneStatus?: 'unverified' | 'pending' | 'verified';
   email?: string;
   managerId?: string;
   status: string;
@@ -88,16 +91,20 @@ interface BranchState {
   activeBranch: Branch | null;
   branches: Branch[];
   branchesByOrgAndApp: Record<string, Branch[]>;
+  loadingByOrgAndApp: Record<string, boolean>;
+  errorsByOrgAndApp: Record<string, string | null>;
   isLoading: boolean;
   isSendingPhoneOtp: boolean;
   isVerifyingPhoneOtp: boolean;
   error: string | null;
 
   setActiveBranch: (branch: Branch | null) => void;
+  setNavigating: (isNavigating: boolean) => void;
+  getPrimaryBranch: () => Branch | null;
   loadBranches: (workspaceOrOrgId: string, productKey?: string, forceReload?: boolean) => Promise<Branch[]>;
   fetchBranches: (workspaceOrOrgId?: string, productKey?: string, forceReload?: boolean) => Promise<Branch[]>;
   createBranch: (data: CreateBranchInput) => Promise<Branch>;
-  updateBranch: (branchId: string, data: UpdateBranchInput) => Promise<Branch>;
+  updateBranch: (branchId: string, data: UpdateBranchInput, organizationId?: string) => Promise<Branch>;
   deactivateBranch: (branchId: string, orgId?: string) => Promise<void>;
   sendBranchPhoneOtp: (workspaceId: string, branchId: string, phone: string) => Promise<{ success: boolean; expiresInSeconds?: number }>;
   verifyBranchPhoneOtp: (workspaceId: string, branchId: string, otp: string) => Promise<{ success: boolean }>;
@@ -106,15 +113,34 @@ interface BranchState {
 
 let inFlightBranchFetches = new Map<string, Promise<Branch[]>>();
 let lastFetchedBranches = new Map<string, number>();
+let latestVisibleBranchRequest = 0;
+
+function getStoredActiveBranch(): Branch | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = getCrossSubdomainItem('orvio_active_branch_data');
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+const initialStoredBranch = getStoredActiveBranch();
 
 export const useBranchStore = create<BranchState>((set, get) => ({
-  activeBranch: null,
+  activeBranch: initialStoredBranch,
   branches: [],
   branchesByOrgAndApp: {},
+  loadingByOrgAndApp: {},
+  errorsByOrgAndApp: {},
   isLoading: false,
   isSendingPhoneOtp: false,
   isVerifyingPhoneOtp: false,
   error: null,
+
+  /** True while the user is intentionally navigating (e.g. via BranchSwitcher).
+   *  Programmatic reloads should not overwrite activeBranch when this is true. */
+  setNavigating: (isNavigating) => set({ isLoading: isNavigating }),
 
   setActiveBranch: (branch) => {
     if (branch) {
@@ -122,10 +148,28 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       if (branchId) {
         setCrossSubdomainItem('orvio_active_branch_id', branchId);
       }
+      setCrossSubdomainItem('orvio_active_branch_data', JSON.stringify({
+        id: branchId,
+        _id: branchId,
+        workspaceId: branch.workspaceId,
+        name: branch.name,
+        code: branch.code,
+        isPrimary: branch.isPrimary,
+        status: branch.status,
+      }));
+      if (branchId) {
+        crossTabSync.broadcastBranchChange(branchId, branch.name);
+      }
     } else {
       removeCrossSubdomainItem('orvio_active_branch_id');
+      removeCrossSubdomainItem('orvio_active_branch_data');
     }
     set({ activeBranch: branch });
+  },
+
+  getPrimaryBranch: () => {
+    const list = get().branches;
+    return list.find((b) => b.isPrimary) || (list.length === 1 ? list[0] : null);
   },
 
   loadBranches: async (workspaceOrOrgId: string, productKey?: string, forceReload = false) => {
@@ -139,10 +183,18 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     }
 
     const lastFetchedAt = lastFetchedBranches.get(cacheKey) || 0;
-    if (!forceReload && cached && cached.length > 0 && Date.now() - lastFetchedAt < 15000) {
+    if (!forceReload && cached && Date.now() - lastFetchedAt < 15000) {
+      latestVisibleBranchRequest++;
       set({ branches: cached, isLoading: false, error: null });
       return cached;
     }
+
+    const requestSequence = ++latestVisibleBranchRequest;
+
+    set((state) => ({
+      loadingByOrgAndApp: { ...state.loadingByOrgAndApp, [cacheKey]: true },
+      errorsByOrgAndApp: { ...state.errorsByOrgAndApp, [cacheKey]: null },
+    }));
 
     if (!forceReload && cached && cached.length > 0) {
       set({ branches: cached, isLoading: false, error: null });
@@ -168,9 +220,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           list = wsRes.branches || wsRes.data?.branches || [];
         }
 
-        // Filter active branches to exclude suspended/archived
+        // Filter active branches to exclude suspended/archived/soft-deleted
         const activeOnly = list.filter(
-          (b) => b.status !== 'archived' && b.status !== 'suspended' && b.status !== 'deleted'
+          (b) => b.status !== 'archived' && b.status !== 'suspended' && b.status !== 'deleted' && b.status !== 'inactive'
         );
 
         // Sort: primary branch first, then alphabetically
@@ -183,44 +235,94 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         const currentActive = get().activeBranch;
         const storedBranchId = getCrossSubdomainItem('orvio_active_branch_id');
 
+        // ── Impl 26: Non-aggressive auto-selection ───────────────────────────────
+        // Priority order:
+        //  1. Previously stored branch ID in cookie (cross-tab persistence)
+        //  2. Currently active branch in Zustand state (navigation continuity)
+        //  3. Auto-select primary/first ONLY when branches was previously empty
+        //     (i.e., first load or after clearBranches()) or when neither above resolves.
+        // We NEVER overwrite a valid active branch on a reload/cache-invalidation cycle.
+        // ────────────────────────────────────────────────────────────────────────
         let targetBranch: Branch | null = null;
+        let forcedSwitchName: string | null = null;
+
+        // 1. Resolve from stored cookie
         if (storedBranchId) {
           targetBranch = sorted.find((b) => (b.id || b._id) === storedBranchId) || null;
         }
 
-        if (!targetBranch && currentActive) {
-          targetBranch = sorted.find((b) => (b.id || b._id) === (currentActive.id || currentActive._id)) || null;
+        // 2. Resolve from Zustand state (takes precedence over cookie when still valid)
+        if (currentActive) {
+          const currentId = currentActive.id || currentActive._id;
+          const stillExists = sorted.find((b) => (b.id || b._id) === currentId) || null;
+          if (stillExists) {
+            // Branch still valid — keep it. This prevents reload from silently switching.
+            targetBranch = stillExists;
+          } else if (targetBranch === null) {
+            // The user's active branch was removed from this org/app combo.
+            // Fall through to auto-select below and surface a toast notification.
+            const primaryOrFirst = sorted.find((b) => b.isPrimary) || sorted[0] || null;
+            if (primaryOrFirst) {
+              forcedSwitchName = primaryOrFirst.name;
+              targetBranch = primaryOrFirst;
+            }
+          }
         }
 
-        // Auto-select primary or first branch if none selected
+        // 3. Auto-select primary/first only when no active branch exists at all
         if (!targetBranch && sorted.length > 0) {
           targetBranch = sorted.find((b) => b.isPrimary) || sorted[0];
         }
 
-        if (targetBranch) {
-          const branchId = targetBranch.id || targetBranch._id;
-          if (branchId) {
-            setCrossSubdomainItem('orvio_active_branch_id', branchId);
+        if (requestSequence === latestVisibleBranchRequest) {
+          if (targetBranch) {
+            const branchId = targetBranch.id || targetBranch._id;
+            if (branchId) {
+              setCrossSubdomainItem('orvio_active_branch_id', branchId);
+            }
+          } else {
+            removeCrossSubdomainItem('orvio_active_branch_id');
           }
-        } else {
-          removeCrossSubdomainItem('orvio_active_branch_id');
         }
 
         lastFetchedBranches.set(cacheKey, Date.now());
         set((state) => ({
-          branches: sorted,
+          branches: requestSequence === latestVisibleBranchRequest ? sorted : state.branches,
           branchesByOrgAndApp: {
             ...state.branchesByOrgAndApp,
             [cacheKey]: sorted,
           },
-          activeBranch: targetBranch,
+          activeBranch: requestSequence === latestVisibleBranchRequest ? targetBranch : state.activeBranch,
           isLoading: false,
+          loadingByOrgAndApp: { ...state.loadingByOrgAndApp, [cacheKey]: false },
+          errorsByOrgAndApp: { ...state.errorsByOrgAndApp, [cacheKey]: null },
         }));
+
+        // Notify after state is committed so toast is visible
+        if (forcedSwitchName && requestSequence === latestVisibleBranchRequest) {
+          // Dynamically import toast to avoid circular deps — BranchStore has no UI dependency
+          import('sonner').then(({ toast }) => {
+            toast.warning(
+              `Active branch was removed. Switched to "${forcedSwitchName}".`,
+              { duration: 5000, id: 'branch-forced-switch' }
+            );
+          }).catch(() => {});
+        }
 
         return sorted;
       } catch (err: any) {
-        removeCrossSubdomainItem('orvio_active_branch_id');
-        set({ activeBranch: null, branches: [], error: err.message || 'Failed to load branches', isLoading: false });
+        const message = getErrorMessage(err, 'Failed to load branches');
+        if (requestSequence === latestVisibleBranchRequest) {
+          removeCrossSubdomainItem('orvio_active_branch_id');
+        }
+        set((state) => ({
+          activeBranch: requestSequence === latestVisibleBranchRequest ? null : state.activeBranch,
+          branches: requestSequence === latestVisibleBranchRequest ? [] : state.branches,
+          error: requestSequence === latestVisibleBranchRequest ? message : state.error,
+          isLoading: false,
+          loadingByOrgAndApp: { ...state.loadingByOrgAndApp, [cacheKey]: false },
+          errorsByOrgAndApp: { ...state.errorsByOrgAndApp, [cacheKey]: message },
+        }));
         return [];
       } finally {
         inFlightBranchFetches.delete(cacheKey);
@@ -261,40 +363,54 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       if (targetId) {
         lastFetchedBranches.delete(`${targetId}::inventory`);
         lastFetchedBranches.delete(`${targetId}::`);
+        api.invalidateByTag(['branches', 'workspaces', `workspaces:${targetId}`]);
       }
 
       set((state) => {
-        const updated = [...state.branches, newBranch].sort((a, b) => {
+        const isSoleBranch = state.branches.length === 0;
+        const normalizedBranch: Branch = isSoleBranch ? { ...newBranch, isPrimary: true } : newBranch;
+
+        const updated = [...state.branches, normalizedBranch].sort((a, b) => {
           if (a.isPrimary && !b.isPrimary) return -1;
           if (!a.isPrimary && b.isPrimary) return 1;
           return a.name.localeCompare(b.name);
         });
 
-        // Set as active branch
-        const branchId = newBranch.id || newBranch._id;
-        if (branchId) {
-          setCrossSubdomainItem('orvio_active_branch_id', branchId);
+        // Decouple active branch from primary branch:
+        // 1. If only 1 branch exists in total, auto-set it as both active and primary
+        // 2. If the user explicitly designated this new branch as primary, or had no active branch, set it as active
+        // 3. Otherwise, keep the user's existing operational activeBranch so adding branches doesn't unexpectedly switch views
+        let nextActiveBranch = state.activeBranch;
+        if (updated.length === 1 || normalizedBranch.isPrimary || !state.activeBranch) {
+          nextActiveBranch = normalizedBranch;
+          const branchId = normalizedBranch.id || normalizedBranch._id;
+          if (branchId) {
+            setCrossSubdomainItem('orvio_active_branch_id', branchId);
+          }
         }
 
         return {
           branches: updated,
-          activeBranch: newBranch,
+          activeBranch: nextActiveBranch,
           isLoading: false,
         };
       });
 
       return newBranch;
     } catch (err: any) {
-      set({ isLoading: false, error: err.message || 'Failed to create branch' });
+      set({ isLoading: false, error: getErrorMessage(err, 'Failed to create branch') });
       throw err;
     }
   },
 
-  updateBranch: async (branchId: string, data: UpdateBranchInput) => {
+  updateBranch: async (branchId: string, data: UpdateBranchInput, organizationId?: string) => {
     set({ isLoading: true, error: null });
     try {
       const currentBranch = get().activeBranch;
       const targetId =
+        organizationId ||
+        (data as any)?.organizationId ||
+        (data as any)?.workspaceId ||
         (currentBranch as any)?.organizationId ||
         currentBranch?.workspaceId ||
         getCrossSubdomainItem('orvio_active_workspace_id');
@@ -318,6 +434,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       if (targetId) {
         lastFetchedBranches.delete(`${targetId}::inventory`);
         lastFetchedBranches.delete(`${targetId}::`);
+        api.invalidateByTag(['branches', 'workspaces', `workspaces:${targetId}`]);
       }
 
       set((state) => {
@@ -350,7 +467,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
       return updated;
     } catch (err: any) {
-      set({ isLoading: false, error: err.message || 'Failed to update branch' });
+      set({ isLoading: false, error: getErrorMessage(err, 'Failed to update branch') });
       throw err;
     }
   },
@@ -375,6 +492,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       if (targetId) {
         lastFetchedBranches.delete(`${targetId}::inventory`);
         lastFetchedBranches.delete(`${targetId}::`);
+        api.invalidateByTag(['branches', 'workspaces', `workspaces:${targetId}`]);
       }
 
       set((state) => {
@@ -398,7 +516,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         };
       });
     } catch (err: any) {
-      set({ isLoading: false, error: err.message || 'Failed to deactivate branch' });
+      set({ isLoading: false, error: getErrorMessage(err, 'Failed to deactivate branch') });
       throw err;
     }
   },
@@ -435,7 +553,16 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   },
 
   clearBranches: () => {
+    latestVisibleBranchRequest++;
     removeCrossSubdomainItem('orvio_active_branch_id');
-    set({ activeBranch: null, branches: [], error: null });
+    removeCrossSubdomainItem('orvio_active_branch_data');
+    set({
+      activeBranch: null,
+      branches: [],
+      branchesByOrgAndApp: {},
+      loadingByOrgAndApp: {},
+      errorsByOrgAndApp: {},
+      error: null,
+    });
   },
 }));

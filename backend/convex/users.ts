@@ -44,6 +44,85 @@ export const getUserByNormalizedEmail = query({
   },
 });
 
+export const getUserByPhone = query({
+  args: { phone: v.string() },
+  handler: async (ctx, args) => {
+    const rawDigits = args.phone.replace(/\D/g, '');
+    const canonical = rawDigits.startsWith('234') && rawDigits.length === 13
+      ? rawDigits
+      : (rawDigits.startsWith('0') && rawDigits.length === 11 ? `234${rawDigits.slice(1)}` : `234${rawDigits}`);
+    const withPlus = `+${canonical}`;
+    const local = canonical.startsWith('234') ? `0${canonical.slice(3)}` : canonical;
+
+    for (const variant of [args.phone, withPlus, canonical, local, rawDigits]) {
+      const match = await ctx.db
+        .query("users")
+        .withIndex("by_phone_normalized", (q) => q.eq("phoneNormalized", variant))
+        .first();
+      if (match && !match.deletedAt) return match;
+    }
+
+    for (const variant of [args.phone, withPlus, canonical, local, rawDigits]) {
+      const match = await ctx.db
+        .query("users")
+        .filter((q) => q.eq(q.field("phone"), variant))
+        .first();
+      if (match && !match.deletedAt) return match;
+    }
+
+    return null;
+  },
+});
+
+export const isPhoneRegistered = query({
+  args: {
+    phoneNormalized: v.string(),
+    excludeUserId: v.optional(v.id("users")),
+  },
+  handler: async (ctx, args) => {
+    const digits = args.phoneNormalized.replace(/\D/g, '');
+    const canonical = digits.startsWith('234') && digits.length === 13
+      ? digits
+      : (digits.startsWith('0') && digits.length === 11 ? `234${digits.slice(1)}` : `234${digits}`);
+    const withPlus = `+${canonical}`;
+    const local = canonical.startsWith('234') ? `0${canonical.slice(3)}` : canonical;
+    const variants = Array.from(new Set([args.phoneNormalized, withPlus, canonical, local, digits])).filter(Boolean);
+
+    for (const variant of variants) {
+      const userMatches = await ctx.db
+        .query("users")
+        .withIndex("by_phone_normalized", (q) => q.eq("phoneNormalized", variant))
+        .collect();
+
+      const taken = userMatches.some(
+        (u) =>
+          !u.deletedAt &&
+          (!args.excludeUserId || u._id !== args.excludeUserId) &&
+          (Boolean(u.phoneVerifiedAt) || u.phoneStatus === "verified" || Boolean(u.phone))
+      );
+      if (taken) return true;
+    }
+
+    for (const variant of variants) {
+      const usersByPhone = await ctx.db
+        .query("users")
+        .filter((q) => q.eq(q.field("phone"), variant))
+        .collect();
+
+      const taken = usersByPhone.some(
+        (u) =>
+          !u.deletedAt &&
+          (!args.excludeUserId || u._id !== args.excludeUserId) &&
+          (Boolean(u.phoneVerifiedAt) || u.phoneStatus === "verified" || Boolean(u.phone))
+      );
+      if (taken) return true;
+    }
+
+    return false;
+  },
+});
+
+
 export const createUser = mutation({
   args: {
     email: v.string(),
@@ -85,6 +164,14 @@ export const createUser = mutation({
     const isVerified = args.emailVerified ?? false;
     const initialStatus = args.status || (isVerified ? "active" : "pending_email_verification");
 
+    let phoneNorm: string | undefined = undefined;
+    if (args.phone) {
+      const digits = args.phone.replace(/\D/g, '');
+      phoneNorm = digits.startsWith('234')
+        ? `+${digits}`
+        : (digits.startsWith('0') ? `+234${digits.slice(1)}` : `+234${digits}`);
+    }
+
     const userId = await ctx.db.insert("users", {
       email: emailNorm,
       emailNormalized: emailNorm,
@@ -96,6 +183,7 @@ export const createUser = mutation({
       timezone: args.timezone,
       locale: args.locale,
       phone: args.phone,
+      phoneNormalized: phoneNorm,
       avatarUrl: args.avatarUrl,
       passwordHash: args.passwordHash,
       emailVerified: isVerified,
@@ -155,6 +243,7 @@ export const setVerificationToken = mutation({
       emailVerificationTokenHash: args.tokenHash,
       emailVerificationTokenUsed: false,
       emailVerificationExpiresAt: args.expiresAt,
+      emailVerificationAttempts: 0,
       ...(args.code ? { emailVerificationCode: args.code, emailVerificationCodeExpiresAt: args.codeExpiresAt } : {}),
       updatedAt: Date.now(),
     });
@@ -210,10 +299,6 @@ export const verifyUserEmail = mutation({
           .query("users")
           .withIndex("by_email", (q) => q.eq("email", emailNorm))
           .first();
-
-        if (!user || user.emailVerificationCode !== cleanCode) {
-          throw new Error("INVALID_CODE");
-        }
       } else {
         user = await ctx.db
           .query("users")
@@ -221,10 +306,14 @@ export const verifyUserEmail = mutation({
             q.eq("emailVerificationCode", cleanCode)
           )
           .first();
+      }
 
-        if (!user) {
-          throw new Error("INVALID_CODE");
-        }
+      if (!user) {
+        throw new Error("INVALID_CODE");
+      }
+
+      if ((user.emailVerificationAttempts || 0) >= 5) {
+        throw new Error("CODE_LOCKED");
       }
 
       if (
@@ -232,6 +321,19 @@ export const verifyUserEmail = mutation({
         user.emailVerificationCodeExpiresAt < Date.now()
       ) {
         throw new Error("CODE_EXPIRED");
+      }
+
+      if (user.emailVerificationCode !== cleanCode) {
+        const newAttempts = (user.emailVerificationAttempts || 0) + 1;
+        await ctx.db.patch(user._id, {
+          emailVerificationAttempts: newAttempts,
+          ...(newAttempts >= 5 ? { emailVerificationCodeExpiresAt: Date.now() } : {}),
+        });
+        if (newAttempts >= 5) {
+          throw new Error("CODE_LOCKED");
+        }
+        const remaining = 5 - newAttempts;
+        throw new Error(`INVALID_CODE:${remaining}`);
       }
     } else {
       throw new Error("TOKEN_OR_CODE_REQUIRED");
@@ -248,6 +350,7 @@ export const verifyUserEmail = mutation({
       emailVerificationExpiresAt: undefined,
       emailVerificationCode: undefined,
       emailVerificationCodeExpiresAt: undefined,
+      emailVerificationAttempts: undefined,
       updatedAt: now,
     });
 
@@ -723,6 +826,18 @@ export const setPasswordResetToken = mutation({
   },
 });
 
+export const getUserByResetTokenHash = query({
+  args: { tokenHash: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("users")
+      .withIndex("by_password_reset_token_hash", (q) =>
+        q.eq("passwordResetTokenHash", args.tokenHash)
+      )
+      .first();
+  },
+});
+
 export const resetPassword = mutation({
   args: {
     token: v.optional(v.string()),
@@ -1112,6 +1227,25 @@ export const confirmEmailChange = mutation({
     });
 
     return { userId: user._id, email: newEmail, oldEmail };
+  },
+});
+
+export const cancelEmailChange = mutation({
+  args: {
+    userId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.userId);
+    if (!user) {
+      throw new Error("USER_NOT_FOUND");
+    }
+    await ctx.db.patch(args.userId, {
+      pendingEmail: undefined,
+      emailChangeToken: undefined,
+      emailChangeExpiresAt: undefined,
+      updatedAt: Date.now(),
+    });
+    return { success: true };
   },
 });
 
@@ -1562,4 +1696,12 @@ export const handleSocialAuth = mutation({
   },
 });
 
-
+export const markWelcomeEmailSent = mutation({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.userId, {
+      welcomeEmailSent: true,
+      updatedAt: Date.now(),
+    });
+  },
+});

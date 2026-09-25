@@ -16,6 +16,7 @@ import { userRoutes } from './routes/users.js';
 import { workspaceRoutes } from './routes/workspaces.js';
 import { inventoryRoutes } from './routes/inventory.js';
 import { productsRoutes } from './routes/products.js';
+import { platformRoutes } from './routes/platform.js';
 import { adminProductsRoutes } from './routes/admin/products.js';
 import { billingRoutes } from './routes/billing.js';
 import { adminBillingRoutes } from './routes/admin/billing.js';
@@ -29,12 +30,17 @@ import { adminOverrideRoutes } from './routes/admin/overrides.js';
 import { adminAnalyticsRoutes } from './routes/admin/analytics.js';
 import { workspaceAnalyticsRoutes } from './routes/workspaceAnalytics.js';
 import { receiptSettingsRoutes } from './routes/receiptSettings.js';
-import { branchTeamRoutes } from './routes/branchTeam.js';
 import { workspaceSettingsRoutes } from './routes/workspaceSettings.js';
 import { branchSettingsRoutes } from './routes/branchSettings.js';
 import { applicationSettingsRoutes } from './routes/applicationSettings.js';
 import { entitlementRoutes } from './routes/entitlements.js';
+import { clientLogsRoutes } from './routes/clientLogs.js';
+import { batchRoutes } from './routes/batch.js';
+import { realtimeRoutes } from './routes/realtime.js';
+import { jobRoutes } from './routes/jobs.js';
 import { webhookRoutes } from './routes/webhooks.js';
+import tenantContextRoute from './routes/tenantContext.js';
+import inventoryStatusRoute from './routes/inventoryStatus.js';
 import { convexPlugin } from './plugins/convex.js';
 import { observabilityPlugin } from './plugins/observability.js';
 import { authPlugin } from './plugins/auth.js';
@@ -88,6 +94,16 @@ export async function buildApp() {
       });
     }
 
+    if (error.statusCode === 403 || error.code === 'CORS_NOT_ALLOWED' || error.message?.includes('not allowed by CORS policy')) {
+      return reply.status(403).send({
+        success: false,
+        error: {
+          code: error.code || 'CORS_NOT_ALLOWED',
+          message: error.message,
+        },
+      });
+    }
+
     const statusCode =
       typeof error.statusCode === 'number' && error.statusCode >= 400 ? error.statusCode : 500;
 
@@ -117,7 +133,10 @@ export async function buildApp() {
         return cb(null, true);
       }
 
-      cb(new Error(`Origin ${origin} not allowed by CORS policy`), false);
+      const corsError: any = new Error(`Origin ${origin} not allowed by CORS policy`);
+      corsError.statusCode = 403;
+      corsError.code = 'CORS_NOT_ALLOWED';
+      cb(corsError, false);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -131,6 +150,7 @@ export async function buildApp() {
       'x-workspace-id',
       'x-branch-id',
     ],
+    exposedHeaders: ['Cache-Invalidate', 'x-cache-invalidate'],
   });
 
   // 2. Cookie Support (Required for cross-subdomain session cookies)
@@ -160,27 +180,125 @@ export async function buildApp() {
     };
   });
 
-  // Redirect legacy /v1/* routes to canonical /api/v1/*
+  // Canonical redirect for legacy /v1/* routes to /api/v1/* (without exceptions)
   fastify.addHook('onRequest', async (request, reply) => {
     const rawUrl = request.raw.url || request.url;
-    if (rawUrl.startsWith('/v1/') && !rawUrl.startsWith('/v1/host-context') && !rawUrl.startsWith('/v1/auth') && !rawUrl.startsWith('/v1/users')) {
+    if (rawUrl && rawUrl.startsWith('/v1/')) {
       const targetUrl = `/api${rawUrl}`;
-      const statusCode = request.method === 'GET' || request.method === 'HEAD' ? 308 : 307;
+      const statusCode = request.method === 'GET' || request.method === 'HEAD' ? 301 : 308;
       return reply.code(statusCode).redirect(targetUrl);
     }
   });
 
-  // API Routes
+  // Enforce Security Headers & Content Security Policy (CSP)
+  fastify.addHook('onSend', async (_request, reply) => {
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+    reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+
+    // Strict-Transport-Security (HSTS) in production
+    const isProd = process.env.NODE_ENV === 'production';
+    if (isProd) {
+      reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+    }
+
+    const connectSrcDirectives = [
+      "'self'",
+      "https://*.convex.cloud",
+      "wss://*.convex.cloud",
+      "https://api.orviohub.com",
+      "https://accounts.orviohub.com",
+      "https://account.orviohub.com",
+      "https://home.orviohub.com",
+      "https://app.orviohub.com",
+      "https://inventory.orviohub.com",
+      "https://billing.orviohub.com",
+      "https://taskmanagement.orviohub.com",
+      "https://api.preprod.orviohub.com",
+      "https://accounts.preprod.orviohub.com",
+      "https://account.preprod.orviohub.com",
+      "https://home.preprod.orviohub.com",
+      "https://app.preprod.orviohub.com",
+      "https://inventory.preprod.orviohub.com",
+      "https://billing.preprod.orviohub.com",
+      "https://taskmanagement.preprod.orviohub.com",
+      "http://*.orviohub.localhost:*",
+      "ws://*.orviohub.localhost:*",
+      "http://localhost:*",
+      "ws://localhost:*",
+      "http://127.0.0.1:*",
+      "ws://127.0.0.1:*",
+    ].join(' ');
+
+    reply.header(
+      'Content-Security-Policy',
+      [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.paystack.co https://checkout.paystack.com https://*.paystack.co https://*.paystack.com https://checkout.flutterwave.com https://*.flutterwave.com",
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://paystack.com https://*.paystack.co https://*.paystack.com",
+        "font-src 'self' https://fonts.gstatic.com data:",
+        "img-src 'self' data: blob: https:",
+        `connect-src ${connectSrcDirectives} https://api.paystack.co https://*.paystack.co https://*.flutterwave.com https://api.flutterwave.com`,
+        "frame-src https://js.paystack.co https://checkout.paystack.com https://*.paystack.co https://*.paystack.com https://checkout.flutterwave.com https://*.flutterwave.com",
+        "frame-ancestors 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+      ].join('; ')
+    );
+  });
+
+  // CSRF Protection Hook: Validate Origin / Referer on state-changing requests when authenticated via cookies
+  fastify.addHook('preHandler', async (request, reply) => {
+    const isMutation = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method);
+    const hasAuthCookie = Boolean(request.cookies?.orvio_session || request.cookies?.session);
+    const authHeader = request.headers.authorization;
+
+    // If using cookie auth for a state mutation (and no explicit Bearer auth), enforce origin/referer verification
+    if (isMutation && hasAuthCookie && !authHeader) {
+      let origin = request.headers.origin;
+      if (!origin && request.headers.referer) {
+        try {
+          origin = new URL(request.headers.referer).origin;
+        } catch {
+          // Invalid Referer format
+        }
+      }
+
+      if (!origin) {
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: 'CSRF_ORIGIN_REQUIRED',
+            message: 'Cross-site request forgery protection: Origin or Referer header required for state mutations.',
+          },
+        });
+      }
+
+      const currentEnv: Environment =
+        (process.env.NODE_ENV as Environment) === 'production' ? 'production' : 'development';
+      if (!isAllowedOrigin(origin, currentEnv) && !getAllowedOrigins(currentEnv).includes(origin)) {
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: 'CSRF_ORIGIN_INVALID',
+            message: 'Cross-site request forgery protection: Invalid request origin.',
+          },
+        });
+      }
+    }
+  });
+
+  // API Routes (Canonical /api/v1 Prefix)
   await fastify.register(healthRoutes);
   await fastify.register(authRoutes, { prefix: '/api/v1/auth' });
-  await fastify.register(authRoutes, { prefix: '/v1/auth' });
   await fastify.register(userRoutes, { prefix: '/api/v1/users' });
-  await fastify.register(userRoutes, { prefix: '/v1/users' });
   await fastify.register(organizationRoutes, { prefix: '/api/v1/organizations' });
   await fastify.register(organizationRoutes, { prefix: '/api/v1/orgs' });
   await fastify.register(workspaceRoutes, { prefix: '/api/v1/workspaces' });
   await fastify.register(inventoryRoutes, { prefix: '/api/v1/inventory' });
   await fastify.register(productsRoutes, { prefix: '/api/v1/products' });
+  await fastify.register(platformRoutes, { prefix: '/api/v1/platform' });
+  await fastify.register(platformRoutes, { prefix: '/v1/platform' });
   await fastify.register(adminProductsRoutes, { prefix: '/api/v1/admin/products' });
   await fastify.register(billingRoutes, { prefix: '/api/v1' });
   await fastify.register(adminBillingRoutes, { prefix: '/api/v1/admin' });
@@ -192,22 +310,25 @@ export async function buildApp() {
   await fastify.register(adminDeletionRoutes, { prefix: '/api/v1/admin' });
   await fastify.register(adminOverrideRoutes, { prefix: '/api/v1/admin' });
   await fastify.register(adminAnalyticsRoutes, { prefix: '/api/v1/admin/analytics' });
-  await fastify.register(adminAnalyticsRoutes, { prefix: '/v1/admin/analytics' });
   await fastify.register(workspaceAnalyticsRoutes, { prefix: '/api/v1' });
-  await fastify.register(workspaceAnalyticsRoutes, { prefix: '/v1' });
   await fastify.register(webhookRoutes, { prefix: '/api/v1' });
   await fastify.register(onboardingRoutes, { prefix: '/api/v1/onboarding' });
+  await fastify.register(onboardingRoutes, { prefix: '/v1/onboarding' });
   await fastify.register(invitationRoutes, { prefix: '/api/v1/invitations' });
   await fastify.register(invitationRoutes, { prefix: '/api/v1/invite' });
   await fastify.register(notificationRoutes, { prefix: '/api/v1/notifications' });
   await fastify.register(locationRoutes, { prefix: '/api/v1/locations' });
   await fastify.register(receiptSettingsRoutes, { prefix: '/api/v1' });
-  await fastify.register(branchTeamRoutes, { prefix: '/api/v1' });
   await fastify.register(workspaceSettingsRoutes, { prefix: '/api/v1' });
   await fastify.register(branchSettingsRoutes, { prefix: '/api/v1' });
   await fastify.register(applicationSettingsRoutes, { prefix: '/api/v1' });
   await fastify.register(entitlementRoutes, { prefix: '/api/v1/entitlements' });
-  await fastify.register(entitlementRoutes, { prefix: '/v1/entitlements' });
+  await fastify.register(clientLogsRoutes, { prefix: '/api/v1' });
+  await fastify.register(batchRoutes, { prefix: '/api/v1' });
+  await fastify.register(realtimeRoutes, { prefix: '/api/v1' });
+  await fastify.register(jobRoutes, { prefix: '/api/v1' });
+  await fastify.register(tenantContextRoute, { prefix: '/api/v1' });
+  await fastify.register(inventoryStatusRoute, { prefix: '/api/v1' });
 
   return fastify;
 }

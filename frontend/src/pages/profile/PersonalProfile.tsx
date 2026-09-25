@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { ProfileLayout } from '@/components/profile/ProfileLayout';
@@ -71,6 +71,45 @@ export const PersonalProfile: React.FC = () => {
     }
   };
 
+  const handlePhoneVerified = async (verifiedPhone: string) => {
+    if (user) {
+      updateUser({
+        ...user,
+        phone: verifiedPhone,
+        phoneVerified: true,
+        phoneVerifiedAt: Date.now(),
+      });
+    }
+    await refreshSession().catch(() => {});
+  };
+
+  const initialValues = useMemo(() => ({
+    firstName: user?.firstName || user?.name?.split(' ')[0] || '',
+    lastName: user?.lastName || user?.name?.split(' ').slice(1).join(' ') || '',
+    displayName: user?.displayName || '',
+    jobTitle: user?.jobTitle || '',
+    department: user?.department || '',
+    phone: user?.phone || '',
+    phoneVerified: Boolean(user?.phoneVerified || user?.phoneVerifiedAt),
+    avatarUrl: user?.avatarUrl || user?.avatar || null,
+    email: user?.email,
+    name: user?.name,
+  }), [
+    user?.id,
+    user?.firstName,
+    user?.lastName,
+    user?.name,
+    user?.displayName,
+    user?.jobTitle,
+    user?.department,
+    user?.phone,
+    user?.phoneVerified,
+    user?.phoneVerifiedAt,
+    user?.avatarUrl,
+    user?.avatar,
+    user?.email,
+  ]);
+
   return (
     <ProfileLayout
       title="Personal Information"
@@ -78,21 +117,11 @@ export const PersonalProfile: React.FC = () => {
       activeSection="personal"
     >
       <PersonalProfileForm
-        initialValues={{
-          firstName: user?.firstName || user?.name?.split(' ')[0] || '',
-          lastName: user?.lastName || user?.name?.split(' ').slice(1).join(' ') || '',
-          displayName: user?.displayName || '',
-          jobTitle: user?.jobTitle || '',
-          department: user?.department || '',
-          phone: user?.phone || '',
-          phoneVerified: user?.phoneVerified || false,
-          avatarUrl: user?.avatarUrl || user?.avatar || null,
-          email: user?.email,
-          name: user?.name,
-        }}
+        initialValues={initialValues}
         onSubmit={handleSubmitProfile}
         onSaveAvatar={handleSaveAvatar}
         onRemoveAvatar={handleRemoveAvatar}
+        onPhoneVerified={handlePhoneVerified}
         isLoading={isUpdating}
       />
     </ProfileLayout>

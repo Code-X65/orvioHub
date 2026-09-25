@@ -6,6 +6,8 @@ import {
   removeCrossSubdomainItem,
 } from '@/lib/cookieStorage';
 import { useBranchStore } from './useBranchStore';
+import { getErrorMessage } from '@/lib/errorMapper';
+import { crossTabSync } from '@/lib/crossTabSync';
 
 export interface WorkspaceItem {
   id: string;
@@ -20,6 +22,11 @@ export interface WorkspaceItem {
   city?: string;
   timezone?: string;
   logoUrl?: string;
+  phone?: string;
+  phoneNormalized?: string;
+  phoneVerified?: boolean;
+  phoneVerifiedAt?: number;
+  phoneStatus?: 'unverified' | 'pending' | 'verified';
   planId?: string;
   planKey?: string;
   planName?: string;
@@ -67,6 +74,7 @@ interface WorkspaceState {
   workspaces: UserWorkspaceEntry[];
   isLoading: boolean;
   isSwitching: boolean;
+  hasFetchedWorkspaces: boolean;
   error: string | null;
 
   fetchWorkspaces: (productKey?: string, search?: string, forceRefresh?: boolean) => Promise<UserWorkspaceEntry[]>;
@@ -78,19 +86,57 @@ interface WorkspaceState {
 }
 
 const ACTIVE_WS_STORAGE_KEY = 'orvio_active_workspace_id';
+const ACTIVE_WS_DATA_KEY = 'orvio_active_workspace_data';
+const ACTIVE_ROLE_KEY = 'orvio_active_role';
+
+function getStoredActiveWorkspace(): WorkspaceItem | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = getCrossSubdomainItem(ACTIVE_WS_DATA_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveStoredActiveWorkspace(ws: WorkspaceItem | null) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (ws) {
+      setCrossSubdomainItem(ACTIVE_WS_DATA_KEY, JSON.stringify({
+        id: ws.id,
+        workspaceId: ws.workspaceId || ws.id,
+        organizationId: ws.organizationId || ws.id,
+        name: ws.name,
+        slug: ws.slug,
+        enabledModules: ws.enabledModules || ['inventory', 'pos'],
+        planKey: ws.planKey || ws.planId || 'standard',
+        status: ws.status || 'active',
+      }));
+    } else {
+      removeCrossSubdomainItem(ACTIVE_WS_DATA_KEY);
+    }
+  } catch {}
+}
+
 let inFlightFetch: Promise<UserWorkspaceEntry[]> | null = null;
 let inFlightKey: string = '';
 let lastFetchedAt: number = 0;
+let workspaceSelectionSequence = 0;
+
+const initialStoredWs = getStoredActiveWorkspace();
+const initialStoredRole = typeof window !== 'undefined' ? (getCrossSubdomainItem(ACTIVE_ROLE_KEY) || 'owner') : null;
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
-  currentWorkspace: null,
-  currentOrganization: null,
-  currentRole: null,
+  currentWorkspace: initialStoredWs,
+  currentOrganization: initialStoredWs,
+  currentRole: initialStoredRole,
   permissions: [],
   products: [],
   workspaces: [],
   isLoading: false,
   isSwitching: false,
+  hasFetchedWorkspaces: false,
   error: null,
 
   invalidateCache: () => {
@@ -101,6 +147,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   fetchWorkspaces: async (productKey?: string, search?: string, forceRefresh?: boolean) => {
     const key = `${productKey || ''}::${search || ''}`;
+    const wasInitialFetch = !get().hasFetchedWorkspaces;
     if (!forceRefresh && inFlightFetch && inFlightKey === key) {
       return inFlightFetch;
     }
@@ -111,8 +158,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       return existing;
     }
 
-    // Only set full isLoading state if we don't have any workspaces in memory yet
-    if (existing.length === 0) {
+    // A persisted active workspace does not mean the organization list has been
+    // fetched. Keep the initial page in a loading state until that request settles.
+    if (forceRefresh || !get().hasFetchedWorkspaces) {
       set({ isLoading: true, error: null });
     }
 
@@ -127,21 +175,55 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         const response = await api.get<{ workspaces?: UserWorkspaceEntry[]; data?: { workspaces: UserWorkspaceEntry[] } }>(`/workspaces${qs}`);
         const workspaces = response.workspaces || response.data?.workspaces || [];
         lastFetchedAt = Date.now();
-        set({ workspaces });
+        set({ workspaces, hasFetchedWorkspaces: true, error: null });
 
-        // If no active workspace is selected, try restoring from cross-subdomain storage or select first
-        if (!get().currentWorkspace && workspaces.length > 0) {
-          const savedId = getCrossSubdomainItem(ACTIVE_WS_STORAGE_KEY);
-          const target = workspaces.find((w) => w.workspace.id === savedId || w.workspace.workspaceId === savedId || w.workspace.organizationId === savedId) || workspaces[0];
+        // Validate persisted context against the server-owned membership list on
+        // cold boot. Persisted workspace/role data is only a display cache.
+        if (wasInitialFetch || !get().currentWorkspace) {
+          const active = get().currentWorkspace;
+          const savedId = getCrossSubdomainItem(ACTIVE_WS_STORAGE_KEY) || active?.id;
+          const target = workspaces.find(
+            (w) =>
+              w.workspace.id === savedId ||
+              w.workspace.workspaceId === savedId ||
+              w.workspace.organizationId === savedId
+          ) || workspaces[0];
+
           if (target) {
-            await get().selectWorkspace(target.workspace.id, productKey).catch(() => {});
+            await get().selectWorkspace(target.workspace.id, productKey).catch(() => {
+              // The membership list is server-validated. Use its non-expanded
+              // context without retaining a stale persisted role.
+              set({
+                currentWorkspace: target.workspace,
+                currentOrganization: target.workspace,
+                currentRole: target.role || 'member',
+                permissions: [],
+                products: target.enabledProducts || [],
+              });
+            });
+          } else {
+            removeCrossSubdomainItem(ACTIVE_WS_STORAGE_KEY);
+            removeCrossSubdomainItem(ACTIVE_WS_DATA_KEY);
+            removeCrossSubdomainItem(ACTIVE_ROLE_KEY);
+            useBranchStore.getState().clearBranches();
+            set({
+              currentWorkspace: null,
+              currentOrganization: null,
+              currentRole: null,
+              permissions: [],
+              products: [],
+            });
           }
         }
 
         set({ isLoading: false });
         return workspaces;
       } catch (err: any) {
-        set({ isLoading: false, error: err.message || 'Failed to fetch workspaces' });
+        set({
+          isLoading: false,
+          hasFetchedWorkspaces: true,
+          error: getErrorMessage(err, 'Failed to fetch workspaces'),
+        });
         return [];
       } finally {
         inFlightFetch = null;
@@ -153,6 +235,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   selectWorkspace: async (workspaceId: string, productKey?: string) => {
+    const selectionSequence = ++workspaceSelectionSequence;
     const isAlreadyActive = get().currentWorkspace?.id === workspaceId || get().currentWorkspace?.workspaceId === workspaceId;
     if (!isAlreadyActive) {
       set({ isSwitching: true, error: null });
@@ -163,6 +246,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         { productKey }
       );
 
+      // A later selection won the race. Do not let this older response replace it.
+      if (selectionSequence !== workspaceSelectionSequence) {
+        return response;
+      }
+
       const context = response;
       setCrossSubdomainItem(ACTIVE_WS_STORAGE_KEY, workspaceId);
 
@@ -172,6 +260,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             workspaceId: context.workspace.workspaceId || context.workspace.id,
           }
         : null;
+
+      saveStoredActiveWorkspace(ws);
+      if (context.membership?.role) {
+        setCrossSubdomainItem(ACTIVE_ROLE_KEY, context.membership.role);
+      }
 
       if (!isAlreadyActive) {
         useBranchStore.getState().clearBranches();
@@ -186,9 +279,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         isSwitching: false,
       });
 
+      crossTabSync.broadcastWorkspaceChange(workspaceId, ws?.name);
+
       return context;
     } catch (err: any) {
-      set({ isSwitching: false, error: err.message || 'Failed to switch workspace' });
+      if (selectionSequence === workspaceSelectionSequence) {
+        set({ isSwitching: false, error: getErrorMessage(err, 'Failed to switch workspace') });
+      }
       throw err;
     }
   },
@@ -203,6 +300,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             workspaceId: context.workspace.workspaceId || context.workspace.id,
           }
         : null;
+      saveStoredActiveWorkspace(ws);
+      if (context.membership?.role) {
+        setCrossSubdomainItem(ACTIVE_ROLE_KEY, context.membership.role);
+      }
       set({
         currentWorkspace: ws,
         currentOrganization: ws,
@@ -225,7 +326,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   clearWorkspace: () => {
+    workspaceSelectionSequence++;
     removeCrossSubdomainItem(ACTIVE_WS_STORAGE_KEY);
+    removeCrossSubdomainItem(ACTIVE_WS_DATA_KEY);
+    removeCrossSubdomainItem(ACTIVE_ROLE_KEY);
     useBranchStore.getState().clearBranches();
     set({
       currentWorkspace: null,
@@ -234,6 +338,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       permissions: [],
       products: [],
       workspaces: [],
+      hasFetchedWorkspaces: false,
     });
   },
 }));

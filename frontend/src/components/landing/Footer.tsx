@@ -1,7 +1,11 @@
 import React from 'react';
 import { OrivioLogo } from '../brand/OrivioLogo';
+import { getCrossSubdomainUrl } from '@/lib/domain';
 
 export const Footer: React.FC = () => {
+  const privacyUrl = getCrossSubdomainUrl('accounts', '/privacy');
+  const termsUrl = getCrossSubdomainUrl('accounts', '/terms');
+
   return (
     <footer className="w-full bg-black border-t border-white/5 pt-16 pb-12 text-xs text-slate-400">
       <div className="max-w-[1440px] mx-auto px-6 sm:px-8 lg:px-12">
@@ -71,9 +75,9 @@ export const Footer: React.FC = () => {
         {/* Bottom Social Media Bar */}
         <div className="pt-8 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-4 text-[11px] text-slate-500">
-            <a href="#privacy" className="hover:text-slate-300 transition">Privacy Policy</a>
+            <a href={privacyUrl} className="hover:text-slate-300 transition">Privacy Policy</a>
             <span>•</span>
-            <a href="#terms" className="hover:text-slate-300 transition">Terms of Service</a>
+            <a href={termsUrl} className="hover:text-slate-300 transition">Terms of Service</a>
             <span>•</span>
             <a href="#security" className="hover:text-slate-300 transition">Security</a>
           </div>

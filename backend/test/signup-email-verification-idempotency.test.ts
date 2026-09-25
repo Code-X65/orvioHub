@@ -886,4 +886,55 @@ describe('Signup & Email Verification Flow with Idempotency Test Suite', () => {
     });
     assert.ok(authEvents.some((e) => e.eventType === AUDIT_EVENTS.AUTH_EMAIL_VERIFIED));
   });
+
+  // Test 26: Check-email endpoint checks available, registered, and pending_verification emails
+  test('26. Check-email endpoint returns availability and status correctly', async () => {
+    // 1. Available email
+    const availRes = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/check-email?email=brandnewuser@example.com',
+    });
+    assert.equal(availRes.statusCode, 200);
+    const availBody = JSON.parse(availRes.payload);
+    assert.equal(availBody.available, true);
+
+    // 2. Pending verification email
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/signup',
+      payload: { email: 'pendingcheck@example.com', firstName: 'Pending', lastName: 'Check', password: 'Password123!' },
+    });
+    const pendingRes = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/check-email?email=pendingcheck@example.com',
+    });
+    assert.equal(pendingRes.statusCode, 200);
+    const pendingBody = JSON.parse(pendingRes.payload);
+    assert.equal(pendingBody.available, false);
+    assert.equal(pendingBody.status, 'pending_verification');
+
+    // 3. Invalid email format
+    const invalidRes = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/check-email?email=notanemail',
+    });
+    assert.equal(invalidRes.statusCode, 400);
+  });
+
+  // Test 27: Idempotency-key endpoint issues UUID
+  test('27. Idempotency-key endpoint returns server-issued UUID', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/idempotency-key',
+    });
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.payload);
+    assert.equal(body.success, true);
+    assert.ok(body.idempotencyKey);
+    assert.match(
+      body.idempotencyKey,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    );
+  });
 });
+

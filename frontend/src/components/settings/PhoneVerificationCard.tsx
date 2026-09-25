@@ -37,6 +37,7 @@ export const PhoneVerificationCard: React.FC = () => {
   const [step, setStep] = useState<'input' | 'otp'>('input');
   const [phoneInput, setPhoneInput] = useState('');
   const [otpCode, setOtpCode] = useState('');
+  const [activePurpose, setActivePurpose] = useState<string>('user_phone_verification');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [attemptsRemaining, setAttemptsRemaining] = useState<number | null>(null);
 
@@ -76,7 +77,8 @@ export const PhoneVerificationCard: React.FC = () => {
   // Start verification challenge
   const handleStartVerification = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!phoneInput.trim()) {
+    const phoneToUse = (phoneInput || contact?.phone || '').trim();
+    if (!phoneToUse) {
       toast.error('Please enter a valid phone number.');
       return;
     }
@@ -86,8 +88,8 @@ export const PhoneVerificationCard: React.FC = () => {
       const res = await api.post<{ success: boolean; message: string; cooldownSeconds?: number }>(
         '/users/me/phone/verification/start',
         {
-          phone: phoneInput.trim(),
-          purpose: 'user_phone_verification',
+          phone: phoneToUse,
+          purpose: activePurpose || 'user_phone_verification',
         }
       );
 
@@ -109,7 +111,7 @@ export const PhoneVerificationCard: React.FC = () => {
     setIsSubmitting(true);
     try {
       await api.post('/users/me/phone/verification/resend', {
-        purpose: 'user_phone_verification',
+        purpose: activePurpose || 'user_phone_verification',
       });
       toast.success('New verification code sent via SMS.');
       setCooldown(60);
@@ -132,20 +134,33 @@ export const PhoneVerificationCard: React.FC = () => {
     try {
       const res = await api.post<{ success: boolean; data: any }>('/users/me/phone/verification/verify', {
         code: otpCode.trim(),
-        purpose: 'user_phone_verification',
+        purpose: activePurpose || 'user_phone_verification',
       });
 
       if (res.success) {
-        toast.success('Phone number verified successfully!');
+        const successMsg =
+          activePurpose === 'sms_mfa_setup'
+            ? 'SMS MFA enabled successfully!'
+            : activePurpose === 'phone_recovery_setup'
+            ? 'SMS Account Recovery enabled successfully!'
+            : 'Phone number verified successfully!';
+        toast.success(successMsg);
         setIsModalOpen(false);
         setStep('input');
         setOtpCode('');
         await fetchContact();
       }
     } catch (err: any) {
-      toast.error(err.message || 'Verification failed.');
-      if (err.data?.attemptsRemaining !== undefined) {
-        setAttemptsRemaining(err.data.attemptsRemaining);
+      const remaining =
+        err.attemptsRemaining ??
+        err.details?.attemptsRemaining ??
+        err.data?.error?.attemptsRemaining ??
+        err.response?.data?.error?.attemptsRemaining;
+      if (typeof remaining === 'number') {
+        setAttemptsRemaining(remaining);
+        toast.error(`Invalid verification code. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`);
+      } else {
+        toast.error(err.message || 'Verification failed.');
       }
     } finally {
       setIsSubmitting(false);
@@ -171,21 +186,55 @@ export const PhoneVerificationCard: React.FC = () => {
     }
   };
 
-  // Toggle Recovery or MFA setting
-  const handleToggleSecuritySetting = async (field: 'phoneUsedForRecovery' | 'phoneUsedForMfa', value: boolean) => {
+  // Toggle Recovery or MFA setting with verification challenge
+  const handleToggleSecuritySetting = async (field: 'phoneUsedForRecovery' | 'phoneUsedForMfa', enable: boolean) => {
     if (!contact || contact.phoneStatus !== 'verified') {
       toast.error('Phone number must be verified before enabling this security feature.');
       return;
     }
 
+    if (!enable) {
+      // Disabling security feature
+      try {
+        await api.patch('/users/me/contact', {
+          [field]: false,
+        });
+        setContact({ ...contact, [field]: false });
+        toast.success(`${field === 'phoneUsedForRecovery' ? 'Account recovery' : 'SMS MFA'} disabled.`);
+      } catch (err: any) {
+        toast.error(err.message || 'Failed to update security setting.');
+      }
+      return;
+    }
+
+    // Enabling security feature: trigger dedicated OTP verification challenge
+    const targetPurpose = field === 'phoneUsedForRecovery' ? 'phone_recovery_setup' : 'sms_mfa_setup';
+    setActivePurpose(targetPurpose);
+    setPhoneInput(contact.phone || '');
+    setIsSubmitting(true);
+
     try {
-      await api.patch('/users/me/contact', {
-        [field]: value,
-      });
-      setContact({ ...contact, [field]: value });
-      toast.success(`${field === 'phoneUsedForRecovery' ? 'Account recovery' : 'SMS MFA'} setting updated.`);
+      const res = await api.post<{ success: boolean; message: string; cooldownSeconds?: number }>(
+        '/users/me/phone/verification/start',
+        {
+          phone: contact.phone,
+          purpose: targetPurpose,
+        }
+      );
+
+      toast.success(
+        res.message ||
+          `Verification code sent to confirm ${field === 'phoneUsedForRecovery' ? 'SMS Account Recovery' : 'SMS MFA'}.`
+      );
+      setStep('otp');
+      setOtpCode('');
+      setCooldown(res.cooldownSeconds || 60);
+      setAttemptsRemaining(5);
+      setIsModalOpen(true);
     } catch (err: any) {
-      toast.error(err.message || 'Failed to update security setting.');
+      toast.error(err.message || 'Failed to initiate security verification.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -409,12 +458,22 @@ export const PhoneVerificationCard: React.FC = () => {
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-slate-100">
-                    {step === 'input' ? 'Verify Phone Number' : 'Enter Verification Code'}
+                    {step === 'input'
+                      ? 'Verify Phone Number'
+                      : activePurpose === 'sms_mfa_setup'
+                      ? 'Confirm SMS Two-Factor Setup'
+                      : activePurpose === 'phone_recovery_setup'
+                      ? 'Confirm SMS Account Recovery'
+                      : 'Enter Verification Code'}
                   </h3>
                   <p className="text-[11px] text-slate-400">
                     {step === 'input'
                       ? 'We will send a 6-digit verification code via SMS.'
-                      : `Code sent to ${phoneInput}`}
+                      : activePurpose === 'sms_mfa_setup'
+                      ? `Enter the 6-digit SMS code sent to ${phoneInput || contact?.phone} to activate SMS MFA.`
+                      : activePurpose === 'phone_recovery_setup'
+                      ? `Enter the 6-digit SMS code sent to ${phoneInput || contact?.phone} to activate Account Recovery.`
+                      : `Code sent to ${phoneInput || contact?.phone}`}
                   </p>
                 </div>
               </div>

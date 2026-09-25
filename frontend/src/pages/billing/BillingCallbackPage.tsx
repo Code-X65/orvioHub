@@ -78,8 +78,18 @@ export const BillingCallbackPage: React.FC = () => {
           const verifiedPlan = data.data?.planKey || data.planKey || 'standard';
           setPlanKey(verifiedPlan);
 
-          // Force refresh workspace store cache with updated subscription
+          // Force refresh workspace store cache with updated subscription and clear pending keys
           try {
+            const orgId = searchParams.get('orgId') || searchParams.get('org') || searchParams.get('organizationId');
+            if (orgId) {
+              localStorage.removeItem(`orvio_pending_payment_${orgId}`);
+            }
+            // Clear any active workspace pending payment keys in localStorage
+            Object.keys(localStorage).forEach((key) => {
+              if (key.startsWith('orvio_pending_payment_')) {
+                localStorage.removeItem(key);
+              }
+            });
             const { invalidateCache, fetchWorkspaces } = useWorkspaceStore.getState();
             invalidateCache();
             await fetchWorkspaces(undefined, undefined, true).catch(() => {});

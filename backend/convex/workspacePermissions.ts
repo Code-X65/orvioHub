@@ -305,77 +305,8 @@ export const resolveWorkspacePermissions = query({
       }
     }
 
-    // 2. Application membership check
-    let applicationAccess: any = null;
-    if (args.applicationKey) {
-      const appKey = args.applicationKey.toLowerCase();
-      const appMem = await ctx.db
-        .query("applicationMemberships")
-        .withIndex("by_workspace_user_app", (q: any) =>
-          q.eq("workspaceId", wsId || args.workspaceId).eq("userId", args.userId).eq("applicationKey", appKey)
-        )
-        .first();
-
-      if (appMem && appMem.status === "active") {
-        const appRole = (appMem.role || "member").toLowerCase();
-        const appPerms = appMem.permissions && appMem.permissions.length > 0
-          ? appMem.permissions
-          : getApplicationPermissionsForRole(appKey, appRole);
-
-        for (const p of appPerms) {
-          resolvedPermissions.add(p);
-        }
-
-        applicationAccess = {
-          applicationKey: appKey,
-          role: appRole,
-          status: appMem.status,
-          branchIds: appMem.branchIds || [],
-          permissions: appPerms,
-        };
-      } else if (wsRole === "owner") {
-        applicationAccess = {
-          applicationKey: appKey,
-          role: "admin",
-          status: "active",
-          branchIds: [],
-          permissions: getApplicationPermissionsForRole(appKey, "admin"),
-        };
-      }
-    }
-
-    // 3. Branch assignment check
-    let branchAccess: any = null;
-    if (args.branchId) {
-      const branchId = args.branchId;
-      const bAssignment = await ctx.db
-        .query("branchAssignments")
-        .withIndex("by_workspace_user_branch", (q: any) =>
-          q.eq("workspaceId", wsId || args.workspaceId).eq("userId", args.userId).eq("branchId", branchId)
-        )
-        .first();
-
-      if (bAssignment && (!bAssignment.status || bAssignment.status === "active")) {
-        const bRole = (bAssignment.role || "staff").toLowerCase();
-        const bPerms = getBranchPermissionsForRole(bRole);
-        for (const p of bPerms) {
-          resolvedPermissions.add(p);
-        }
-        branchAccess = {
-          branchId,
-          role: bRole,
-          status: bAssignment.status || "active",
-          permissions: bPerms,
-        };
-      } else if (wsRole === "owner") {
-        branchAccess = {
-          branchId,
-          role: "manager",
-          status: "active",
-          permissions: getBranchPermissionsForRole("manager"),
-        };
-      }
-    }
+    const applicationAccess = args.applicationKey ? { applicationKey: args.applicationKey.toLowerCase(), role: wsRole, status: "active", permissions: Array.from(resolvedPermissions) } : null;
+    const branchAccess = args.branchId ? { branchId: args.branchId, role: wsRole, status: "active", permissions: Array.from(resolvedPermissions) } : null;
 
     return {
       hasAccess: true,
@@ -436,49 +367,6 @@ export const checkUserPermission = query({
     const wsPerms = getWorkspacePermissionsForRole(wsRole);
     if (wsPerms.includes(args.permission)) {
       return { allowed: true, role: wsRole, tier: "workspace" };
-    }
-
-    if (args.applicationKey) {
-      const appKey = args.applicationKey.toLowerCase();
-      const appMem = await ctx.db
-        .query("applicationMemberships")
-        .withIndex("by_workspace_user_app", (q: any) =>
-          q.eq("workspaceId", wsId || args.workspaceId).eq("userId", args.userId).eq("applicationKey", appKey)
-        )
-        .first();
-
-      if (appMem && appMem.status === "active") {
-        const appRole = (appMem.role || "member").toLowerCase();
-        const appPerms = appMem.permissions && appMem.permissions.length > 0
-          ? appMem.permissions
-          : getApplicationPermissionsForRole(appKey, appRole);
-
-        if (appPerms.includes(args.permission)) {
-          if (args.branchId && appMem.branchIds && appMem.branchIds.length > 0) {
-            if (!appMem.branchIds.includes(args.branchId)) {
-              return { allowed: false, reason: "BRANCH_NOT_SCOPED" };
-            }
-          }
-          return { allowed: true, role: appRole, tier: "application" };
-        }
-      }
-    }
-
-    if (args.branchId) {
-      const bAssignment = await ctx.db
-        .query("branchAssignments")
-        .withIndex("by_workspace_user_branch", (q: any) =>
-          q.eq("workspaceId", wsId || args.workspaceId).eq("userId", args.userId).eq("branchId", args.branchId)
-        )
-        .first();
-
-      if (bAssignment && (!bAssignment.status || bAssignment.status === "active")) {
-        const bRole = (bAssignment.role || "staff").toLowerCase();
-        const bPerms = getBranchPermissionsForRole(bRole);
-        if (bPerms.includes(args.permission)) {
-          return { allowed: true, role: bRole, tier: "branch" };
-        }
-      }
     }
 
     return { allowed: false, reason: "PERMISSION_NOT_GRANTED" };

@@ -1,22 +1,10 @@
 import { mutation, query } from "./_generated/server.js";
 import { v } from "convex/values";
+import { requireAdminPermission } from "./adminAuth.js";
 
 // Helper to authenticate admin
-async function verifyAdminSession(ctx: any, sessionToken?: string) {
-  if (!sessionToken) throw new Error("Admin authentication required.");
-  const session = await ctx.db
-    .query("adminSessions")
-    .withIndex("by_token", (q: any) => q.eq("sessionToken", sessionToken))
-    .first();
-
-  if (!session || session.expiresAt < Date.now()) {
-    throw new Error("Invalid or expired session.");
-  }
-  const admin = await ctx.db.get(session.adminId);
-  if (!admin || !admin.isActive) {
-    throw new Error("Unauthorized admin account.");
-  }
-  return { admin, session };
+async function verifyAdminSession(ctx: any, sessionToken?: string, permission = "admin.onboarding.view") {
+  return requireAdminPermission(ctx, sessionToken, permission);
 }
 
 async function logAudit(ctx: any, adminId: any, action: string, resourceId?: string, details?: any) {
@@ -188,7 +176,7 @@ export const resetUserOnboarding = mutation({
     targetStep: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.onboarding.manage");
 
     const flow = await ctx.db.get(args.flowId);
     if (!flow) throw new Error("Onboarding flow not found.");

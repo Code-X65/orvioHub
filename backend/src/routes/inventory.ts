@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { dataService } from '../services/dataService.js';
 import { entitlementService } from '../services/entitlementService.js';
 import { ERROR_CODES, AUDIT_EVENTS } from '../config/constants.js';
+import { attachAutomaticCacheInvalidation } from '../utils/cacheHeaders.js';
 
 const createProductSchema = z.object({
   sku: z.string().min(1, 'SKU is required'),
@@ -28,10 +29,11 @@ const recordSaleSchema = z.object({
       quantity: z.number().int().positive(),
     })
   ).min(1, 'At least one item is required for a sale'),
-  paymentMethod: z.enum(['CASH', 'CARD', 'TRANSFER', 'SPLIT']).default('CASH'),
+  paymentMethod: z.enum(['CASH', 'CARD', 'TRANSFER', 'SPLIT', 'USSD', 'CREDIT']).default('CASH'),
   customerName: z.string().optional(),
   customerPhone: z.string().optional(),
   notes: z.string().optional(),
+  metadata: z.record(z.any()).optional(),
 });
 
 export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
@@ -39,6 +41,7 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.addHook('preHandler', fastify.authenticate);
   fastify.addHook('preHandler', fastify.requireWorkspaceMembership);
   fastify.addHook('preHandler', fastify.requireProductEntitlement('inventory'));
+  attachAutomaticCacheInvalidation(fastify, 'inventory');
 
   // GET /api/v1/inventory/products
   fastify.get(
@@ -361,10 +364,11 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
                 },
               },
             },
-            paymentMethod: { type: 'string', enum: ['CASH', 'CARD', 'TRANSFER', 'SPLIT'] },
+            paymentMethod: { type: 'string', enum: ['CASH', 'CARD', 'TRANSFER', 'SPLIT', 'POS', 'USSD', 'CREDIT'] },
             customerName: { type: 'string' },
             customerPhone: { type: 'string' },
             notes: { type: 'string' },
+            metadata: { type: 'object' },
           },
         },
       },
@@ -390,14 +394,18 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
           customerName: parsed.data.customerName,
           customerPhone: parsed.data.customerPhone,
           notes: parsed.data.notes,
+          metadata: parsed.data.metadata,
           cashierUserId: request.user.id,
         })) as any;
+
+        const isTutorial = Boolean(parsed.data.metadata?.tutorial);
 
         await dataService.logAudit({
           actorUserId: request.user.id,
           workspaceId: request.workspace!.id,
           productKey: 'inventory',
-          eventType: 'inventory.sale_recorded',
+          eventType: isTutorial ? 'onboarding.first_sale_completed' : 'inventory.sale_recorded',
+          entityType: 'sale',
           resource: 'inventorySales',
           entityId: sale.saleId,
           ipAddress: request.ip,
@@ -406,6 +414,9 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
             saleNumber: sale.saleNumber,
             totalAmount: sale.totalAmount,
             itemCount: sale.itemCount,
+            paymentMethod: parsed.data.paymentMethod,
+            tutorial: isTutorial,
+            ...(parsed.data.metadata || {}),
           },
         });
 

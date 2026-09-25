@@ -9,6 +9,137 @@ const MAX_LOGIN_ATTEMPTS_PER_IP = 5;
 const MAX_FAILED_ATTEMPTS_PER_ACCOUNT = 10;
 const ACCOUNT_LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 
+/**
+ * Canonical permission identifiers used by both the Fastify administration API
+ * and the Convex administration portal. Keep roles intentionally narrow; only
+ * platform owners receive the wildcard grant.
+ */
+export type AdminPermission = string;
+
+const ADMIN_ROLE_PERMISSIONS: Record<string, readonly string[]> = {
+  platform_owner: ["*"],
+  superadmin: ["*"],
+  super_admin: ["*"],
+  platform_admin: [
+    "admin.dashboard.view",
+    "admin.organizations.view",
+    "admin.applications.manage",
+    "admin.organizations.suspend",
+    "admin.organizations.restore",
+    "admin.organizations.archive",
+    "admin.users.view",
+    "admin.users.update",
+    "admin.users.suspend",
+    "admin.users.restore",
+    "admin.users.delete",
+    "admin.users.search",
+    "admin.users.view_onboarding",
+    "admin.users.view_security_summary",
+    "admin.users.view_memberships",
+    "admin.users.view_billing",
+    "admin.users.view_audit_logs",
+    "admin.users.manage_notes",
+    "admin.members.view",
+    "admin.members.manage_access",
+    "admin.applications.view",
+    "admin.branches.view",
+    "admin.onboarding.manage",
+    "admin.onboarding.view",
+    "admin.trial_extensions.create",
+    "admin.manual_plan_grants.create",
+    "admin.branches.manage",
+    "admin.billing.view",
+    "admin.billing.reconcile",
+    "admin.billing.manage",
+    "admin.entitlements.view",
+    "admin.entitlements.recalculate",
+    "admin.entitlements.override",
+    "admin.overrides.view",
+    "admin.overrides.create",
+    "admin.overrides.update",
+    "admin.overrides.revoke",
+    "admin.overrides.approve",
+    "admin.billing_corrections.create",
+    "admin.entitlement_overrides.create",
+    "admin.entitlement_reconciliation.run",
+    "admin.override_history.view",
+    "admin.audit.view",
+    "admin.support_notes.view",
+    "admin.support_notes.create",
+    "admin.exports.request",
+    "admin.analytics.view",
+    "admin.revenue.view",
+    "admin.analytics.export",
+    "admin.analytics.rebuild",
+  ],
+  support_admin: [
+    "admin.dashboard.view", "admin.organizations.view", "admin.users.view",
+    "admin.members.view", "admin.applications.view", "admin.branches.view",
+    "admin.onboarding.view", "admin.onboarding.manage", "admin.entitlements.view",
+    "admin.overrides.view", "admin.override_history.view", "admin.trial_extensions.create",
+    "admin.support_notes.view", "admin.support_notes.create", "admin.audit.view",
+    "admin.analytics.view", "admin.users.search", "admin.users.view_onboarding",
+    "admin.users.view_security_summary", "admin.users.view_memberships",
+    "admin.users.view_billing", "admin.users.view_audit_logs", "admin.users.manage_notes",
+  ],
+  billing_admin: [
+    "admin.dashboard.view", "admin.organizations.view", "admin.billing.view",
+    "admin.billing.reconcile", "admin.billing.manage", "admin.entitlements.view",
+    "admin.entitlements.recalculate", "admin.entitlements.override", "admin.overrides.view",
+    "admin.overrides.create", "admin.overrides.update", "admin.overrides.revoke",
+    "admin.overrides.approve", "admin.trial_extensions.create", "admin.manual_plan_grants.create",
+    "admin.billing_corrections.create", "admin.entitlement_overrides.create",
+    "admin.entitlement_reconciliation.run", "admin.override_history.view",
+    "admin.support_notes.view", "admin.support_notes.create", "admin.audit.view",
+    "admin.analytics.view", "admin.revenue.view", "admin.analytics.export",
+    "admin.analytics.rebuild",
+  ],
+  read_only_admin: [
+    "admin.dashboard.view", "admin.organizations.view", "admin.users.view",
+    "admin.members.view", "admin.applications.view", "admin.branches.view",
+    "admin.billing.view", "admin.entitlements.view", "admin.overrides.view",
+    "admin.override_history.view", "admin.onboarding.view", "admin.audit.view",
+    "admin.support_notes.view", "admin.analytics.view", "admin.revenue.view",
+    "admin.users.search", "admin.users.view_onboarding", "admin.users.view_security_summary",
+    "admin.users.view_memberships", "admin.users.view_billing", "admin.users.view_audit_logs",
+  ],
+};
+
+/** Returns whether an active admin role is allowed to perform a named action. */
+export function hasAdminPermission(role: string | undefined, permission: AdminPermission): boolean {
+  const granted = ADMIN_ROLE_PERMISSIONS[String(role || "").toLowerCase()] || [];
+  return granted.includes("*") || granted.includes(permission);
+}
+
+/** Canonical server-side authorization gate for Convex administration writes. */
+export async function requireAdminPermission(
+  ctx: any,
+  sessionToken: string | undefined,
+  permission: AdminPermission
+) {
+  if (!sessionToken) throw new Error("Admin authentication required.");
+
+  const now = Date.now();
+  const session = await ctx.db
+    .query("adminSessions")
+    .withIndex("by_token", (q: any) => q.eq("sessionToken", sessionToken))
+    .first();
+
+  if (!session || session.expiresAt < now) throw new Error("Invalid or expired admin session.");
+  if (session.lastActiveAt && now - session.lastActiveAt > INACTIVITY_TIMEOUT_MS) {
+    throw new Error("Admin session has expired due to inactivity.");
+  }
+
+  const admin = await ctx.db.get(session.adminId);
+  if (!admin || !admin.isActive) throw new Error("Unauthorized admin account.");
+
+  if (!hasAdminPermission(admin.role, permission)) {
+    throw new Error(`ADMIN_PERMISSION_DENIED: ${permission}`);
+  }
+
+  return { admin, session };
+}
+
 // Password validation helper
 export function validatePassword(password: string): { isValid: boolean; error?: string } {
   if (!password || password.length < 12) {
@@ -790,5 +921,3 @@ export async function verifyAndConsumeStepUpToken(
   await ctx.db.delete(tokenDoc._id);
   return true;
 }
-
-

@@ -5,16 +5,94 @@ export interface SendSmsResult {
   messageId?: string;
   provider?: 'termii' | 'twilio' | 'dev_mock';
   error?: string;
+  message?: string;
+}
+
+export interface SendSmsOptions {
+  to: string;
+  message: string;
+  from?: string;
+  channel?: 'generic' | 'dnd' | 'whatsapp';
+  media?: {
+    url: string;
+    caption: string;
+  };
+}
+
+export interface TermiiSendSmsResponse {
+  message_id?: string;
+  message?: string;
+  balance?: number;
+  user?: string;
+  code?: string;
 }
 
 export class SmsService {
+  /**
+   * Helper to format international phone number for Termii/SMS providers (e.g. +234... or 234...).
+   */
+  public formatPhoneNumber(phone: string): string {
+    const cleaned = phone.replace(/[^\d+]/g, '');
+    if (cleaned.startsWith('+')) {
+      return cleaned.substring(1);
+    }
+    return cleaned;
+  }
+
+  /**
+   * Send a general SMS or transactional message via Termii (with dev mock simulation).
+   */
+  public async sendSms(options: SendSmsOptions): Promise<SendSmsResult> {
+    const apiKey = env.TERMII_API_KEY || process.env.TERMII_API_KEY;
+    if (!apiKey) {
+      if (env.NODE_ENV !== 'production' || process.env.NODE_ENV !== 'production') {
+        console.log(`[SMS DEV SIMULATION] To: ${options.to}, Message: "${options.message}"`);
+        return { success: true, messageId: 'simulated-dev-sms-id', message: 'Successfully sent (simulated)', provider: 'dev_mock' };
+      }
+      throw new Error('TERMII_API_KEY is not configured.');
+    }
+
+    const payload = {
+      to: options.to,
+      from: options.from || env.TERMII_SENDER_ID || 'Orviohub',
+      sms: options.message,
+      type: 'plain',
+      channel: options.channel || 'generic',
+      api_key: apiKey,
+      ...(options.media ? { media: options.media } : {}),
+    };
+
+    const baseUrl = (env.TERMII_BASE_URL || 'https://api.termii.com').replace(/\/+$/, '');
+    const response = await fetch(`${baseUrl}/api/sms/send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const result = (await response.json()) as TermiiSendSmsResponse;
+
+    if (!response.ok || (result.code && result.code !== 'ok' && !result.message_id)) {
+      throw new Error(result.message || `Termii SMS delivery failed with status ${response.status}`);
+    }
+
+    return {
+      success: true,
+      messageId: result.message_id,
+      message: result.message,
+      provider: 'termii',
+    };
+  }
+
   /**
    * Sends a 6-digit verification OTP code via SMS.
    * Supports Termii (Primary for Nigeria) and Twilio (Fallback/Global), with Dev Mock fallback.
    */
   public async sendOtp(phone: string, code: string): Promise<SendSmsResult> {
     const message = `Your Orviohub verification code is: ${code}. Valid for 10 minutes. Do not share this code with anyone.`;
-    const termiiApiKey = process.env.TERMII_API_KEY;
+    const termiiApiKey = process.env.TERMII_API_KEY || env.TERMII_API_KEY;
     const twilioSid = process.env.TWILIO_ACCOUNT_SID;
     const twilioToken = process.env.TWILIO_AUTH_TOKEN;
     const twilioPhone = process.env.TWILIO_PHONE_NUMBER;
@@ -32,12 +110,13 @@ export class SmsService {
     // 1. Termii SMS (Primary Nigerian Provider)
     if (termiiApiKey) {
       try {
-        const response = await fetch('https://api.termii.com/api/sms/send', {
+        const baseUrl = (env.TERMII_BASE_URL || 'https://api.termii.com').replace(/\/+$/, '');
+        const response = await fetch(`${baseUrl}/api/sms/send`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             to: phone,
-            from: 'Orviohub',
+            from: env.TERMII_SENDER_ID || 'Orviohub',
             sms: message,
             type: 'plain',
             channel: 'generic',

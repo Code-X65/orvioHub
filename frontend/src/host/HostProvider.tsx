@@ -20,7 +20,7 @@ export const HostProvider: React.FC<HostProviderProps> = ({ initialValue, value,
     } catch {
       return initialValue || { environment: "development", application: "home", hostname: window.location.host };
     }
-  }, [value, initialValue, location.pathname]);
+  }, [value, initialValue, window.location.host]);
 
   return (
     <HostReactContext.Provider value={currentHost}>

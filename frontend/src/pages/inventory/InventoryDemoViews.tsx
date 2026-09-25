@@ -1,35 +1,27 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useBranchStore } from '@/stores/useBranchStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
-  Package,
-  Receipt,
-  Warehouse,
-  FileBarChart2,
   Plus,
   Search,
   SlidersHorizontal,
-  ArrowDownRight,
-  ArrowUpRight,
   TrendingUp,
-  DollarSign,
-  ShoppingCart,
   Barcode,
-  Sparkles,
+  ShoppingCart,
   ArrowRightLeft,
-  CheckCircle2,
-  Clock,
   Download,
-  Filter,
+  Sparkles,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { FirstSaleTutorialModal } from '@/surfaces/inventory/components/FirstSaleTutorialModal';
 
 export const ProductsCatalogPage: React.FC = () => {
   const { activeBranch } = useBranchStore();
   const [searchTerm, setSearchTerm] = useState('');
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [, setIsAddModalOpen] = useState(false);
 
   const mockProducts = [
     { id: '1', sku: 'BV-7740', name: 'Premium Arabica Coffee Beans (1kg)', category: 'Beverages', price: 14500, stock: 48, minStock: 10 },
@@ -44,13 +36,13 @@ export const ProductsCatalogPage: React.FC = () => {
   );
 
   return (
-    <div className="p-4 sm:p-8 max-w-7xl mx-auto space-y-6">
+    <div className="p-3 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">Products & Catalog</h1>
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 uppercase">
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-sm bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 uppercase">
               Demo Preview
             </span>
           </div>
@@ -64,7 +56,7 @@ export const ProductsCatalogPage: React.FC = () => {
             setIsAddModalOpen(true);
             toast.info('Interactive demo: In production, this opens the full product provisioning form.');
           }}
-          className="bg-gradient-to-r from-[#8a4b77] to-[#714b67] hover:from-[#9c5587] hover:to-[#815575] text-white text-xs font-semibold cursor-pointer shadow-lg shadow-[#714b67]/20"
+          className="rounded-sm bg-gradient-to-r from-[#8a4b77] to-[#714b67] hover:from-[#9c5587] hover:to-[#815575] text-white text-xs font-semibold cursor-pointer shadow-lg shadow-[#714b67]/20 w-full sm:w-auto"
         >
           <Plus className="w-4 h-4 mr-1.5" />
           Add Product SKU
@@ -72,52 +64,52 @@ export const ProductsCatalogPage: React.FC = () => {
       </div>
 
       {/* Metrics Row */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/5 space-y-1">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <div className="p-4 rounded-sm bg-white/[0.03] border border-white/5 space-y-1">
           <span className="text-[11px] text-slate-400 font-medium">Total Products</span>
           <p className="text-xl font-bold text-white">482 SKUs</p>
         </div>
-        <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/5 space-y-1">
+        <div className="p-4 rounded-sm bg-white/[0.03] border border-white/5 space-y-1">
           <span className="text-[11px] text-slate-400 font-medium">In Stock Value</span>
           <p className="text-xl font-bold text-emerald-400">₦4,850,200</p>
         </div>
-        <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/5 space-y-1">
+        <div className="p-4 rounded-sm bg-white/[0.03] border border-white/5 space-y-1">
           <span className="text-[11px] text-slate-400 font-medium">Low Stock Alerts</span>
           <p className="text-xl font-bold text-amber-400">14 Items</p>
         </div>
-        <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/5 space-y-1">
+        <div className="p-4 rounded-sm bg-white/[0.03] border border-white/5 space-y-1">
           <span className="text-[11px] text-slate-400 font-medium">Active Categories</span>
           <p className="text-xl font-bold text-indigo-300">12 Categories</p>
         </div>
       </div>
 
       {/* Table & Search Bar */}
-      <div className="p-5 rounded-2xl bg-white/[0.02] border border-white/10 space-y-4">
+      <div className="p-4 sm:p-5 rounded-sm bg-white/[0.02] border border-white/10 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="relative flex-1 max-w-md">
+          <div className="relative flex-1 max-w-full sm:max-w-md">
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <Input
               type="text"
               placeholder="Search products by name or SKU..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-9 bg-black/40 border-white/10 text-xs text-white"
+              className="pl-9 bg-black/40 border-white/10 text-xs text-white rounded-sm w-full"
             />
           </div>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" className="border-white/10 text-xs text-slate-300">
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <Button variant="outline" size="sm" className="rounded-sm border-white/10 text-xs text-slate-300 flex-1 sm:flex-none">
               <SlidersHorizontal className="w-3.5 h-3.5 mr-1.5 text-slate-400" />
-              Filter Category
+              Filter
             </Button>
-            <Button variant="outline" size="sm" className="border-white/10 text-xs text-slate-300">
+            <Button variant="outline" size="sm" className="rounded-sm border-white/10 text-xs text-slate-300 flex-1 sm:flex-none">
               <Download className="w-3.5 h-3.5 mr-1.5 text-slate-400" />
               Export
             </Button>
           </div>
         </div>
 
-        <div className="overflow-x-auto rounded-xl border border-white/5">
-          <table className="w-full text-left text-xs text-slate-300">
+        <div className="overflow-x-auto rounded-sm border border-white/5">
+          <table className="w-full text-left text-xs text-slate-300 min-w-[620px]">
             <thead className="bg-white/[0.04] text-[10px] font-bold uppercase text-slate-400 border-b border-white/5">
               <tr>
                 <th className="py-3 px-4">SKU / Code</th>
@@ -144,7 +136,7 @@ export const ProductsCatalogPage: React.FC = () => {
                     )}
                   </td>
                   <td className="py-3 px-4 text-right">
-                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-bold">
+                    <span className="px-2 py-0.5 rounded-sm bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-bold">
                       Active
                     </span>
                   </td>
@@ -160,14 +152,22 @@ export const ProductsCatalogPage: React.FC = () => {
 
 export const SalesPOSPage: React.FC = () => {
   const { activeBranch } = useBranchStore();
+  const [searchParams] = useSearchParams();
+  const [isTutorialOpen, setIsTutorialOpen] = useState(false);
+
+  useEffect(() => {
+    if (searchParams.get('tutorial') === 'true') {
+      setIsTutorialOpen(true);
+    }
+  }, [searchParams]);
 
   return (
-    <div className="p-4 sm:p-8 max-w-7xl mx-auto space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="p-3 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">Sales & Point of Sale</h1>
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 uppercase">
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-sm bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 uppercase">
               Demo Preview
             </span>
           </div>
@@ -175,26 +175,36 @@ export const SalesPOSPage: React.FC = () => {
             Fast checkout register & real-time cashier ledger for <strong>{activeBranch?.name || 'Active Branch'}</strong>.
           </p>
         </div>
+
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={() => setIsTutorialOpen(true)}
+            className="rounded-sm bg-gradient-to-r from-amber-500/20 to-orange-500/20 border border-amber-500/40 hover:bg-amber-500/30 text-amber-200 text-xs font-semibold cursor-pointer shadow-lg shadow-amber-500/10"
+          >
+            <Sparkles className="w-3.5 h-3.5 mr-1.5 text-amber-400" />
+            First Sale Walkthrough
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-4">
-          <div className="p-5 rounded-2xl bg-white/[0.02] border border-white/10 space-y-4">
+          <div className="p-4 sm:p-5 rounded-sm bg-white/[0.02] border border-white/10 space-y-4">
             <h2 className="text-sm font-bold text-white flex items-center gap-2">
               <Barcode className="w-4 h-4 text-[#e296cb]" />
               Scan or Search Items
             </h2>
             <Input
               placeholder="Scan barcode or type product name..."
-              className="bg-black/40 border-white/10 text-sm h-11 text-white"
+              className="bg-black/40 border-white/10 text-sm h-11 text-white rounded-sm"
             />
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 pt-2">
               {['Coffee Beans (1kg)', 'Mineral Water (750ml)', 'Roasted Almonds', 'Energy Drink', 'Paper Cups (50x)', 'Gift Card ₦5,000'].map((name, i) => (
                 <button
                   key={i}
                   onClick={() => toast.success(`Added ${name} to checkout cart`)}
-                  className="p-3.5 rounded-xl bg-white/[0.03] border border-white/5 hover:border-[#714b67]/50 hover:bg-[#714b67]/10 transition text-left cursor-pointer group"
+                  className="p-3.5 rounded-sm bg-white/[0.03] border border-white/5 hover:border-[#714b67]/50 hover:bg-[#714b67]/10 transition text-left cursor-pointer group"
                 >
                   <span className="text-xs font-bold text-white block group-hover:text-[#e6a8d6] transition">{name}</span>
                   <span className="text-[11px] font-mono text-emerald-400 mt-1 block">₦{(i + 1) * 2200}</span>
@@ -204,7 +214,7 @@ export const SalesPOSPage: React.FC = () => {
           </div>
         </div>
 
-        <div className="p-5 rounded-2xl bg-white/[0.03] border border-white/10 space-y-4 h-fit">
+        <div className="p-4 sm:p-5 rounded-sm bg-white/[0.03] border border-white/10 space-y-4 h-fit">
           <h2 className="text-sm font-bold text-white flex items-center justify-between">
             <span className="flex items-center gap-2">
               <ShoppingCart className="w-4 h-4 text-[#e296cb]" />
@@ -241,12 +251,20 @@ export const SalesPOSPage: React.FC = () => {
 
           <Button
             onClick={() => toast.success('Sale transaction recorded and receipt generated (Demo).')}
-            className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold h-11 text-xs cursor-pointer"
+            className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold h-11 text-xs cursor-pointer rounded-sm"
           >
             Complete Cash / Card Checkout
           </Button>
         </div>
       </div>
+
+      <FirstSaleTutorialModal
+        isOpen={isTutorialOpen}
+        onClose={() => setIsTutorialOpen(false)}
+        onSaleCompleted={(sale) => {
+          toast.success(`Tutorial sale completed: ₦${sale.totalAmount.toLocaleString()}`);
+        }}
+      />
     </div>
   );
 };
@@ -255,12 +273,12 @@ export const StockTransfersPage: React.FC = () => {
   const { activeBranch } = useBranchStore();
 
   return (
-    <div className="p-4 sm:p-8 max-w-7xl mx-auto space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="p-3 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">Stock Movements & Transfers</h1>
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 uppercase">
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-sm bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 uppercase">
               Demo Preview
             </span>
           </div>
@@ -271,17 +289,17 @@ export const StockTransfersPage: React.FC = () => {
 
         <Button
           onClick={() => toast.info('Transfer dispatch form loaded in interactive demo.')}
-          className="bg-gradient-to-r from-[#8a4b77] to-[#714b67] text-white text-xs font-semibold cursor-pointer"
+          className="rounded-sm bg-gradient-to-r from-[#8a4b77] to-[#714b67] text-white text-xs font-semibold cursor-pointer w-full sm:w-auto"
         >
           <ArrowRightLeft className="w-4 h-4 mr-1.5" />
           Initiate Inter-Branch Transfer
         </Button>
       </div>
 
-      <div className="p-5 rounded-2xl bg-white/[0.02] border border-white/10 space-y-4">
+      <div className="p-4 sm:p-5 rounded-sm bg-white/[0.02] border border-white/10 space-y-4">
         <h2 className="text-sm font-bold text-white">Recent Stock Movement Ledger</h2>
-        <div className="overflow-x-auto rounded-xl border border-white/5">
-          <table className="w-full text-left text-xs text-slate-300">
+        <div className="overflow-x-auto rounded-sm border border-white/5">
+          <table className="w-full text-left text-xs text-slate-300 min-w-[620px]">
             <thead className="bg-white/[0.04] text-[10px] font-bold uppercase text-slate-400 border-b border-white/5">
               <tr>
                 <th className="py-3 px-4">Date & Time</th>
@@ -302,7 +320,7 @@ export const StockTransfersPage: React.FC = () => {
                   <td className="py-3 px-4 font-mono text-slate-400">{m.date}</td>
                   <td className="py-3 px-4 font-bold text-white">{m.sku}</td>
                   <td className="py-3 px-4">
-                    <span className="px-2 py-0.5 rounded-full bg-white/5 text-slate-200 border border-white/10 text-[10px]">
+                    <span className="px-2 py-0.5 rounded-sm bg-white/5 text-slate-200 border border-white/10 text-[10px]">
                       {m.type}
                     </span>
                   </td>
@@ -325,12 +343,12 @@ export const ReportsAnalyticsPage: React.FC = () => {
   const { activeBranch } = useBranchStore();
 
   return (
-    <div className="p-4 sm:p-8 max-w-7xl mx-auto space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="p-3 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">Reports & Profit Analytics</h1>
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 uppercase">
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-sm bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 uppercase">
               Demo Preview
             </span>
           </div>
@@ -339,30 +357,30 @@ export const ReportsAnalyticsPage: React.FC = () => {
           </p>
         </div>
 
-        <Button variant="outline" size="sm" className="border-white/10 text-xs text-slate-300">
+        <Button variant="outline" size="sm" className="rounded-sm border-white/10 text-xs text-slate-300 w-full sm:w-auto">
           <Download className="w-3.5 h-3.5 mr-1.5 text-slate-400" />
           Export Profit / Loss CSV
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="p-5 rounded-2xl bg-white/[0.02] border border-white/10 space-y-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 sm:gap-6">
+        <div className="p-4 sm:p-5 rounded-sm bg-white/[0.02] border border-white/10 space-y-2">
           <span className="text-xs text-slate-400">Monthly Gross Revenue</span>
-          <p className="text-2xl font-bold text-white font-mono">₦12,480,000</p>
+          <p className="text-xl sm:text-2xl font-bold text-white font-mono">₦12,480,000</p>
           <span className="text-[11px] text-emerald-400 flex items-center gap-1">
             <TrendingUp className="w-3 h-3" /> +18.4% vs last month
           </span>
         </div>
 
-        <div className="p-5 rounded-2xl bg-white/[0.02] border border-white/10 space-y-2">
+        <div className="p-4 sm:p-5 rounded-sm bg-white/[0.02] border border-white/10 space-y-2">
           <span className="text-xs text-slate-400">Gross Margin %</span>
-          <p className="text-2xl font-bold text-emerald-400 font-mono">34.8%</p>
+          <p className="text-xl sm:text-2xl font-bold text-emerald-400 font-mono">34.8%</p>
           <span className="text-[11px] text-slate-400">Target: 30.0% Minimum</span>
         </div>
 
-        <div className="p-5 rounded-2xl bg-white/[0.02] border border-white/10 space-y-2">
+        <div className="p-4 sm:p-5 rounded-sm bg-white/[0.02] border border-white/10 space-y-2 sm:col-span-2 md:col-span-1">
           <span className="text-xs text-slate-400">Average Transaction Size</span>
-          <p className="text-2xl font-bold text-indigo-300 font-mono">₦14,250</p>
+          <p className="text-xl sm:text-2xl font-bold text-indigo-300 font-mono">₦14,250</p>
           <span className="text-[11px] text-slate-400">876 Transactions this cycle</span>
         </div>
       </div>

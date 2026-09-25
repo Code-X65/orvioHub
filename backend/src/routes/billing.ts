@@ -11,6 +11,10 @@ import {
   generateSignedDownloadToken,
   verifySignedDownloadToken,
 } from '../services/pdfService.js';
+import { jobService } from '../services/jobService.js';
+import { prorationService } from '../services/prorationService.js';
+import { currencyService } from '../services/currencyService.js';
+import { resolveIdentifier } from '../middleware/resolveIdentifier.js';
 import { ERROR_CODES } from '../config/constants.js';
 
 const AUTHORITATIVE_PLANS = [
@@ -20,6 +24,8 @@ const AUTHORITATIVE_PLANS = [
     status: 'active',
     priceMonthly: 0,
     priceAnnual: 0,
+    monthlyPrice: 0,
+    annualPrice: 0,
     price: { monthly: 0, annual: 0 },
     currency: 'NGN',
     trialDays: 30,
@@ -46,6 +52,8 @@ const AUTHORITATIVE_PLANS = [
     status: 'active',
     priceMonthly: 7500,
     priceAnnual: 75000,
+    monthlyPrice: 7500,
+    annualPrice: 75000,
     price: { monthly: 7500, annual: 75000 },
     currency: 'NGN',
     trialDays: 0,
@@ -72,6 +80,8 @@ const AUTHORITATIVE_PLANS = [
     status: 'active',
     priceMonthly: 25000,
     priceAnnual: 250000,
+    monthlyPrice: 25000,
+    annualPrice: 250000,
     price: { monthly: 25000, annual: 250000 },
     currency: 'NGN',
     trialDays: 0,
@@ -110,7 +120,13 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
       if (Array.isArray(plans)) {
         for (const p of plans) {
           if (['free_trial', 'standard', 'premium'].includes(p.key) && p.isActive !== false) {
-            planMap.set(p.key, { ...planMap.get(p.key), ...p, isActive: true });
+            planMap.set(p.key, {
+              ...planMap.get(p.key),
+              ...p,
+              monthlyPrice: p.monthlyPrice ?? p.priceMonthly ?? planMap.get(p.key)?.priceMonthly,
+              annualPrice: p.annualPrice ?? p.priceAnnual ?? planMap.get(p.key)?.priceAnnual,
+              isActive: true,
+            });
           }
         }
       }
@@ -126,8 +142,54 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
     }
   };
 
+  const getPlanConfigHandler = async (request: any, reply: any) => {
+    try {
+      const plans = (await dataService.query('plans:list', {})) as any[];
+      const planMap = new Map<string, any>();
+      for (const ap of AUTHORITATIVE_PLANS) {
+        planMap.set(ap.key, { ...ap });
+      }
+      if (Array.isArray(plans)) {
+        for (const p of plans) {
+          if (['free_trial', 'standard', 'premium'].includes(p.key) && p.isActive !== false) {
+            planMap.set(p.key, {
+              ...planMap.get(p.key),
+              ...p,
+              monthlyPrice: p.monthlyPrice ?? p.priceMonthly ?? planMap.get(p.key)?.priceMonthly,
+              annualPrice: p.annualPrice ?? p.priceAnnual ?? planMap.get(p.key)?.priceAnnual,
+              isActive: true,
+            });
+          }
+        }
+      }
+      return reply.send({
+        success: true,
+        data: {
+          plans: Array.from(planMap.values()),
+          gateways: {
+            paystackPublicKey: env.PAYSTACK_PUBLIC_KEY || '',
+            flutterwavePublicKey: env.FLUTTERWAVE_PUBLIC_KEY || '',
+          },
+        },
+      });
+    } catch (err: any) {
+      return reply.send({
+        success: true,
+        data: {
+          plans: AUTHORITATIVE_PLANS,
+          gateways: {
+            paystackPublicKey: env.PAYSTACK_PUBLIC_KEY || '',
+            flutterwavePublicKey: env.FLUTTERWAVE_PUBLIC_KEY || '',
+          },
+        },
+      });
+    }
+  };
+
   fastify.get('/plans', getPlansHandler);
   fastify.get('/billing/plans', getPlansHandler);
+  fastify.get('/billing/plan-config', getPlanConfigHandler);
+  fastify.get('/plans/config', getPlanConfigHandler);
 
   // 2. GET /workspaces/:workspaceId/billing & GET /billing/workspaces/:workspaceId - Workspace Billing Context
   const getWorkspaceBillingHandler = async (request: any, reply: any) => {
@@ -164,6 +226,45 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
     }
     request.params = { workspaceId: wsId };
     return getWorkspaceBillingHandler(request, reply);
+  });
+
+  // GET /billing/proration-preview
+  fastify.get('/billing/proration-preview', { preHandler: [fastify.authenticate] }, async (request: any, reply: any) => {
+    const { workspaceId, organizationId, targetPlan = 'premium', billingCycle = 'monthly' } = (request.query as any) || {};
+    const targetWsId = workspaceId || organizationId;
+    if (!targetWsId) {
+      return reply.status(400).send({
+        success: false,
+        error: { code: ERROR_CODES.VALIDATION_ERROR, message: 'workspaceId or organizationId is required' },
+      });
+    }
+
+    try {
+      const resolved = await resolveIdentifier(targetWsId, undefined, request.user);
+      const currentSub = await dataService.getWorkspaceSubscription(resolved.id);
+      const currentPlanKey = currentSub?.planKey || currentSub?.activePlan || 'standard';
+      
+      const currentPlan = await dataService.getPlanByKey(currentPlanKey);
+      const targetPlanObj = await dataService.getPlanByKey(targetPlan);
+      
+      const proration = prorationService.calculateProration(
+        currentPlan,
+        targetPlanObj,
+        currentSub?.currentPeriodStart || Date.now(),
+        currentSub?.currentPeriodEnd || (Date.now() + 30 * 86_400_000),
+        billingCycle
+      );
+
+      return reply.send({
+        success: true,
+        data: proration,
+      });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: { code: ERROR_CODES.INTERNAL_SERVER_ERROR, message: err.message || 'Failed to calculate proration' },
+      });
+    }
   });
 
   // 3. GET /workspaces/:workspaceId/billing/usage - Workspace Resource Usage & Limits
@@ -917,7 +1018,7 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     try {
-      const result: any = await dataService.scheduleDowngradeWithConflictResolution({
+      const result: any = await (dataService as any).scheduleDowngradeWithConflictResolution({
         workspaceId,
         organizationId: workspaceId,
         userId: request.user.id,
@@ -1039,7 +1140,7 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     try {
-      const result = await dataService.cancelScheduledDowngrade(workspaceId, request.user.id);
+      const result = await dataService.cancelScheduledDowngrade({ workspaceId, userId: request.user.id });
       const responsePayload = {
         success: true,
         message: 'Scheduled downgrade has been cancelled. Your current plan and entitlements will renew normally.',
@@ -1364,6 +1465,21 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post('/billing/workspaces/:workspaceId/reconcile', { preHandler: [fastify.authenticate] }, reconcileHandler);
   fastify.post('/api/v1/workspaces/:workspaceId/billing/reconcile', { preHandler: [fastify.authenticate] }, reconcileHandler);
 
+  // Register asynchronous webhook processor
+  jobService.registerHandler('process-paystack-webhook', async (jobData) => {
+    const { event, data, eventId } = jobData;
+    try {
+      await dataService.mutate('paystackWebhook:handleWebhook', {
+        event,
+        data,
+        providerEventId: eventId,
+      });
+    } catch (err: any) {
+      fastify.log.error(err, `Async Paystack webhook handling failed for event ${eventId}`);
+      throw err;
+    }
+  });
+
   // 12. POST /billing/webhooks/paystack - Authoritative Paystack Webhook Handler
   fastify.post(
     '/billing/webhooks/paystack',
@@ -1387,17 +1503,21 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
       const data = payload.data || {};
       const eventId = String(payload.id || data.id || data.reference || `evt_${Date.now()}`);
 
-      try {
-        await dataService.mutate('paystackWebhook:handleWebhook', {
-          event,
-          data,
-          providerEventId: eventId,
-        });
-        return reply.status(200).send({ success: true, received: true, status: 'success', eventId });
-      } catch (err: any) {
-        fastify.log.error(err, `Error processing Paystack webhook event ${event}`);
-        return reply.status(200).send({ success: true, received: true, status: 'acknowledged_with_error', error: err.message });
-      }
+      // Enqueue for resilient background processing
+      const jobId = await jobService.enqueue(
+        'process-paystack-webhook',
+        { event, data, eventId, rawBody },
+        { priority: 'high', maxRetries: 3, retryDelay: 3000 }
+      );
+
+      // Return immediate acknowledgment (200) to gateway
+      return reply.status(200).send({
+        success: true,
+        received: true,
+        status: 'queued',
+        eventId,
+        jobId,
+      });
     }
   );
 
@@ -1469,24 +1589,51 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
       const { workspaceId } = request.params as { workspaceId: string };
       try {
         const usage = await dataService.getWorkspaceUsage(workspaceId);
-        const subscription = await dataService.getWorkspaceSubscription(workspaceId);
-        const plan = await dataService.getPlanByKey(subscription.planKey || 'free');
+        let planKey = 'free_trial';
+        try {
+          const subscription = await dataService.getWorkspaceSubscription(workspaceId);
+          planKey = subscription?.planKey || subscription?.activePlan || subscription?.planId || 'free_trial';
+        } catch {}
+
+        const counters = usage?.counters || {
+          branches: 1,
+          members: 1,
+          products: 0,
+          transactions: 0,
+          workspacesCount: 1,
+          appsCount: 1,
+        };
 
         return reply.send({
           success: true,
           data: {
             workspaceId,
-            planKey: plan.key,
-            usage: usage.counters,
-            records: usage.records,
+            planKey,
+            branches: counters.branches ?? counters.branchesCount ?? 1,
+            members: counters.members ?? counters.membersCount ?? 1,
+            products: counters.products ?? counters.productsCount ?? 0,
+            transactions: counters.transactions ?? counters.transactionsCount ?? 0,
+            usage: counters,
+            records: usage?.records || [],
           },
         });
       } catch (err: any) {
-        return reply.status(500).send({
-          success: false,
-          error: {
-            code: ERROR_CODES.INTERNAL_SERVER_ERROR,
-            message: err.message || 'Failed to fetch usage.',
+        return reply.send({
+          success: true,
+          data: {
+            workspaceId,
+            planKey: 'free_trial',
+            branches: 1,
+            members: 1,
+            products: 0,
+            transactions: 0,
+            usage: {
+              branches: 1,
+              members: 1,
+              products: 0,
+              transactions: 0,
+            },
+            records: [],
           },
         });
       }
@@ -1694,9 +1841,35 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
 
       try {
         const plan = await dataService.getPlanByKey(planKey);
+        const orgCurrency = await currencyService.getOrganizationCurrency(workspaceId);
         const isAnnual = billingCycle === 'annual';
-        const amountInKobo = isAnnual ? (plan.annualPrice || plan.monthlyPrice * 10) : plan.monthlyPrice;
-        const amountInNaira = Math.round(amountInKobo / 100);
+        const rawMonthly = plan.monthlyPrice ?? plan.priceMonthly ?? plan.price?.monthly ?? 7500;
+        const rawAnnual = plan.annualPrice ?? plan.priceAnnual ?? plan.price?.annual ?? 75000;
+        const monthlyNaira = rawMonthly >= 50000 ? rawMonthly / 100 : rawMonthly;
+        const annualNaira = rawAnnual >= 1000000 ? rawAnnual / 100 : rawAnnual;
+        const amountInNaira = isAnnual ? annualNaira : monthlyNaira;
+        const amountInKobo = Math.round(amountInNaira * 100);
+
+        // Calculate proration if upgrading from an active plan
+        let proration: any = null;
+        if (workspaceId) {
+          try {
+            const currentSub = await dataService.getWorkspaceSubscription(workspaceId);
+            if (currentSub?.status === 'active' && currentSub?.planKey && currentSub.planKey !== planKey) {
+              const currentPlan = await dataService.getPlanByKey(currentSub.planKey);
+              proration = prorationService.calculateProration(
+                currentPlan,
+                plan,
+                currentSub.currentPeriodStart || Date.now(),
+                currentSub.currentPeriodEnd || (Date.now() + 30 * 86_400_000),
+                billingCycle
+              );
+            }
+          } catch {}
+        }
+
+        const effectiveAmountNaira = proration?.proratedAmount && proration.proratedAmount > 0 ? proration.proratedAmount : amountInNaira;
+        const effectiveAmountKobo = effectiveAmountNaira * 100;
 
         const reference = `orv_${gateway === 'paystack' ? 'pst' : 'flw'}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
         const customerEmail = user?.email || 'customer@orviohub.com';
@@ -1705,8 +1878,8 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
         await dataService.recordInitiatedTransaction({
           workspaceId: workspaceId || '',
           planKey,
-          amount: amountInKobo,
-          currency: 'NGN',
+          amount: effectiveAmountKobo,
+          currency: orgCurrency.code,
           billingCycle,
           gateway,
           gatewayReference: reference,
@@ -1716,13 +1889,14 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
             workspaceId,
             planKey,
             billingCycle,
+            proration,
           },
         });
 
         if (gateway === 'paystack') {
           const initRes = await paystackService.initializePayment({
             email: customerEmail,
-            amountInKobo,
+            amountInKobo: effectiveAmountKobo,
             reference,
             callbackUrl,
             metadata: {
@@ -1730,6 +1904,7 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
               planKey,
               billingCycle,
               userId: user.userId,
+              proration,
             },
           });
 
@@ -1740,15 +1915,16 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
               reference,
               checkoutUrl: initRes.authorizationUrl,
               accessCode: initRes.accessCode,
-              amount: amountInNaira,
-              amountInKobo,
-              currency: 'NGN',
+              amount: effectiveAmountNaira,
+              amountInKobo: effectiveAmountKobo,
+              currency: orgCurrency.code,
+              proration,
             },
           });
         } else {
           const initRes = await flutterwaveService.initializePayment({
             email: customerEmail,
-            amountInNaira,
+            amountInNaira: effectiveAmountNaira,
             txRef: reference,
             redirectUrl: callbackUrl,
             meta: {
@@ -1756,6 +1932,7 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
               planKey,
               billingCycle,
               userId: user.userId,
+              proration,
             },
           });
 
@@ -1765,9 +1942,9 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
               gateway: 'flutterwave',
               reference,
               checkoutUrl: initRes.paymentLink,
-              amount: amountInNaira,
-              amountInKobo,
-              currency: 'NGN',
+              amount: effectiveAmountNaira,
+              currency: orgCurrency.code,
+              proration,
             },
           });
         }
@@ -1776,12 +1953,83 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
           success: false,
           error: {
             code: ERROR_CODES.INTERNAL_SERVER_ERROR,
-            message: err.message || 'Failed to initialize payment checkout.',
+            message: err.message || 'Failed to initialize payment gateway.',
           },
         });
       }
     }
   );
+
+  // POST /api/v1/billing/subscription/pause & POST /subscription/pause
+  const pauseSubscriptionHandler = async (request: any, reply: any) => {
+    const { workspaceId, organizationId, reason, resumeAt, retainData } = (request.body || {}) as any;
+    const queryWsId = (request.query as any)?.workspaceId || (request.query as any)?.organizationId;
+    const targetWsId = workspaceId || organizationId || queryWsId;
+
+    if (!targetWsId) {
+      return reply.status(400).send({
+        success: false,
+        error: { code: ERROR_CODES.VALIDATION_ERROR, message: 'workspaceId or organizationId is required' },
+      });
+    }
+
+    try {
+      const resolved = await resolveIdentifier(targetWsId, undefined, request.user);
+      const result = await dataService.pauseSubscription({
+        workspaceId: resolved.id,
+        organizationId: resolved.organizationId,
+        pausedAt: Date.now(),
+        resumeAt: resumeAt ? new Date(resumeAt).getTime() : null,
+        reason,
+        retainData: retainData ?? true,
+        pausedBy: request.user?.id,
+      });
+
+      return reply.send({ success: true, data: result });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: { code: ERROR_CODES.INTERNAL_SERVER_ERROR, message: err.message || 'Failed to pause subscription.' },
+      });
+    }
+  };
+
+  fastify.post('/subscription/pause', { preHandler: [fastify.authenticate] }, pauseSubscriptionHandler);
+  fastify.post('/billing/subscription/pause', { preHandler: [fastify.authenticate] }, pauseSubscriptionHandler);
+
+  // POST /api/v1/billing/subscription/resume & POST /subscription/resume
+  const customerResumeSubscriptionHandler = async (request: any, reply: any) => {
+    const { workspaceId, organizationId } = (request.body || {}) as any;
+    const queryWsId = (request.query as any)?.workspaceId || (request.query as any)?.organizationId;
+    const targetWsId = workspaceId || organizationId || queryWsId;
+
+    if (!targetWsId) {
+      return reply.status(400).send({
+        success: false,
+        error: { code: ERROR_CODES.VALIDATION_ERROR, message: 'workspaceId or organizationId is required' },
+      });
+    }
+
+    try {
+      const resolved = await resolveIdentifier(targetWsId, undefined, request.user);
+      const result = await dataService.resumeSubscription({
+        workspaceId: resolved.id,
+        organizationId: resolved.organizationId,
+        resumedAt: Date.now(),
+        resumedBy: request.user?.id,
+      });
+
+      return reply.send({ success: true, data: result });
+    } catch (err: any) {
+      return reply.status(500).send({
+        success: false,
+        error: { code: ERROR_CODES.INTERNAL_SERVER_ERROR, message: err.message || 'Failed to resume subscription.' },
+      });
+    }
+  };
+
+  fastify.post('/subscription/resume', { preHandler: [fastify.authenticate] }, customerResumeSubscriptionHandler);
+  fastify.post('/billing/subscription/resume', { preHandler: [fastify.authenticate] }, customerResumeSubscriptionHandler);
 
   // GET /api/v1/billing/verify
   fastify.get(

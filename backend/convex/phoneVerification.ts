@@ -2,6 +2,24 @@ import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 
+function toCanonicalPhoneDigits(phone?: string | null): string {
+  if (!phone) return '';
+  const digits = phone.replace(/\D/g, '');
+  if (digits.startsWith('234') && digits.length === 13) return digits;
+  if (digits.startsWith('0') && digits.length === 11) return `234${digits.slice(1)}`;
+  if (digits.length === 10) return `234${digits}`;
+  return digits;
+}
+
+function maskPhoneNumber(phone?: string | null): string {
+  if (!phone) return '';
+  const cleaned = phone.replace(/[^0-9+]/g, '');
+  if (cleaned.length <= 4) return '••••';
+  const prefix = cleaned.slice(0, 4);
+  const suffix = cleaned.slice(-4);
+  return `${prefix} •••• ${suffix}`;
+}
+
 export const createChallenge = mutation({
   args: {
     userId: v.optional(v.id("users")),
@@ -30,17 +48,71 @@ export const createChallenge = mutation({
       throw new Error("RATE_LIMIT_EXCEEDED: Too many verification attempts. Please try again in an hour.");
     }
 
-    // 2. Invalidate any existing pending challenge for this user/workspace/branch & purpose
+    // 2. User-specific validation: Rule 1 (not same as current verified) & Rule 2 (not taken by another account)
     if (args.userId) {
+      const user = await ctx.db.get(args.userId);
+      if (user) {
+        const userCanonical = toCanonicalPhoneDigits(user.phone || user.phoneNormalized || "");
+        const proposedCanonical = toCanonicalPhoneDigits(args.phone || args.phoneNormalized || "");
+        const isCurrentlyVerified = Boolean(user.phoneVerifiedAt) || user.phoneStatus === "verified";
+
+        // Rule 1: Must not be current verified number
+        if (isCurrentlyVerified && userCanonical && userCanonical === proposedCanonical) {
+          throw new Error("SAME_PHONE_NUMBER: New phone number cannot be the same as your current verified number.");
+        }
+
+        // Rule 2: Must not belong to someone else's account
+        const local = proposedCanonical.startsWith("234") ? "0" + proposedCanonical.slice(3) : proposedCanonical;
+        const national10 = proposedCanonical.startsWith("234") ? proposedCanonical.slice(3) : proposedCanonical;
+        const withPlus = `+${proposedCanonical}`;
+        const rawDigits = (args.phone || args.phoneNormalized || "").replace(/\D/g, "");
+        const variants = Array.from(new Set([args.phoneNormalized, args.phone, proposedCanonical, local, national10, withPlus, rawDigits])).filter(Boolean);
+
+        for (const variant of variants) {
+          const userMatches = await ctx.db
+            .query("users")
+            .withIndex("by_phone_normalized", (q) => q.eq("phoneNormalized", variant))
+            .collect();
+
+          const takenByOtherUser = userMatches.some(
+            (u) =>
+              !u.deletedAt &&
+              u._id !== args.userId &&
+              (Boolean(u.phoneVerifiedAt) || u.phoneStatus === "verified" || Boolean(u.phone))
+          );
+          if (takenByOtherUser) {
+            throw new Error("PHONE_ALREADY_IN_USE: This phone number is already associated with another account.");
+          }
+        }
+
+        // Check users by raw phone field
+        for (const variant of variants) {
+          const usersByPhone = await ctx.db
+            .query("users")
+            .filter((q) => q.eq(q.field("phone"), variant))
+            .collect();
+
+          const taken = usersByPhone.some(
+            (u) =>
+              !u.deletedAt &&
+              u._id !== args.userId &&
+              (Boolean(u.phoneVerifiedAt) || u.phoneStatus === "verified" || Boolean(u.phone))
+          );
+          if (taken) {
+            throw new Error("PHONE_ALREADY_IN_USE: This phone number is already associated with another account.");
+          }
+        }
+      }
+
       const existing = await ctx.db
         .query("phoneVerificationChallenges")
-        .withIndex("by_user_purpose", (q) =>
-          q.eq("userId", args.userId).eq("purpose", args.purpose).eq("status", "pending")
-        )
+        .withIndex("by_user_purpose", (q) => q.eq("userId", args.userId))
         .collect();
 
       for (const ch of existing) {
-        await ctx.db.patch(ch._id, { status: "cancelled" });
+        if (ch.status === "pending") {
+          await ctx.db.patch(ch._id, { status: "cancelled" });
+        }
       }
     } else if (args.workspaceId) {
       const existing = await ctx.db
@@ -116,13 +188,24 @@ export const verifyChallenge = mutation({
     if (args.challengeId) {
       challenge = await ctx.db.get(args.challengeId);
     } else if (userId) {
-      const pending = await ctx.db
+      let pending = await ctx.db
         .query("phoneVerificationChallenges")
         .withIndex("by_user_purpose", (q) =>
           q.eq("userId", userId).eq("purpose", purpose).eq("status", "pending")
         )
         .order("desc")
         .first();
+
+      if (!pending && (purpose === "user_phone_verification" || purpose === "user_phone_change")) {
+        const altPurpose = purpose === "user_phone_verification" ? "user_phone_change" : "user_phone_verification";
+        pending = await ctx.db
+          .query("phoneVerificationChallenges")
+          .withIndex("by_user_purpose", (q) =>
+            q.eq("userId", userId).eq("purpose", altPurpose).eq("status", "pending")
+          )
+          .order("desc")
+          .first();
+      }
       challenge = pending;
     } else if (workspaceId) {
       const pending = await ctx.db
@@ -185,6 +268,10 @@ export const verifyChallenge = mutation({
     if (challenge.userId) {
       const user = await ctx.db.get(challenge.userId);
       if (user) {
+        const isPhoneChange = Boolean(
+          challenge.purpose === "user_phone_change" ||
+          (user.phoneNormalized && user.phoneNormalized !== challenge.phoneNormalized)
+        );
         const updateData: Record<string, any> = {
           phone: challenge.phone,
           phoneNormalized: challenge.phoneNormalized,
@@ -192,13 +279,42 @@ export const verifyChallenge = mutation({
           phoneStatus: "verified",
           updatedAt: now,
         };
-        if (challenge.purpose === "phone_recovery_setup") {
-          updateData.phoneUsedForRecovery = true;
+
+        // If this is a phone number change, reset security flags so they don't persist onto the new number
+        if (isPhoneChange) {
+          updateData.phoneUsedForRecovery = challenge.purpose === "phone_recovery_setup";
+          updateData.phoneUsedForMfa = challenge.purpose === "sms_mfa_setup";
+        } else {
+          if (challenge.purpose === "phone_recovery_setup") {
+            updateData.phoneUsedForRecovery = true;
+          }
+          if (challenge.purpose === "sms_mfa_setup") {
+            updateData.phoneUsedForMfa = true;
+          }
         }
-        if (challenge.purpose === "sms_mfa_setup") {
-          updateData.phoneUsedForMfa = true;
-        }
+
         await ctx.db.patch(challenge.userId, updateData);
+
+        // Audit log for user phone change / verification
+        await ctx.db.insert("auditLogs", {
+          actorId: challenge.userId,
+          actorUserId: challenge.userId,
+          targetUserId: challenge.userId,
+          action: isPhoneChange ? "USER_PHONE_CHANGED" : "USER_PHONE_VERIFIED",
+          eventType: isPhoneChange ? "user.phone_changed" : "user.phone_verified",
+          resource: "users",
+          entityType: "user",
+          entityId: challenge.userId,
+          severity: isPhoneChange ? "warning" : "info",
+          metadata: {
+            purpose: challenge.purpose,
+            phoneMasked: maskPhoneNumber(challenge.phone),
+            isPhoneChange,
+            previousPhoneMasked: user.phone ? maskPhoneNumber(user.phone) : undefined,
+          },
+          timestamp: now,
+          createdAt: now,
+        });
       }
     } else if (challenge.workspaceId) {
       // Find workspace
@@ -231,6 +347,23 @@ export const verifyChallenge = mutation({
           });
         }
       }
+
+      // Audit log for workspace phone verification
+      await ctx.db.insert("auditLogs", {
+        actorId: challenge.workspaceId,
+        action: "WORKSPACE_PHONE_VERIFIED",
+        eventType: "workspace.phone_verified",
+        resource: "workspaces",
+        entityType: "workspace",
+        entityId: challenge.workspaceId,
+        severity: "info",
+        metadata: {
+          purpose: challenge.purpose,
+          phoneMasked: maskPhoneNumber(challenge.phone),
+        },
+        timestamp: now,
+        createdAt: now,
+      });
     } else if (challenge.branchId) {
       const branch = await ctx.db
         .query("branches")
@@ -247,6 +380,23 @@ export const verifyChallenge = mutation({
           updatedAt: now,
         });
       }
+
+      // Audit log for branch phone verification
+      await ctx.db.insert("auditLogs", {
+        actorId: challenge.branchId,
+        action: "BRANCH_PHONE_VERIFIED",
+        eventType: "branch.phone_verified",
+        resource: "branches",
+        entityType: "branch",
+        entityId: challenge.branchId,
+        severity: "info",
+        metadata: {
+          purpose: challenge.purpose,
+          phoneMasked: maskPhoneNumber(challenge.phone),
+        },
+        timestamp: now,
+        createdAt: now,
+      });
     }
 
     return {
@@ -284,6 +434,17 @@ export const resendChallenge = mutation({
         )
         .order("desc")
         .first();
+
+      if (!challenge && (purpose === "user_phone_verification" || purpose === "user_phone_change")) {
+        const altPurpose = purpose === "user_phone_verification" ? "user_phone_change" : "user_phone_verification";
+        challenge = await ctx.db
+          .query("phoneVerificationChallenges")
+          .withIndex("by_user_purpose", (q) =>
+            q.eq("userId", userId).eq("purpose", altPurpose).eq("status", "pending")
+          )
+          .order("desc")
+          .first();
+      }
     } else if (workspaceId) {
       challenge = await ctx.db
         .query("phoneVerificationChallenges")
@@ -348,13 +509,23 @@ export const getUserPhoneStatus = query({
     const user = await ctx.db.get(args.userId);
     if (!user) return null;
 
-    const pendingChallenge = await ctx.db
+    let pendingChallenge = await ctx.db
       .query("phoneVerificationChallenges")
       .withIndex("by_user_purpose", (q) =>
         q.eq("userId", args.userId).eq("purpose", "user_phone_verification").eq("status", "pending")
       )
       .order("desc")
       .first();
+
+    if (!pendingChallenge) {
+      pendingChallenge = await ctx.db
+        .query("phoneVerificationChallenges")
+        .withIndex("by_user_purpose", (q) =>
+          q.eq("userId", args.userId).eq("purpose", "user_phone_change").eq("status", "pending")
+        )
+        .order("desc")
+        .first();
+    }
 
     return {
       phone: user.phone || null,
@@ -409,9 +580,13 @@ export const updateUserContact = mutation({
     userId: v.id("users"),
     phone: v.optional(v.string()),
     phoneNormalized: v.optional(v.string()),
+    phoneVisibility: v.optional(v.union(v.literal("private"), v.literal("workspace"))),
     country: v.optional(v.string()),
     state: v.optional(v.string()),
+    stateCode: v.optional(v.string()),
+    lga: v.optional(v.string()),
     city: v.optional(v.string()),
+    timezone: v.optional(v.string()),
     phoneUsedForRecovery: v.optional(v.boolean()),
     phoneUsedForMfa: v.optional(v.boolean()),
   },
@@ -423,22 +598,36 @@ export const updateUserContact = mutation({
     const updateData: Record<string, any> = { updatedAt: now };
 
     if (args.phone !== undefined) {
+      const userPhoneDigits = (user.phone || user.phoneNormalized || "").replace(/\D/g, "");
+      const newPhoneDigits = (args.phone || args.phoneNormalized || "").replace(/\D/g, "");
+      const isCurrentlyVerified = Boolean(user.phoneVerifiedAt) || user.phoneStatus === "verified";
+
+      if (isCurrentlyVerified && userPhoneDigits && userPhoneDigits !== newPhoneDigits) {
+        throw new Error("VERIFIED_PHONE_LOCKED: Verified phone number cannot be modified directly. Please verify the new number.");
+      }
+
       updateData.phone = args.phone;
       if (args.phoneNormalized !== undefined) {
         updateData.phoneNormalized = args.phoneNormalized;
       }
       // If phone is modified and doesn't match current verified phone, mark unverified
       if (args.phone !== user.phone || args.phoneNormalized !== user.phoneNormalized) {
-        updateData.phoneVerifiedAt = undefined;
-        updateData.phoneStatus = "unverified";
-        updateData.phoneUsedForRecovery = false;
-        updateData.phoneUsedForMfa = false;
+        if (!isCurrentlyVerified) {
+          updateData.phoneVerifiedAt = undefined;
+          updateData.phoneStatus = "unverified";
+          updateData.phoneUsedForRecovery = false;
+          updateData.phoneUsedForMfa = false;
+        }
       }
     }
 
+    if (args.phoneVisibility !== undefined) updateData.phoneVisibility = args.phoneVisibility;
     if (args.country !== undefined) updateData.country = args.country;
     if (args.state !== undefined) updateData.state = args.state;
+    if (args.stateCode !== undefined) updateData.stateCode = args.stateCode;
+    if (args.lga !== undefined) updateData.lga = args.lga;
     if (args.city !== undefined) updateData.city = args.city;
+    if (args.timezone !== undefined) updateData.timezone = args.timezone;
     if (args.phoneUsedForRecovery !== undefined) {
       // Only allow enabling if phone is verified
       if (args.phoneUsedForRecovery && (!user.phoneVerifiedAt || user.phoneStatus !== "verified")) {
@@ -457,3 +646,53 @@ export const updateUserContact = mutation({
     return { success: true };
   },
 });
+
+export const isPhoneRegistered = query({
+  args: {
+    phoneNormalized: v.string(),
+    excludeUserId: v.optional(v.id("users")),
+  },
+  handler: async (ctx, args) => {
+    const canonical = toCanonicalPhoneDigits(args.phoneNormalized);
+    const local = canonical.startsWith('234') ? '0' + canonical.slice(3) : canonical;
+    const national10 = canonical.startsWith('234') ? canonical.slice(3) : canonical;
+    const withPlus = `+${canonical}`;
+    const rawDigits = args.phoneNormalized.replace(/\D/g, '');
+    const variants = Array.from(new Set([args.phoneNormalized, canonical, local, national10, withPlus, rawDigits])).filter(Boolean);
+
+    // 1. Check users table by phoneNormalized index
+    for (const variant of variants) {
+      const userMatches = await ctx.db
+        .query("users")
+        .withIndex("by_phone_normalized", (q) => q.eq("phoneNormalized", variant))
+        .collect();
+
+      const takenInUsers = userMatches.some(
+        (u) =>
+          !u.deletedAt &&
+          (!args.excludeUserId || u._id !== args.excludeUserId) &&
+          (Boolean(u.phoneVerifiedAt) || u.phoneStatus === "verified" || Boolean(u.phone))
+      );
+      if (takenInUsers) return true;
+    }
+
+    // 2. Fallback scan on users with phone matching any variant
+    for (const variant of variants) {
+      const usersByPhone = await ctx.db
+        .query("users")
+        .filter((q) => q.eq(q.field("phone"), variant))
+        .collect();
+
+      const taken = usersByPhone.some(
+        (u) =>
+          !u.deletedAt &&
+          (!args.excludeUserId || u._id !== args.excludeUserId) &&
+          (Boolean(u.phoneVerifiedAt) || u.phoneStatus === "verified" || Boolean(u.phone))
+      );
+      if (taken) return true;
+    }
+
+    return false;
+  },
+});
+

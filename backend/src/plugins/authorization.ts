@@ -378,30 +378,214 @@ const plugin: FastifyPluginAsync = async (fastify) => {
     options?: { branchIdHeader?: string; requireBranchAccess?: boolean }
   ) {
     return async function (request: FastifyRequest, reply: FastifyReply) {
-      // 1. Verify workspace membership
+      const normKey = productKey.toLowerCase();
+      if (normKey !== 'inventory') {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: 'APPLICATION_NOT_AVAILABLE',
+            message: `Product '${productKey}' is not available.`,
+          },
+        });
+      }
+
+      if (!request.user) {
+        return reply.status(401).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.UNAUTHENTICATED,
+            message: 'Authentication required.',
+          },
+        });
+      }
+
+      const headerWsId = request.headers['x-workspace-id'] as string | undefined;
+      const headerOrgId = request.headers['x-organization-id'] as string | undefined;
+      const paramWsId = (request.params as any)?.workspaceId || (request.params as any)?.id;
+      const paramOrgId = (request.params as any)?.organizationId;
+      const workspaceId = headerWsId || paramWsId || paramOrgId;
+
+      // Use batched tenant context query when context is not yet loaded
+      if ((!request.workspace || !request.workspaceMembership || !request.productMembership) && workspaceId) {
+        // Check header vs param mismatch if both provided
+        if (headerWsId && paramWsId && headerWsId !== paramWsId) {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: 'TENANT_ID_MISMATCH',
+              message: 'Header x-workspace-id does not match route workspaceId parameter.',
+            },
+          });
+        }
+
+        const tenantCtx = await dataService.getTenantContext(workspaceId, request.user.id);
+        const workspace = tenantCtx?.workspace as any;
+        if (!workspace) {
+          return reply.status(404).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.NOT_FOUND,
+              message: 'Workspace not found.',
+            },
+          });
+        }
+
+        if (headerOrgId && workspace.organizationId && headerOrgId !== workspace.organizationId && headerOrgId !== workspace._id) {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: 'TENANT_ID_MISMATCH',
+              message: 'Header x-organization-id does not match the target workspace organization.',
+            },
+          });
+        }
+
+        const status = workspace.status?.toLowerCase() || 'active';
+        if (status === 'deleted' || status === 'archived') {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.WORKSPACE_ACCESS_DENIED,
+              message: `Workspace is ${status}.`,
+            },
+          });
+        }
+
+        request.workspace = {
+          id: workspace._id || workspace.id,
+          name: workspace.name,
+          slug: workspace.slug,
+          type: workspace.type,
+          currency: workspace.currency,
+          country: workspace.country,
+          timezone: workspace.timezone,
+          status: workspace.status,
+          ownerId: workspace.ownerId,
+          organizationId: workspace.organizationId,
+        };
+
+        const isOwner = workspace.ownerId && String(workspace.ownerId) === String(request.user.id);
+        const membership = tenantCtx?.membership as any;
+        const memStatus = membership?.status?.toLowerCase();
+
+        if (!membership && !isOwner) {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.ORGANIZATION_ACCESS_DENIED,
+              message: 'You do not have active access to this workspace.',
+            },
+          });
+        }
+
+        if (membership && memStatus !== 'active' && !isOwner) {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.ORGANIZATION_ACCESS_DENIED,
+              message: 'You do not have active access to this workspace.',
+            },
+          });
+        }
+
+        request.workspaceMembership = {
+          id: membership?._id || membership?.id || 'owner_membership',
+          role: membership?.role || membership?.defaultRole || (isOwner ? 'owner' : 'member'),
+          status: membership?.status || 'active',
+        };
+
+        // Product entitlement
+        const products = (tenantCtx?.products || []) as any[];
+        const product = products.find(
+          (p: any) => p.productKey?.toLowerCase() === normKey
+        );
+        const prodStatus = product?.status?.toLowerCase();
+        const isEntitled = product && (prodStatus === 'active' || prodStatus === 'trial');
+
+        if (!isEntitled) {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: 'PRODUCT_NOT_ENTITLED',
+              message: `Product '${productKey}' is not active or enabled for this workspace.`,
+            },
+          });
+        }
+
+        const wsRole = (request.workspaceMembership.role || '').toLowerCase();
+        const isOwnerOrAdmin = wsRole === 'owner' || wsRole === 'admin';
+        const productMem = tenantCtx?.productMembership as any;
+        if (productMem && String(productMem.status || '').toLowerCase() !== 'active' && !isOwnerOrAdmin) {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: 'PRODUCT_ACCESS_DENIED',
+              message: `Your access to product '${productKey}' is not active.`,
+            },
+          });
+        }
+        const permissions: string[] = productMem?.permissions || [];
+        const role = productMem?.role || (isOwnerOrAdmin ? 'owner' : 'viewer');
+
+        if (permissions.length === 0) {
+          permissions.push(...getProductRoleDefaultPermissions(productKey, role));
+        }
+
+        request.productMembership = {
+          id: productMem?._id,
+          productKey,
+          role,
+          permissions,
+          branchIds: productMem?.branchIds,
+          status: productMem?.status || (isOwnerOrAdmin ? 'active' : 'inactive'),
+        };
+
+        request.userPermissions = permissions;
+
+        if (!hasPermission(permissions, permission, isOwnerOrAdmin)) {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: 'PERMISSION_DENIED',
+              message: `You do not have permission '${permission}' for product '${productKey}'.`,
+            },
+          });
+        }
+
+        return;
+      }
+
+      // Fallback if already partially resolved
       if (!request.workspaceMembership) {
         await fastify.requireWorkspaceMembership(request, reply);
         if (reply.sent) return;
       }
 
-      // 2. Verify product entitlement
       await fastify.requireProductEntitlement(productKey)(request, reply);
       if (reply.sent) return;
 
       const wsRole = (request.workspaceMembership?.role || '').toLowerCase();
       const isOwnerOrAdmin = wsRole === 'owner' || wsRole === 'admin';
 
-      // 3. Resolve product membership
       const productMem = (await dataService.getProductMembership(
         request.workspace!.id,
         request.user.id,
         productKey
       )) as any;
 
+      if (productMem && String(productMem.status || '').toLowerCase() !== 'active' && !isOwnerOrAdmin) {
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: 'PRODUCT_ACCESS_DENIED',
+            message: `Your access to product '${productKey}' is not active.`,
+          },
+        });
+      }
+
       const permissions: string[] = productMem?.permissions || [];
       const role = productMem?.role || (isOwnerOrAdmin ? 'owner' : 'viewer');
 
-      // Populate default permissions if role has defaults and explicit permissions are empty
       if (permissions.length === 0) {
         permissions.push(...getProductRoleDefaultPermissions(productKey, role));
       }
@@ -417,7 +601,6 @@ const plugin: FastifyPluginAsync = async (fastify) => {
 
       request.userPermissions = permissions;
 
-      // 4. Check permission evaluation
       if (!hasPermission(permissions, permission, isOwnerOrAdmin)) {
         return reply.status(403).send({
           success: false,
@@ -426,24 +609,6 @@ const plugin: FastifyPluginAsync = async (fastify) => {
             message: `You do not have permission '${permission}' for product '${productKey}'.`,
           },
         });
-      }
-
-      // 5. Branch scoping check if requested
-      if (options?.requireBranchAccess) {
-        const branchHeader = options.branchIdHeader || 'x-branch-id';
-        const requestedBranchId = (request.headers[branchHeader] as string) || (request.query as any)?.branchId;
-
-        if (requestedBranchId && productMem?.branchIds && productMem.branchIds.length > 0) {
-          if (!productMem.branchIds.includes(requestedBranchId) && !isOwnerOrAdmin) {
-            return reply.status(403).send({
-              success: false,
-              error: {
-                code: 'BRANCH_ACCESS_DENIED',
-                message: `You do not have access to branch '${requestedBranchId}'.`,
-              },
-            });
-          }
-        }
       }
     };
   });
@@ -529,10 +694,6 @@ const plugin: FastifyPluginAsync = async (fastify) => {
         matches = true;
       }
 
-      if (!matches && request.workspace?.ownerId && String(request.workspace.ownerId) === String(request.user?.id)) {
-        matches = true;
-      }
-
       if (!matches) {
         return reply.status(404).send({
           success: false,
@@ -555,16 +716,13 @@ const plugin: FastifyPluginAsync = async (fastify) => {
     }
   );
 
-  // Require specific branch permission
+  // Enforce a branch-level permission after tenant and branch ownership resolution.
   fastify.decorate('requireBranchPermission', function (permission: string) {
     return async function (request: FastifyRequest, reply: FastifyReply) {
       if (!request.user) {
         return reply.status(401).send({
           success: false,
-          error: {
-            code: 'AUTHENTICATION_REQUIRED',
-            message: 'Authentication is required.',
-          },
+          error: { code: ERROR_CODES.UNAUTHENTICATED, message: 'Authentication is required.' },
         });
       }
 
@@ -572,54 +730,46 @@ const plugin: FastifyPluginAsync = async (fastify) => {
         await fastify.requireWorkspaceMembership(request, reply);
         if (reply.sent) return;
       }
-
       await fastify.requireBranchOwnership(request, reply);
       if (reply.sent) return;
 
-      const wsRole = (request.workspaceMembership?.role || 'member').toLowerCase();
-      const isOwner = wsRole === 'owner';
-      const isAdmin = wsRole === 'admin';
+      const workspaceRole = (request.workspaceMembership?.role || 'member').toLowerCase();
+      if (workspaceRole === 'owner' || workspaceRole === 'admin') return;
 
-      if (isOwner || isAdmin) {
-        return;
-      }
-
-      const productMem = (await dataService.getProductMembership(
+      const productKey = request.branch?.productKey || 'inventory';
+      const productMembership = (await dataService.getProductMembership(
         request.workspace!.id,
         request.user.id,
-        'inventory'
+        productKey
       )) as any;
 
-      const permissions: string[] = productMem?.permissions || [];
-      const prodRole = (productMem?.role || wsRole).toLowerCase();
-
-      if (permissions.length === 0) {
-        permissions.push(...getProductRoleDefaultPermissions('inventory', prodRole));
-      }
-
-      if (productMem?.branchIds && productMem.branchIds.length > 0 && request.branch) {
-        if (!productMem.branchIds.includes(request.branch.id)) {
-          return reply.status(403).send({
-            success: false,
-            error: {
-              code: 'BRANCH_PERMISSION_REQUIRED',
-              message: 'You do not have access to this branch.',
-            },
-          });
-        }
-      }
-
-      if (!hasPermission(permissions, permission, isOwner || isAdmin)) {
+      if (!productMembership || String(productMembership.status || '').toLowerCase() !== 'active') {
         return reply.status(403).send({
           success: false,
-          error: {
-            code: 'BRANCH_PERMISSION_REQUIRED',
-            message: 'You do not have permission to perform this action.',
-          },
+          error: { code: 'PRODUCT_ACCESS_DENIED', message: 'Active product access is required.' },
+        });
+      }
+
+      const permissions: string[] = [...(productMembership.permissions || [])];
+      if (permissions.length === 0) {
+        permissions.push(...getProductRoleDefaultPermissions(productKey, productMembership.role));
+      }
+      const allowedBranches = (productMembership.branchIds || []).map((id: unknown) => String(id));
+      if (allowedBranches.length > 0 && request.branch && !allowedBranches.includes(String(request.branch.id))) {
+        return reply.status(403).send({
+          success: false,
+          error: { code: 'BRANCH_ACCESS_DENIED', message: 'You do not have access to this branch.' },
+        });
+      }
+      if (!hasPermission(permissions, permission)) {
+        return reply.status(403).send({
+          success: false,
+          error: { code: 'BRANCH_PERMISSION_REQUIRED', message: 'You do not have permission to perform this action.' },
         });
       }
     };
   });
+
 
   // Verify branch is active
   fastify.decorate(

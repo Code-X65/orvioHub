@@ -5,7 +5,7 @@ import { env } from '../config/env.js';
 type OutboxMessage = {
   _id?: string;
   to: string;
-  template: 'verification' | 'invitation' | 'onboardingCompleted' | 'passwordReset' | 'emailChange' | 'twoFactorStatus' | 'securityAlert';
+  template: 'verification' | 'welcome' | 'invitation' | 'invitationRevoked' | 'onboardingCompleted' | 'passwordReset' | 'emailChange' | 'twoFactorStatus' | 'securityAlert' | 'trial_started' | 'trial_reminder_7days' | 'trial_reminder_2days' | 'trial_reminder_today';
   payload: Record<string, string>;
 };
 
@@ -104,6 +104,34 @@ function renderEmail(message: { template: string; payload: Record<string, string
         }),
       };
 
+    case 'welcome':
+      return {
+        subject: `Welcome to OrvioHub! 🚀 Let's set up your business workspace`,
+        html: buildHtmlTemplate({
+          title: 'Welcome to OrvioHub!',
+          preheader: 'Your Orviohub account is active. Start setting up your business and store workspace.',
+          contentHtml: `<p>Hello ${message.payload.name || 'there'},</p>
+          <p>We're thrilled to welcome you to <strong>OrvioHub</strong> — your modern multi-tenant operating platform for retail, inventory management, point-of-sale registers, and branch operations.</p>
+          
+          <div style="margin: 24px 0; background-color: #1a1118; border: 1.5px solid #714b67; border-radius: 6px; padding: 20px; box-shadow: 0 4px 16px rgba(113, 75, 103, 0.2);">
+            <div style="font-size: 11px; font-weight: 700; color: #FDB02F; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px;">
+              ⚡ Account Activated & Ready
+            </div>
+            <div style="font-size: 13px; color: #e2e8f0; line-height: 1.6;">
+              <div style="margin-bottom: 8px;">✨ <strong>Personal Profile:</strong> Configured & verified</div>
+              <div style="margin-bottom: 8px;">📦 <strong>Multi-Branch Inventory & POS:</strong> Real-time catalog & sales tracking</div>
+              <div style="margin-bottom: 8px;">👥 <strong>Team Permissions:</strong> Invite managers, cashiers, and staff</div>
+              <div>🌐 <strong>Single Sign-On:</strong> Instant access across all OrvioHub subdomains</div>
+            </div>
+          </div>
+
+          <p>Ready to get started? Launch your workspace to complete your profile setup or configure your first organization:</p>`,
+          buttonText: 'Get Started on OrvioHub',
+          buttonUrl: message.payload.url || `${env.BASE_URL_ACCOUNT || env.APP_URL}/onboard/personal`,
+          footerNote: 'Need help or have questions? Our support team is here to help you get up and running smoothly at support@orviohub.com.',
+        }),
+      };
+
     case 'invitation':
       return {
         subject: `You've been invited to join ${message.payload.organizationName || message.payload.workspaceName || 'an organization'} on OrvioHub`,
@@ -116,6 +144,19 @@ function renderEmail(message: { template: string; payload: Record<string, string
           buttonText: 'Accept Invitation',
           buttonUrl: message.payload.url,
           footerNote: 'This invitation is tied to your email address and is valid for 7 days.',
+        }),
+      };
+
+    case 'invitationRevoked':
+      return {
+        subject: `Invitation Cancelled - ${message.payload.organizationName || message.payload.workspaceName || 'OrvioHub'}`,
+        html: buildHtmlTemplate({
+          title: 'Invitation Cancelled',
+          preheader: `Your invitation to join ${message.payload.organizationName || message.payload.workspaceName || 'a workspace'} has been cancelled.`,
+          contentHtml: `<p>Hello,</p>
+          <p>This is to inform you that your invitation to join <strong>${message.payload.organizationName || message.payload.workspaceName || 'OrvioHub'}</strong> has been cancelled by the workspace administrator.</p>
+          <p>If you have any questions, please reach out to your team administrator.</p>`,
+          footerNote: 'For support inquiries, contact support@orviohub.com.',
         }),
       };
 
@@ -406,6 +447,26 @@ function renderEmail(message: { template: string; payload: Record<string, string
           </div>
           <p>Business records have been archived per statutory NDPA retention regulations.</p>`,
           footerNote: 'For inquiries, reach out to support@orviohub.com.',
+        }),
+      };
+
+    case 'securityAlert':
+      return {
+        subject: `Security Alert: ${message.payload.action || 'New sign-in detected'} - OrvioHub`,
+        html: buildHtmlTemplate({
+          title: message.payload.action || 'Security Alert',
+          preheader: 'A security-relevant event occurred on your OrvioHub account.',
+          contentHtml: `<p>Hi ${message.payload.name || 'there'},</p>
+          <p>${message.payload.details || 'We detected a new sign-in or security change on your OrvioHub account.'}</p>
+          <div style="margin: 20px 0; padding: 16px; background-color: #1a1118; border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 4px;">
+            ${message.payload.device ? `<p style="margin: 0 0 6px 0; font-size: 13px; color: #cbd5e1;"><strong>Device:</strong> ${message.payload.device}</p>` : ''}
+            ${message.payload.ipAddress ? `<p style="margin: 0 0 6px 0; font-size: 13px; color: #cbd5e1;"><strong>IP Address:</strong> ${message.payload.ipAddress}</p>` : ''}
+            ${message.payload.timestamp ? `<p style="margin: 0; font-size: 12px; color: #94a3b8;"><strong>Time:</strong> ${message.payload.timestamp}</p>` : ''}
+          </div>
+          <p style="font-size: 13px; color: #cbd5e1;">If you recognize this activity, no further action is needed. If you did not perform this action, please reset your password and review your active sessions immediately.</p>`,
+          buttonText: 'Review Active Sessions',
+          buttonUrl: `${env.BASE_URL_ACCOUNT || env.APP_URL}/profile?tab=security`,
+          footerNote: 'If you suspect unauthorized access, contact security@orviohub.com immediately.',
         }),
       };
 

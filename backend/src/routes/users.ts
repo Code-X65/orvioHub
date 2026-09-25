@@ -24,6 +24,8 @@ const updateProfileSchema = z.object({
   phone: z.string().trim().optional().nullable(),
   country: z.string().trim().optional().nullable(),
   state: z.string().trim().optional().nullable(),
+  stateCode: z.string().trim().optional().nullable(),
+  lga: z.string().trim().optional().nullable(),
   city: z.string().trim().optional().nullable(),
   timezone: z.string().trim().optional().nullable(),
   locale: z.string().trim().optional().nullable(),
@@ -301,6 +303,25 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
           },
           requestId: request.id,
         });
+      }
+
+      // 4b. Guard: Verified phone numbers cannot be changed directly via profile update
+      const isPhoneVerified = Boolean(currentUser.phoneVerifiedAt) || currentUser.phoneStatus === 'verified';
+      if (isPhoneVerified && normalizedPhone !== undefined) {
+        const currentDigits = (currentUser.phone || currentUser.phoneNormalized || '').replace(/\D/g, '');
+        const incomingDigits = (phoneNormalizedDigits || '').replace(/\D/g, '');
+
+        if (normalizedPhone === null || (incomingDigits && incomingDigits !== currentDigits)) {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: 'VERIFIED_PHONE_LOCKED',
+              message: 'Verified phone numbers cannot be edited directly. Please use the Change Phone Number verification process.',
+              fields: { phone: 'Verified phone number is locked.' },
+            },
+            requestId: request.id,
+          });
+        }
       }
 
       // 5. Compute actual changed fields
@@ -770,6 +791,7 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
             currentPassword: { type: 'string' },
             newPassword: { type: 'string', minLength: 8 },
             revokeOtherSessions: { type: 'boolean' },
+            twoFactorCode: { type: 'string' },
           },
         },
       },
@@ -779,11 +801,18 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
         currentPassword: string;
         newPassword: string;
         revokeOtherSessions?: boolean;
+        twoFactorCode?: string;
       };
 
       try {
         const currentSessionId = request.sessionId || (request.user as any)?.sessionId;
-        await dataService.changePassword(request.user.id, body.currentPassword, body.newPassword, currentSessionId);
+        await dataService.changePassword(
+          request.user.id,
+          body.currentPassword,
+          body.newPassword,
+          currentSessionId,
+          body.twoFactorCode
+        );
         
         if (body.revokeOtherSessions) {
           await dataService.revokeAllOtherSessions(request.user.id, currentSessionId);
@@ -812,6 +841,33 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
           },
         });
       } catch (err: any) {
+        if (err.code === 'PASSWORD_REUSED') {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.PASSWORD_REUSED,
+              message: 'Your new password cannot be the same as your current password.',
+            },
+          });
+        }
+        if (err.code === 'STEP_UP_AUTH_REQUIRED') {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.STEP_UP_AUTH_REQUIRED,
+              message: 'Two-factor verification code is required to change password.',
+            },
+          });
+        }
+        if (err.code === 'INVALID_2FA_CODE') {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.INVALID_2FA_CODE,
+              message: 'Invalid two-factor authentication code.',
+            },
+          });
+        }
         if (err.code === 'INVALID_CREDENTIALS') {
           return reply.status(401).send({
             success: false,
@@ -1824,289 +1880,7 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
   );
 
   // ==========================================
-  // USER PHONE VERIFICATION (PHASE 2)
-  // ==========================================
-
-  // 17. GET /api/v1/users/me/phones
-  fastify.get(
-    '/me/phones',
-    {
-      preHandler: [fastify.authenticate],
-      schema: {
-        tags: ['Users', 'Phone'],
-        summary: 'List all phone numbers for current user',
-        security: [{ bearerAuth: [] }],
-      },
-    },
-    async (request, reply) => {
-      const phones = await dataService.getUserPhones(request.user.id);
-      return reply.send({
-        success: true,
-        data: { phones },
-        phones,
-      });
-    }
-  );
-
-  // 18. POST /api/v1/users/me/phones/send-otp
-  fastify.post(
-    '/me/phones/send-otp',
-    {
-      preHandler: [fastify.authenticate],
-      schema: {
-        tags: ['Users', 'Phone'],
-        summary: 'Send a 6-digit verification code to a Nigerian phone number',
-        security: [{ bearerAuth: [] }],
-        body: {
-          type: 'object',
-          required: ['phone'],
-          properties: {
-            phone: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const body = request.body as { phone: string };
-      const validation = validateNigerianPhone(body.phone);
-
-      if (!validation.valid || !validation.normalized) {
-        return reply.status(400).send({
-          success: false,
-          error: {
-            code: 'INVALID_PHONE_NUMBER',
-            message: validation.error || 'Invalid Nigerian phone number format.',
-          },
-        });
-      }
-
-      // Check rate limit (max 3 OTPs per hour per phone)
-      const recentCount = await dataService.countRecentPhoneOtps(
-        request.user.id,
-        validation.normalized,
-        60
-      );
-
-      if (recentCount >= 3) {
-        return reply.status(429).send({
-          success: false,
-          error: {
-            code: 'TOO_MANY_REQUESTS',
-            message: 'Too many OTP requests for this phone number. Please wait 1 hour before trying again.',
-          },
-        });
-      }
-
-      // Check if this phone number is already verified by a different user
-      const alreadyTaken = await dataService.isPhoneRegistered(
-        validation.normalized,
-        request.user.id
-      );
-
-      if (alreadyTaken) {
-        return reply.status(409).send({
-          success: false,
-          error: {
-            code: 'PHONE_ALREADY_REGISTERED',
-            message: 'This phone number is already linked to another account. Please use a different number.',
-          },
-        });
-      }
-
-      // Generate 6-digit numeric OTP code
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
-      const otpHash = await bcrypt.hash(otp, 10);
-      const codeExpiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes expiry
-
-      // Save / update phone record
-      const result = await dataService.saveUserPhoneOtp({
-        userId: request.user.id,
-        phone: validation.formatted || body.phone,
-        phoneNormalized: validation.normalized,
-        verificationCode: otpHash,
-        codeExpiresAt,
-      });
-
-      // Send SMS
-      await smsService.sendOtp(validation.normalized, otp);
-
-      await dataService.logAudit({
-        actorUserId: request.user.id,
-        eventType: AUDIT_EVENTS.USER_PHONE_ADDED,
-        ipAddress: request.ip,
-        userAgent: request.headers['user-agent'],
-        metadata: { phone: validation.formatted },
-      });
-
-      return reply.send({
-        success: true,
-        message: `Verification code sent to ${validation.formatted || validation.normalized}.`,
-        data: {
-          phoneId: result.phoneId,
-          normalizedPhone: validation.normalized,
-          expiresInSeconds: 600,
-        },
-      });
-    }
-  );
-
-  // 19. POST /api/v1/users/me/phones/verify-otp
-  fastify.post(
-    '/me/phones/verify-otp',
-    {
-      preHandler: [fastify.authenticate],
-      schema: {
-        tags: ['Users', 'Phone'],
-        summary: 'Verify OTP code and mark phone number as verified',
-        security: [{ bearerAuth: [] }],
-        body: {
-          type: 'object',
-          required: ['phone', 'otp'],
-          properties: {
-            phone: { type: 'string' },
-            otp: { type: 'string', minLength: 6, maxLength: 6 },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const body = request.body as { phone: string; otp: string };
-      const validation = validateNigerianPhone(body.phone);
-
-      if (!validation.valid || !validation.normalized) {
-        return reply.status(400).send({
-          success: false,
-          error: {
-            code: 'INVALID_PHONE_NUMBER',
-            message: validation.error || 'Invalid phone number format.',
-          },
-        });
-      }
-
-      const phoneRecord = await dataService.getUserPhoneRecord(request.user.id, validation.normalized);
-
-      if (!phoneRecord) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: 'PHONE_NOT_FOUND',
-            message: 'Phone record not found. Please request a new verification code first.',
-          },
-        });
-      }
-
-      // Check code expiration
-      if (phoneRecord.codeExpiresAt && Date.now() > phoneRecord.codeExpiresAt) {
-        return reply.status(400).send({
-          success: false,
-          error: {
-            code: 'OTP_EXPIRED',
-            message: 'The verification code has expired. Please request a new code.',
-          },
-        });
-      }
-
-      // Verify OTP hash
-      if (!phoneRecord.verificationCode) {
-        return reply.status(400).send({
-          success: false,
-          error: {
-            code: 'OTP_INVALID',
-            message: 'No active verification code found for this phone.',
-          },
-        });
-      }
-
-      const isMatch = await bcrypt.compare(body.otp.trim(), phoneRecord.verificationCode);
-      if (!isMatch) {
-        return reply.status(400).send({
-          success: false,
-          error: {
-            code: 'OTP_INVALID',
-            message: 'Incorrect verification code. Please check and try again.',
-          },
-        });
-      }
-
-      // Mark verified
-      const verifiedResult = await dataService.verifyUserPhone(request.user.id, body.otp.trim());
-
-      await dataService.logAudit({
-        actorUserId: request.user.id,
-        eventType: AUDIT_EVENTS.USER_PHONE_VERIFIED,
-        ipAddress: request.ip,
-        userAgent: request.headers['user-agent'],
-        metadata: { phoneId: phoneRecord._id, phone: validation.formatted },
-      });
-
-      return reply.send({
-        success: true,
-        message: 'Phone number verified successfully!',
-        data: verifiedResult,
-      });
-    }
-  );
-
-  // Aliases for singular /me/phone/send-otp and /me/phone/verify-otp
-  fastify.post('/me/phone/send-otp', { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    return fastify.inject({
-      method: 'POST',
-      url: '/api/v1/users/me/phones/send-otp',
-      headers: { authorization: request.headers.authorization, 'user-agent': request.headers['user-agent'] },
-      payload: request.body as any,
-    }).then((res) => reply.status(res.statusCode).headers(res.headers).send(res.json()));
-  });
-
-  fastify.post('/me/phone/verify-otp', { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    return fastify.inject({
-      method: 'POST',
-      url: '/api/v1/users/me/phones/verify-otp',
-      headers: { authorization: request.headers.authorization, 'user-agent': request.headers['user-agent'] },
-      payload: request.body as any,
-    }).then((res) => reply.status(res.statusCode).headers(res.headers).send(res.json()));
-  });
-
-  // 20. POST /api/v1/users/me/phones/:phoneId/set-primary
-  fastify.post(
-    '/me/phones/:phoneId/set-primary',
-    {
-      preHandler: [fastify.authenticate],
-      schema: {
-        tags: ['Users', 'Phone'],
-        summary: 'Set a verified phone as primary',
-        security: [{ bearerAuth: [] }],
-        params: {
-          type: 'object',
-          required: ['phoneId'],
-          properties: {
-            phoneId: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { phoneId } = request.params as { phoneId: string };
-      try {
-        const result = await dataService.setUserPrimaryPhone(request.user.id, phoneId);
-        return reply.send({
-          success: true,
-          message: 'Primary phone updated successfully.',
-          data: result,
-        });
-      } catch (err: any) {
-        return reply.status(400).send({
-          success: false,
-          error: {
-            code: 'SET_PRIMARY_FAILED',
-            message: err.message || 'Failed to set phone as primary.',
-          },
-        });
-      }
-    }
-  );
-
-  // ==========================================
-  // Official Phone Verification & Contact APIs (Plan Specification)
+  // Official Phone Verification & Contact APIs
   // ==========================================
 
   // 1. GET /api/v1/users/me/contact
@@ -2152,9 +1926,13 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
           type: 'object',
           properties: {
             phone: { type: 'string' },
+            phoneVisibility: { type: 'string', enum: ['private', 'workspace'] },
             country: { type: 'string' },
             state: { type: 'string' },
+            stateCode: { type: 'string' },
+            lga: { type: 'string' },
             city: { type: 'string' },
+            timezone: { type: 'string' },
             phoneUsedForRecovery: { type: 'boolean' },
             phoneUsedForMfa: { type: 'boolean' },
           },
@@ -2166,10 +1944,12 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
         const body = request.body as any;
         await dataService.updateUserContact(request.user.id, body, request.ip, request.headers['user-agent']);
         const updated = await dataService.getUserContact(request.user.id);
+        const freshUser = await dataService.getUserById(request.user.id);
         return reply.send({
           success: true,
           message: 'Contact details updated successfully.',
           data: updated,
+          user: toPublicUser(freshUser),
         });
       } catch (err: any) {
         const status = err.message?.includes('PHONE_NOT_VERIFIED') ? 403 : 400;
@@ -2219,15 +1999,38 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
             challengeId: challenge.challengeId,
             phoneNormalized: challenge.phoneNormalized,
             expiresAt: challenge.expiresAt,
+            isDevMock: challenge.isDevMock,
+            provider: challenge.provider,
           },
         });
       } catch (err: any) {
-        const isRateLimit = err.message?.includes('RATE_LIMIT_EXCEEDED');
-        return reply.status(isRateLimit ? 429 : 400).send({
+        const msg = err.message || '';
+        const isRateLimit = msg.includes('RATE_LIMIT_EXCEEDED');
+        const isSamePhone = msg.includes('SAME_PHONE_NUMBER');
+        const isPhoneInUse = msg.includes('PHONE_ALREADY_IN_USE');
+
+        let statusCode = 400;
+        let errorCode = 'VERIFICATION_START_FAILED';
+        let userMessage = msg || 'Failed to start phone verification.';
+
+        if (isRateLimit) {
+          statusCode = 429;
+          errorCode = 'RATE_LIMIT_EXCEEDED';
+        } else if (isSamePhone) {
+          statusCode = 400;
+          errorCode = 'SAME_PHONE_NUMBER';
+          userMessage = 'New phone number cannot be the same as your current verified number.';
+        } else if (isPhoneInUse) {
+          statusCode = 409;
+          errorCode = 'PHONE_ALREADY_IN_USE';
+          userMessage = 'This phone number is already associated with another account.';
+        }
+
+        return reply.status(statusCode).send({
           success: false,
           error: {
-            code: isRateLimit ? 'RATE_LIMIT_EXCEEDED' : 'VERIFICATION_START_FAILED',
-            message: err.message || 'Failed to start phone verification.',
+            code: errorCode,
+            message: userMessage,
           },
         });
       }
@@ -2275,10 +2078,14 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
           });
         }
 
+        const freshUser = await dataService.getUserById(request.user.id);
         return reply.send({
           success: true,
           message: 'Phone number verified successfully!',
-          data: result,
+          data: {
+            ...result,
+            user: freshUser ? toPublicUser(freshUser) : undefined,
+          },
         });
       } catch (err: any) {
         return reply.status(400).send({

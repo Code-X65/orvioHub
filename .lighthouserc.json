@@ -1,0 +1,33 @@
+{
+  "ci": {
+    "collect": {
+      "numberOfRuns": 3,
+      "startServerCommand": "pnpm --filter frontend preview",
+      "url": [
+        "http://localhost:4173/",
+        "http://localhost:4173/login",
+        "http://localhost:4173/pricing"
+      ]
+    },
+    "assert": {
+      "assertions": {
+        "largest-contentful-paint": ["error", { "maxNumericValue": 2500 }],
+        "first-input-delay": ["error", { "maxNumericValue": 100 }],
+        "cumulative-layout-shift": ["error", { "maxNumericValue": 0.1 }],
+        "total-blocking-time": ["error", { "maxNumericValue": 200 }],
+        "categories:performance": ["warn", { "minScore": 0.9 }]
+      }
+    },
+    "upload": {
+      "target": "temporary-public-storage"
+    }
+  },
+  "lighthouse": {
+    "performance": {
+      "largest-contentful-paint": 2500,
+      "first-input-delay": 100,
+      "cumulative-layout-shift": 0.1,
+      "total-blocking-time": 200
+    }
+  }
+}

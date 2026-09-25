@@ -12,8 +12,11 @@ import {
   getVerifyEmailUrl,
   getResetPasswordUrl,
   isAllowedReturnTo,
+  isAllowedOrigin,
   developmentOrigins,
   productionOrigins,
+  applications,
+  getAllowedHosts,
 } from "../src/index.js";
 
 describe("Host Resolution", () => {
@@ -128,6 +131,68 @@ describe("URL Helpers", () => {
     assert.ok(developmentOrigins.includes("http://inventory.orviohub.localhost:3000"));
     assert.ok(developmentOrigins.includes("http://localhost:3000"));
     assert.ok(productionOrigins.includes("https://accounts.orviohub.com"));
+  });
+
+  it("strictly validates allowed CORS origins and rejects lookalikes & admin", () => {
+    // Development
+    assert.equal(isAllowedOrigin("http://account.orviohub.localhost:3000", "development"), true);
+    assert.equal(isAllowedOrigin("http://home.orviohub.localhost:3000", "development"), true);
+    assert.equal(isAllowedOrigin("http://localhost:3000", "development"), true);
+    assert.equal(isAllowedOrigin("http://127.0.0.1:4000", "development"), true);
+    assert.equal(isAllowedOrigin("http://admin.orviohub.localhost:3000", "development"), false);
+    assert.equal(isAllowedOrigin("http://evil-orviohub.localhost:3000", "development"), false);
+    assert.equal(isAllowedOrigin("https://evil.orviohub.localhost", "development"), false);
+
+    // Production
+    assert.equal(isAllowedOrigin("https://orviohub.com", "production"), true);
+    assert.equal(isAllowedOrigin("https://accounts.orviohub.com", "production"), true);
+    assert.equal(isAllowedOrigin("https://home.orviohub.com", "production"), true);
+    assert.equal(isAllowedOrigin("https://inventory.orviohub.com", "production"), true);
+    assert.equal(isAllowedOrigin("https://admin.orviohub.com", "production"), false);
+    assert.equal(isAllowedOrigin("https://evil-orviohub.com", "production"), false);
+    assert.equal(isAllowedOrigin("https://orviohub.com.evil.com", "production"), false);
+    assert.equal(isAllowedOrigin("http://accounts.orviohub.com", "production"), false); // plain http rejected in prod
+    assert.equal(isAllowedOrigin("https://unknown.orviohub.com", "production"), false);
+
+    // Preproduction
+    assert.equal(isAllowedOrigin("https://orviohub.vercel.app", "preproduction"), true);
+    assert.equal(isAllowedOrigin("https://accounts.preprod.orviohub.com", "preproduction"), true);
+    assert.equal(isAllowedOrigin("https://admin.preprod.orviohub.com", "preproduction"), false);
+    assert.equal(isAllowedOrigin("https://evil-preview.vercel.app", "preproduction"), false);
+  });
+
+  it("exports applications with type and path metadata", () => {
+    assert.equal(applications.launcher.type, "subdomain");
+    assert.equal(applications.launcher.subdomain, "app");
+    assert.equal(applications.launcher.developmentUrl.includes("app.orviohub.localhost"), true);
+
+    assert.equal(applications.pos.type, "path");
+    assert.equal(applications.pos.subdomain, "inventory");
+    assert.equal(applications.pos.path, "/pos");
+
+    assert.equal(applications.booking.type, "path");
+    assert.equal(applications.booking.subdomain, "home");
+    assert.equal(applications.booking.path, "/apps/booking");
+
+    assert.equal(applications.gym.type, "path");
+    assert.equal(applications.gym.subdomain, "home");
+    assert.equal(applications.gym.path, "/apps/gym");
+
+    assert.equal((applications as any).task_management, undefined);
+  });
+
+  it("dynamically generates allowedHosts including all environments and subdomains", () => {
+    const allHosts = getAllowedHosts();
+    assert.ok(allHosts.includes("orviohub.localhost"));
+    assert.ok(allHosts.includes(".orviohub.localhost"));
+    assert.ok(allHosts.includes("account.orviohub.localhost"));
+    assert.ok(allHosts.includes("accounts.orviohub.localhost"));
+    assert.ok(allHosts.includes("app.orviohub.localhost"));
+    assert.ok(allHosts.includes("home.orviohub.localhost"));
+    assert.ok(allHosts.includes("inventory.orviohub.localhost"));
+    assert.ok(allHosts.includes("preprod.orviohub.com"));
+    assert.ok(allHosts.includes("orviohub.vercel.app"));
+    assert.ok(allHosts.includes("orviohub.com"));
   });
 });
 

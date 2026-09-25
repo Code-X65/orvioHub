@@ -18,6 +18,7 @@ export const OrganizationQuotaIndicator: React.FC<OrganizationQuotaIndicatorProp
   const max = eligibility.maximumOwned ?? eligibility.maximumOwnedOrganizations ?? 3;
   const remaining = eligibility.remainingOwned ?? eligibility.remainingOwnedOrganizations ?? Math.max(max - current, 0);
   const isLimitReached = !eligibility.canCreate || current >= max;
+  const isApproachingLimit = !isLimitReached && remaining <= 1;
   const hasOverride = eligibility.override?.active;
 
   if (variant === 'minimal') {
@@ -26,13 +27,15 @@ export const OrganizationQuotaIndicator: React.FC<OrganizationQuotaIndicatorProp
         className={cn(
           'inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-semibold font-mono border',
           isLimitReached
-            ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+            ? 'bg-red-500/10 border-red-500/30 text-red-300'
+            : isApproachingLimit
+            ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
             : 'bg-[#714b67]/20 border-[#714b67]/40 text-[#f0d8e8]',
           className
         )}
       >
         <span>
-          {current}/{max} Owned
+          {isApproachingLimit ? `⚠️ ${current}/${max} (1 slot left)` : `${current}/${max} Owned`}
         </span>
         {hasOverride && <Sparkles className="w-2.5 h-2.5 text-[#FDB02F]" />}
       </span>
@@ -43,29 +46,43 @@ export const OrganizationQuotaIndicator: React.FC<OrganizationQuotaIndicatorProp
     return (
       <div
         className={cn(
-          'flex items-center justify-between px-2.5 py-1.5 rounded bg-[#080608] border text-xs',
+          'flex items-center justify-between px-2.5 py-1.5 rounded-xl border text-xs transition-all',
           isLimitReached
-            ? 'border-amber-500/30 text-amber-200/90'
-            : 'border-white/10 text-slate-300',
+            ? 'border-red-500/30 bg-red-500/10 text-red-200'
+            : isApproachingLimit
+            ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+            : 'border-white/10 bg-[#080608] text-slate-300',
           className
         )}
       >
         <div className="flex items-center gap-2">
           {isLimitReached ? (
+            <AlertTriangle className="w-3.5 h-3.5 text-red-400 shrink-0" />
+          ) : isApproachingLimit ? (
             <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
           ) : (
             <ShieldCheck className="w-3.5 h-3.5 text-[#f0d8e8] shrink-0" />
           )}
           <span className="text-[11px] font-medium">
-            Organizations owned: <strong className="text-white font-semibold">{current} of {max}</strong>
+            {isApproachingLimit ? (
+              <span className="font-semibold text-amber-300">
+                ⚠️ {current} of {max} — {remaining} remaining
+              </span>
+            ) : (
+              <span>
+                Organizations owned: <strong className="text-white font-semibold">{current} of {max}</strong>
+              </span>
+            )}
           </span>
         </div>
 
-        <span className="text-[10px] font-mono text-slate-400">
+        <span className="text-[10px] font-mono">
           {isLimitReached ? (
-            <span className="text-amber-400 font-semibold">Limit reached</span>
+            <span className="text-red-400 font-semibold">Limit reached</span>
+          ) : isApproachingLimit ? (
+            <span className="text-amber-400 font-semibold">Approaching limit</span>
           ) : (
-            <span>{remaining} slot{remaining === 1 ? '' : 's'} remaining</span>
+            <span className="text-slate-400">{remaining} slot{remaining === 1 ? '' : 's'} remaining</span>
           )}
         </span>
       </div>
@@ -76,8 +93,12 @@ export const OrganizationQuotaIndicator: React.FC<OrganizationQuotaIndicatorProp
   return (
     <div
       className={cn(
-        'p-3 rounded-lg border bg-[#0a0709] space-y-2',
-        isLimitReached ? 'border-amber-500/40 bg-amber-500/5' : 'border-white/10',
+        'p-3 rounded-xl border bg-[#0a0709] space-y-2',
+        isLimitReached
+          ? 'border-red-500/40 bg-red-500/5'
+          : isApproachingLimit
+          ? 'border-amber-500/40 bg-amber-500/10'
+          : 'border-white/10',
         className
       )}
     >
@@ -85,13 +106,15 @@ export const OrganizationQuotaIndicator: React.FC<OrganizationQuotaIndicatorProp
         <div className="flex items-center gap-2">
           <div
             className={cn(
-              'w-7 h-7 rounded flex items-center justify-center border',
+              'w-7 h-7 rounded-lg flex items-center justify-center border',
               isLimitReached
+                ? 'bg-red-500/20 border-red-500/40 text-red-300'
+                : isApproachingLimit
                 ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
                 : 'bg-[#714b67]/20 border-[#714b67]/40 text-[#f0d8e8]'
             )}
           >
-            {isLimitReached ? (
+            {isLimitReached || isApproachingLimit ? (
               <AlertTriangle className="w-4 h-4" />
             ) : (
               <ShieldCheck className="w-4 h-4" />
@@ -109,6 +132,8 @@ export const OrganizationQuotaIndicator: React.FC<OrganizationQuotaIndicatorProp
           className={cn(
             'px-2 py-0.5 rounded text-[11px] font-mono font-bold border',
             isLimitReached
+              ? 'bg-red-500/20 border-red-500/30 text-red-300'
+              : isApproachingLimit
               ? 'bg-amber-500/20 border-amber-500/30 text-amber-300'
               : 'bg-white/5 border-white/10 text-white'
           )}
@@ -122,15 +147,23 @@ export const OrganizationQuotaIndicator: React.FC<OrganizationQuotaIndicatorProp
         <div
           className={cn(
             'h-full rounded-full transition-all duration-300',
-            isLimitReached ? 'bg-amber-500' : 'bg-[#714b67]'
+            isLimitReached
+              ? 'bg-red-500'
+              : isApproachingLimit
+              ? 'bg-amber-500'
+              : 'bg-[#714b67]'
           )}
           style={{ width: `${Math.min(100, (current / max) * 100)}%` }}
         />
       </div>
 
       {isLimitReached ? (
-        <p className="text-[11px] text-amber-300/90 leading-relaxed">
+        <p className="text-[11px] text-red-300/90 leading-relaxed">
           You currently own the maximum of {max} organizations. You can still freely join other businesses by invitation.
+        </p>
+      ) : isApproachingLimit ? (
+        <p className="text-[11px] text-amber-300/90 leading-relaxed">
+          ⚠️ Approaching ownership quota: You have used {current} of {max} organization creation slots ({remaining} slot remaining).
         </p>
       ) : (
         <p className="text-[11px] text-slate-400 leading-relaxed">

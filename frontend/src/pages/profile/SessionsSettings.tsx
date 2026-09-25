@@ -36,8 +36,9 @@ export const SessionsSettings: React.FC = () => {
   const fetchSessions = async () => {
     try {
       setIsLoading(true);
-      const res = await api.get<{ sessions: SessionItem[] }>('/users/me/sessions');
-      setSessions(res.sessions || []);
+      const res = await api.get<{ sessions?: SessionItem[]; data?: { sessions: SessionItem[] } }>('/users/me/sessions');
+      const sessionsList = res.sessions || (res as any).data?.sessions || [];
+      setSessions(sessionsList);
     } catch {
       toast.error('Failed to load active sessions.');
     } finally {
@@ -168,7 +169,7 @@ export const SessionsSettings: React.FC = () => {
                   </div>
 
                   <div className="space-y-1">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-sm font-semibold text-white">
                         {session.deviceName || session.browser || 'Web Browser'}
                       </span>
@@ -178,6 +179,10 @@ export const SessionsSettings: React.FC = () => {
                           Current Device
                         </span>
                       )}
+
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-xs bg-[#714b67]/20 text-[#e2b9d8] border border-[#714b67]/30">
+                        Trusted Device
+                      </span>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-400">
@@ -199,6 +204,12 @@ export const SessionsSettings: React.FC = () => {
                           ? `Active ${new Date(session.lastActiveAt).toLocaleString()}`
                           : `Created ${new Date(session.createdAt).toLocaleDateString()}`}
                       </span>
+
+                      {session.deviceId && (
+                        <span className="text-[10px] font-mono text-slate-500">
+                          ID: {session.deviceId.slice(0, 8)}...
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>

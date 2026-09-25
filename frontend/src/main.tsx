@@ -12,7 +12,21 @@ import { App } from "./App";
 import "./index.css";
 
 initObservability();
-useAuthStore.getState().refreshSession();
+// Defer session validation so the UI paints immediately.
+// The AuthGuard will still trigger validation on first mount if needed.
+if (typeof window !== 'undefined') {
+  const bootstrapAuth = () => {
+    if (!useAuthStore.getState().isInitialized) {
+      useAuthStore.getState().refreshSession();
+    }
+  };
+  // Use requestIdleCallback for non-critical bootstrap work
+  if ('requestIdleCallback' in window) {
+    (window as any).requestIdleCallback(bootstrapAuth, { timeout: 3000 });
+  } else {
+    setTimeout(bootstrapAuth, 1000);
+  }
+}
 
 const queryClient = new QueryClient({
   defaultOptions: {

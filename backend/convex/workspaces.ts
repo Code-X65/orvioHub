@@ -1384,6 +1384,118 @@ export const getProductMembers = query({
   },
 });
 
+const BRANCH_ASSIGNMENT_PERMISSIONS: Record<string, string[]> = {
+  branch_manager: ["branch.view", "branch.update"],
+  sales_attendant: ["branch.view"],
+  stock_manager: ["branch.view"],
+  viewer: ["branch.view"],
+};
+
+async function requireWorkspaceManager(ctx: any, workspaceId: any, userId: any) {
+  const workspace = await ctx.db.get(workspaceId);
+  const membership = await ctx.db.query("workspaceMemberships")
+    .withIndex("by_workspace_user", (q: any) => q.eq("workspaceId", workspaceId).eq("userId", userId))
+    .first();
+  const role = String(membership?.role || "").toLowerCase();
+  if (String(workspace?.ownerId) !== String(userId) && !["owner", "admin"].includes(role)) {
+    throw new Error("WORKSPACE_MANAGER_REQUIRED");
+  }
+}
+
+export const listBranchMembers = query({
+  args: { workspaceId: v.id("workspaces"), branchId: v.id("branches"), productKey: v.optional(v.string()) },
+  handler: async (ctx, args) => {
+    const assignments = await ctx.db.query("branchAssignments")
+      .withIndex("by_workspace_branch", (q) => q.eq("workspaceId", args.workspaceId).eq("branchId", args.branchId))
+      .collect();
+    const active = assignments.filter((a) => a.status === "active" && (!args.productKey || a.productKey === args.productKey));
+    return Promise.all(active.map(async (assignment) => {
+      const user = await ctx.db.get(assignment.userId);
+      return {
+        id: assignment._id,
+        userId: assignment.userId,
+        name: user?.name || "Unknown",
+        email: user?.email || "",
+        role: assignment.role,
+        productKey: assignment.productKey,
+        status: assignment.status,
+        assignedAt: assignment.assignedAt,
+      };
+    }));
+  },
+});
+
+export const upsertBranchMember = mutation({
+  args: {
+    workspaceId: v.id("workspaces"), branchId: v.id("branches"), userId: v.id("users"),
+    callerUserId: v.id("users"), role: v.string(), productKey: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const productKey = (args.productKey || "inventory").toLowerCase();
+    if (!BRANCH_ASSIGNMENT_PERMISSIONS[args.role]) throw new Error("INVALID_BRANCH_ROLE");
+    await requireWorkspaceManager(ctx, args.workspaceId, args.callerUserId);
+    const branch = await ctx.db.get(args.branchId);
+    if (!branch || String(branch.workspaceId) !== String(args.workspaceId)) throw new Error("BRANCH_NOT_FOUND");
+    const target = await ctx.db.query("workspaceMemberships")
+      .withIndex("by_workspace_user", (q) => q.eq("workspaceId", args.workspaceId).eq("userId", args.userId)).first();
+    if (!target || String(target.status).toLowerCase() !== "active") throw new Error("ACTIVE_WORKSPACE_MEMBER_REQUIRED");
+    const now = Date.now();
+    const productMembership = await ctx.db.query("productMemberships")
+      .withIndex("by_workspace_product_user", (q) => q.eq("workspaceId", args.workspaceId).eq("productKey", productKey).eq("userId", args.userId))
+      .first();
+    const branchPermissions = BRANCH_ASSIGNMENT_PERMISSIONS[args.role];
+    if (productMembership) {
+      const branchIds = new Set((productMembership.branchIds || []).map(String));
+      branchIds.add(String(args.branchId));
+      await ctx.db.patch(productMembership._id, {
+        branchIds: Array.from(branchIds) as any,
+        permissions: Array.from(new Set([...(productMembership.permissions || []), ...branchPermissions])),
+        status: "active",
+        updatedAt: now,
+      });
+    } else {
+      await ctx.db.insert("productMemberships", {
+        workspaceId: args.workspaceId, userId: args.userId, productKey, role: args.role,
+        permissions: branchPermissions, branchIds: [args.branchId], status: "active", createdAt: now, updatedAt: now,
+      });
+    }
+    const existing = await ctx.db.query("branchAssignments")
+      .withIndex("by_workspace_branch_user", (q) => q.eq("workspaceId", args.workspaceId).eq("branchId", args.branchId).eq("userId", args.userId)).first();
+    if (existing) {
+      await ctx.db.patch(existing._id, { role: args.role, productKey, status: "active", assignedBy: args.callerUserId, assignedAt: now, updatedAt: now, removedAt: undefined });
+    } else {
+      await ctx.db.insert("branchAssignments", { workspaceId: args.workspaceId, branchId: args.branchId, userId: args.userId, productKey, role: args.role, status: "active", assignedBy: args.callerUserId, assignedAt: now, updatedAt: now });
+    }
+    await ctx.db.insert("workspaceAuditLogs", { workspaceId: args.workspaceId, actorUserId: args.callerUserId, eventType: "branch.member_assigned", entityType: "branch_assignment", entityId: String(args.branchId), branchId: args.branchId, productKey, severity: "info", metadata: { userId: args.userId, role: args.role }, createdAt: now });
+    return { success: true };
+  },
+});
+
+export const removeBranchMember = mutation({
+  args: { workspaceId: v.id("workspaces"), branchId: v.id("branches"), userId: v.id("users"), callerUserId: v.id("users") },
+  handler: async (ctx, args) => {
+    await requireWorkspaceManager(ctx, args.workspaceId, args.callerUserId);
+    const assignment = await ctx.db.query("branchAssignments")
+      .withIndex("by_workspace_branch_user", (q) => q.eq("workspaceId", args.workspaceId).eq("branchId", args.branchId).eq("userId", args.userId)).first();
+    if (!assignment || assignment.status !== "active") return { success: true };
+    const now = Date.now();
+    await ctx.db.patch(assignment._id, { status: "removed", removedAt: now, updatedAt: now });
+    const productMembership = await ctx.db.query("productMemberships")
+      .withIndex("by_workspace_product_user", (q) => q.eq("workspaceId", args.workspaceId).eq("productKey", assignment.productKey).eq("userId", args.userId))
+      .first();
+    if (productMembership?.branchIds?.some((id: any) => String(id) === String(args.branchId))) {
+      const branchIds = productMembership.branchIds.filter((id: any) => String(id) !== String(args.branchId));
+      await ctx.db.patch(productMembership._id, {
+        branchIds: branchIds as any,
+        status: branchIds.length ? productMembership.status : "removed",
+        updatedAt: now,
+      });
+    }
+    await ctx.db.insert("workspaceAuditLogs", { workspaceId: args.workspaceId, actorUserId: args.callerUserId, eventType: "branch.member_removed", entityType: "branch_assignment", entityId: String(args.branchId), branchId: args.branchId, productKey: assignment.productKey, severity: "warning", metadata: { userId: args.userId }, createdAt: now });
+    return { success: true };
+  },
+});
+
 export const deleteWorkspace = mutation({
   args: {
     workspaceId: v.id("workspaces"),
@@ -1815,15 +1927,16 @@ export const transferWorkspaceOwnership = mutation({
       throw new Error("WORKSPACE_NOT_FOUND");
     }
 
-    const callerMembership = await ctx.db
+    let callerMembership = await ctx.db
       .query("workspaceMemberships")
       .withIndex("by_workspace_user", (q) =>
         q.eq("workspaceId", args.workspaceId).eq("userId", args.callerUserId)
       )
       .first();
 
-    const callerRole = (callerMembership?.role || callerMembership?.defaultRole || "").toLowerCase();
-    if (!callerMembership || callerRole !== "owner") {
+    const isWorkspaceOwner = ws.ownerId === args.callerUserId;
+    const callerRole = (callerMembership?.role || callerMembership?.defaultRole || (isWorkspaceOwner ? "owner" : "")).toLowerCase();
+    if ((!callerMembership && !isWorkspaceOwner) || callerRole !== "owner") {
       throw new Error("ONLY_OWNER_CAN_TRANSFER_OWNERSHIP");
     }
 
@@ -1864,11 +1977,23 @@ export const transferWorkspaceOwnership = mutation({
       updatedAt: now,
     });
 
-    await ctx.db.patch(callerMembership._id, {
-      role: "admin",
-      defaultRole: "admin",
-      updatedAt: now,
-    });
+    if (callerMembership) {
+      await ctx.db.patch(callerMembership._id, {
+        role: "admin",
+        defaultRole: "admin",
+        updatedAt: now,
+      });
+    } else {
+      await ctx.db.insert("workspaceMemberships", {
+        workspaceId: args.workspaceId,
+        userId: args.callerUserId,
+        role: "admin",
+        defaultRole: "admin",
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
 
     await ctx.db.insert("workspaceAuditLogs", {
       workspaceId: args.workspaceId,

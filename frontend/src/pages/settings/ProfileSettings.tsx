@@ -21,17 +21,30 @@ import {
   Download,
   Trash2,
   Database,
-  QrCode,
-  Copy,
+  Key,
   ShieldCheck,
-  Check,
+  Eye,
+  EyeOff,
+  AlertTriangle,
+  RefreshCw,
+  XCircle,
 } from 'lucide-react';
 import { ActiveSessions } from '@/components/settings/ActiveSessions';
 import { LinkedIdentities } from '@/components/settings/LinkedIdentities';
 import { PhoneVerificationCard } from '@/components/settings/PhoneVerificationCard';
+import { PasskeyManagementCard } from '@/components/settings/PasskeyManagementCard';
+import { SecurityActivityCard } from '@/components/settings/SecurityActivityCard';
+
+// Extracted Modals
+import { TwoFactorSetupModal } from '@/components/settings/modals/TwoFactorSetupModal';
+import { DisableTwoFactorModal } from '@/components/settings/modals/DisableTwoFactorModal';
+import { RegenerateBackupCodesModal } from '@/components/settings/modals/RegenerateBackupCodesModal';
+import { ChangeEmailModal } from '@/components/settings/modals/ChangeEmailModal';
+import { DeleteAccountModal } from '@/components/settings/modals/DeleteAccountModal';
 
 const TIMEZONES = [
   { value: 'UTC', label: 'UTC (Coordinated Universal Time)' },
+  { value: 'Africa/Lagos', label: 'West Africa Time (WAT) - Lagos, Abuja' },
   { value: 'America/New_York', label: 'Eastern Time (US & Canada)' },
   { value: 'America/Chicago', label: 'Central Time (US & Canada)' },
   { value: 'America/Denver', label: 'Mountain Time (US & Canada)' },
@@ -47,58 +60,58 @@ const TIMEZONES = [
 
 export const ProfileSettings: React.FC = () => {
   const navigate = useNavigate();
-  const { user, updateUser, logout } = useAuthStore();
+  const { user, updateUser, logout, refreshSession } = useAuthStore();
 
   const [activeTab, setActiveTab] = useState<'profile' | 'security' | 'privacy'>('profile');
 
   // Profile Form State
   const [name, setName] = useState(user?.name || '');
+  const [displayName, setDisplayName] = useState(user?.displayName || '');
   const [timezone, setTimezone] = useState(user?.timezone || 'Africa/Lagos');
   const [isSavingProfile, setIsSavingProfile] = useState(false);
 
   useEffect(() => {
     if (user) {
       if (user.name) setName(user.name);
+      if (user.displayName) setDisplayName(user.displayName);
       if (user.timezone) setTimezone(user.timezone);
     }
   }, [user]);
 
   // Email Change State
   const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
-  const [newEmail, setNewEmail] = useState('');
-  const [isSendingEmailRequest, setIsSendingEmailRequest] = useState(false);
-  const [emailChangeSuccess, setEmailChangeSuccess] = useState(false);
+  const [isCancellingEmailChange, setIsCancellingEmailChange] = useState(false);
+  const [isResendingEmailChange, setIsResendingEmailChange] = useState(false);
 
   // Password Form State
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [twoFactorStepUpCode, setTwoFactorStepUpCode] = useState('');
+  const [revokeOtherSessions, setRevokeOtherSessions] = useState(true);
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
   const [passwordError, setPasswordError] = useState<string | null>(null);
 
-  // 2FA State
+  // Password Visibility Toggles
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+
+  // 2FA Setup State
   const [is2faModalOpen, setIs2faModalOpen] = useState(false);
   const [twoFactorSecret, setTwoFactorSecret] = useState('');
   const [twoFactorOtpauthUrl, setTwoFactorOtpauthUrl] = useState('');
-  const [twoFactorVerifyCode, setTwoFactorVerifyCode] = useState('');
   const [isStarting2fa, setIsStarting2fa] = useState(false);
-  const [isVerifying2fa, setIsVerifying2fa] = useState(false);
-  const [backupCodes, setBackupCodes] = useState<string[] | null>(null);
-  const [copiedSecret, setCopiedSecret] = useState(false);
-  const [copiedBackupCodes, setCopiedBackupCodes] = useState(false);
 
+  // 2FA Modals
   const [isDisable2faModalOpen, setIsDisable2faModalOpen] = useState(false);
-  const [disable2faPassword, setDisable2faPassword] = useState('');
-  const [isDisabling2fa, setIsDisabling2fa] = useState(false);
+  const [isRegenBackupModalOpen, setIsRegenBackupModalOpen] = useState(false);
 
   // GDPR Data Export State
   const [isExporting, setIsExporting] = useState(false);
 
   // Account Deletion State
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
-  const [deletePassword, setDeletePassword] = useState('');
-  const [deleteConfirmationText, setDeleteConfirmationText] = useState('');
-  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
 
   // Handle Profile Update
   const handleSaveProfile = async (e: React.FormEvent) => {
@@ -112,10 +125,11 @@ export const ProfileSettings: React.FC = () => {
     try {
       const res = await api.patch<{ user: any }>('/users/me', {
         name: name.trim(),
+        displayName: displayName.trim() || undefined,
         timezone,
       });
       updateUser(res.user);
-      await useAuthStore.getState().refreshSession();
+      await refreshSession();
       toast.success('Profile updated successfully!');
     } catch (err: any) {
       toast.error(err.message || 'Failed to update profile.');
@@ -124,31 +138,47 @@ export const ProfileSettings: React.FC = () => {
     }
   };
 
-  // Handle Request Email Change
-  const handleRequestEmailChange = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newEmail.trim()) {
-      toast.error('Please enter a new email address.');
-      return;
-    }
-    if (newEmail.trim().toLowerCase() === user?.email.toLowerCase()) {
-      toast.error('New email address must be different from current email.');
-      return;
-    }
-
-    setIsSendingEmailRequest(true);
+  // Cancel Pending Email Change
+  const handleCancelEmailChange = async () => {
+    setIsCancellingEmailChange(true);
     try {
-      await api.post('/auth/email/change-request', {
-        newEmail: newEmail.trim(),
-      });
-      setEmailChangeSuccess(true);
-      toast.success('Confirmation link sent to your new email address!');
+      await api.post('/auth/email/cancel-change');
+      toast.success('Pending email change cancelled.');
+      await refreshSession();
     } catch (err: any) {
-      toast.error(err.message || 'Failed to request email change.');
+      toast.error(err.message || 'Failed to cancel email change.');
     } finally {
-      setIsSendingEmailRequest(false);
+      setIsCancellingEmailChange(false);
     }
   };
+
+  // Resend Pending Email Change Verification
+  const handleResendEmailChange = async () => {
+    if (!user?.pendingEmail) return;
+    setIsResendingEmailChange(true);
+    try {
+      await api.post('/auth/email/change-request', {
+        newEmail: user.pendingEmail,
+      });
+      toast.success(`Fresh confirmation link dispatched to ${user.pendingEmail}`);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to resend confirmation email.');
+    } finally {
+      setIsResendingEmailChange(false);
+    }
+  };
+
+  // Password Strength Score
+  const getPasswordStrength = (pass: string) => {
+    let score = 0;
+    if (pass.length >= 8) score += 25;
+    if (/[A-Z]/.test(pass)) score += 25;
+    if (/[0-9]/.test(pass)) score += 25;
+    if (/[^A-Za-z0-9]/.test(pass)) score += 25;
+    return score;
+  };
+
+  const passwordStrength = getPasswordStrength(newPassword);
 
   // Handle Password Update
   const handleUpdatePassword = async (e: React.FormEvent) => {
@@ -165,16 +195,30 @@ export const ProfileSettings: React.FC = () => {
       return;
     }
 
+    if (newPassword === currentPassword) {
+      setPasswordError('Your new password cannot be the same as your current password.');
+      return;
+    }
+
+    if (user?.twoFactorEnabled && !twoFactorStepUpCode.trim()) {
+      setPasswordError('Two-factor authentication code is required to update password.');
+      return;
+    }
+
     setIsUpdatingPassword(true);
     try {
-      await api.post('/auth/change-password', {
+      await api.post('/users/me/password', {
         currentPassword,
         newPassword,
+        revokeOtherSessions,
+        twoFactorCode: twoFactorStepUpCode.trim() || undefined,
       });
       toast.success('Password updated successfully!');
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
+      setTwoFactorStepUpCode('');
+      await refreshSession();
     } catch (err: any) {
       const msg = err.message || 'Failed to update password.';
       setPasswordError(msg);
@@ -191,104 +235,11 @@ export const ProfileSettings: React.FC = () => {
       const res = await api.post<any>('/auth/2fa/enable');
       setTwoFactorSecret(res.secret);
       setTwoFactorOtpauthUrl(res.otpauthUrl);
-      setTwoFactorVerifyCode('');
-      setBackupCodes(null);
-      setCopiedSecret(false);
       setIs2faModalOpen(true);
     } catch (err: any) {
       toast.error(err.message || 'Failed to initiate 2FA setup.');
     } finally {
       setIsStarting2fa(false);
-    }
-  };
-
-  // Verify and Activate 2FA
-  const handleVerify2fa = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!twoFactorVerifyCode.trim() || twoFactorVerifyCode.trim().length !== 6) {
-      toast.error('Please enter a valid 6-digit code.');
-      return;
-    }
-
-    setIsVerifying2fa(true);
-    try {
-      const res = await api.post<any>('/auth/2fa/verify', {
-        code: twoFactorVerifyCode.trim(),
-      });
-      setBackupCodes(res.backupCodes || []);
-      updateUser({ twoFactorEnabled: true });
-      toast.success('Two-factor authentication successfully enabled!');
-    } catch (err: any) {
-      toast.error(err.message || 'Invalid verification code. Please try again.');
-    } finally {
-      setIsVerifying2fa(false);
-    }
-  };
-
-  // Copy Secret
-  const handleCopySecret = async () => {
-    if (!twoFactorSecret) return;
-    await navigator.clipboard.writeText(twoFactorSecret);
-    setCopiedSecret(true);
-    toast.success('Secret key copied to clipboard.');
-    setTimeout(() => setCopiedSecret(false), 2500);
-  };
-
-  // Copy Backup Codes
-  const handleCopyBackupCodes = async () => {
-    if (!backupCodes) return;
-    await navigator.clipboard.writeText(backupCodes.join('\n'));
-    setCopiedBackupCodes(true);
-    toast.success('Backup recovery codes copied to clipboard.');
-    setTimeout(() => setCopiedBackupCodes(false), 2500);
-  };
-
-  // Download Backup Codes
-  const handleDownloadBackupCodes = () => {
-    if (!backupCodes) return;
-    const text = [
-      '========================================',
-      'OrvioHub - 2FA Emergency Backup Codes',
-      '========================================',
-      'Account: ' + (user?.email || ''),
-      'Generated: ' + new Date().toISOString(),
-      '',
-      'Treat these backup codes like your passwords.',
-      'Each code can only be used ONCE.',
-      '',
-      ...backupCodes.map((code, index) => `${index + 1}. ${code}`),
-      '',
-      '========================================',
-    ].join('\n');
-
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `orviohub-2fa-backup-codes-${new Date().toISOString().slice(0, 10)}.txt`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-    toast.success('Backup codes saved to file.');
-  };
-
-  // Disable 2FA
-  const handleDisable2fa = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsDisabling2fa(true);
-    try {
-      await api.post('/auth/2fa/disable', {
-        password: disable2faPassword || undefined,
-      });
-      updateUser({ twoFactorEnabled: false });
-      setIsDisable2faModalOpen(false);
-      setDisable2faPassword('');
-      toast.success('Two-factor authentication disabled.');
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to disable 2FA.');
-    } finally {
-      setIsDisabling2fa(false);
     }
   };
 
@@ -312,29 +263,6 @@ export const ProfileSettings: React.FC = () => {
     }
   };
 
-  // Handle Account Deletion
-  const handleDeleteAccount = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (deleteConfirmationText.trim().toLowerCase() !== 'delete my account') {
-      toast.error('Please type "delete my account" to confirm.');
-      return;
-    }
-
-    setIsDeletingAccount(true);
-    try {
-      await api.delete('/auth/account', {
-        password: deletePassword || undefined,
-      });
-      toast.success('Your account has been permanently deleted.');
-      await logout();
-      navigate('/');
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to delete account.');
-    } finally {
-      setIsDeletingAccount(false);
-    }
-  };
-
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col selection:bg-indigo-500 selection:text-white">
       {/* Top Navbar */}
@@ -343,119 +271,128 @@ export const ProfileSettings: React.FC = () => {
           <div className="flex items-center space-x-4">
             <button
               onClick={() => navigate('/app')}
-              className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-slate-200 transition-colors flex items-center gap-2 text-sm font-medium"
+              className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-slate-200 transition-colors flex items-center gap-2 text-sm font-medium cursor-pointer"
             >
               <ArrowLeft className="w-4 h-4" />
               <span>Back to Dashboard</span>
             </button>
             <div className="h-4 w-px bg-slate-800" />
-            <div className="flex items-center space-x-2">
-              <div className="w-7 h-7 rounded-lg bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center">
-                <Sparkles className="w-4 h-4 text-indigo-400" />
-              </div>
-              <span className="font-semibold text-slate-100">Account Settings</span>
-            </div>
+            <h1 className="text-base font-semibold text-slate-100">Account Settings</h1>
           </div>
         </div>
       </header>
 
-      {/* Main Content Area */}
-      <main className="flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="mb-8">
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-2xl font-bold text-slate-100 tracking-tight">Account & Security Settings</h1>
-          </div>
-          <p className="text-sm text-slate-400 mt-1">
-            Manage your personal profile, email preferences, password security, two-factor authentication, and GDPR privacy options.
-          </p>
-        </div>
-
-        {/* Tab Navigation */}
-        <div className="flex border-b border-slate-800 mb-8 space-x-8">
+      {/* Main Body */}
+      <main className="flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
+        {/* Navigation Tabs */}
+        <div className="flex space-x-2 border-b border-slate-800 pb-px">
           <button
             onClick={() => setActiveTab('profile')}
-            className={`pb-4 text-sm font-medium transition-colors relative flex items-center gap-2 ${
+            className={`flex items-center gap-2 py-2 px-4 border-b-2 text-sm font-medium transition-colors cursor-pointer ${
               activeTab === 'profile'
-                ? 'text-indigo-400 border-b-2 border-indigo-500'
-                : 'text-slate-400 hover:text-slate-200'
+                ? 'border-[#c79dbd] text-[#c79dbd]'
+                : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-700'
             }`}
           >
             <UserIcon className="w-4 h-4" />
-            <span>Profile</span>
+            <span>Profile & Personal</span>
           </button>
+
           <button
             onClick={() => setActiveTab('security')}
-            className={`pb-4 text-sm font-medium transition-colors relative flex items-center gap-2 ${
+            className={`flex items-center gap-2 py-2 px-4 border-b-2 text-sm font-medium transition-colors cursor-pointer ${
               activeTab === 'security'
-                ? 'text-indigo-400 border-b-2 border-indigo-500'
-                : 'text-slate-400 hover:text-slate-200'
+                ? 'border-[#c79dbd] text-[#c79dbd]'
+                : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-700'
             }`}
           >
             <Shield className="w-4 h-4" />
-            <span>Security</span>
+            <span>Security & Authentication</span>
           </button>
+
           <button
             onClick={() => setActiveTab('privacy')}
-            className={`pb-4 text-sm font-medium transition-colors relative flex items-center gap-2 ${
+            className={`flex items-center gap-2 py-2 px-4 border-b-2 text-sm font-medium transition-colors cursor-pointer ${
               activeTab === 'privacy'
-                ? 'text-indigo-400 border-b-2 border-indigo-500'
-                : 'text-slate-400 hover:text-slate-200'
+                ? 'border-[#c79dbd] text-[#c79dbd]'
+                : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-700'
             }`}
           >
             <Database className="w-4 h-4" />
-            <span>Privacy & Data (GDPR)</span>
+            <span>Privacy & Compliance</span>
           </button>
         </div>
 
-        {/* Tab 1: Profile Information */}
+        {/* TAB 1: Profile & Personal */}
         {activeTab === 'profile' && (
-          <div className="space-y-6 max-w-2xl">
+          <div className="space-y-6 max-w-2xl animate-in fade-in duration-150">
+            {/* Basic Profile Details */}
             <div className="bg-slate-900 border border-slate-800 rounded-sm p-6 shadow-sm">
-              <div className="mb-1">
-                <h2 className="text-lg font-semibold text-slate-100">Personal Details</h2>
-              </div>
-              <p className="text-xs text-slate-400 mb-6">Update your name and regional preferences.</p>
+              <h2 className="text-base font-semibold text-slate-100 flex items-center gap-2">
+                <UserIcon className="w-4 h-4 text-indigo-400" />
+                <span>Personal Information</span>
+              </h2>
+              <p className="text-xs text-slate-400 mt-1">Manage your identity details across Orvio workspaces.</p>
 
-              <form onSubmit={handleSaveProfile} className="space-y-5">
+              <form onSubmit={handleSaveProfile} className="space-y-4 mt-6">
                 <div>
                   <Label htmlFor="name" className="text-slate-300 font-medium text-xs">
-                    Full Name
+                    Full Name *
                   </Label>
                   <Input
                     id="name"
-                    type="text"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     required
-                    className="mt-1.5 bg-slate-950 border-slate-800 focus:border-indigo-500 focus:ring-indigo-500/20 text-slate-100"
-                    placeholder="Jane Doe"
+                    className="mt-1.5 bg-slate-950 border-slate-800 focus:border-indigo-500 text-slate-100"
+                    placeholder="Chinedu Okafor"
                   />
                 </div>
 
-                <div className="space-y-1.5">
-                  <Label htmlFor="timezone" className="text-slate-300 font-medium text-xs flex items-center gap-1.5">
-                    <Globe className="w-3.5 h-3.5 text-slate-400" />
-                    <span>Timezone</span>
-                  </Label>
-                  <CustomSelect
-                    options={TIMEZONES}
-                    value={timezone}
-                    onChange={(val) => setTimezone(val)}
-                    placeholder="Select timezone"
-                    searchable={true}
-                    searchPlaceholder="Search timezone..."
+                <div>
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="displayName" className="text-slate-300 font-medium text-xs">
+                      Display Name
+                    </Label>
+                    <span className="text-[11px] text-slate-500">(Optional)</span>
+                  </div>
+                  <Input
+                    id="displayName"
+                    value={displayName}
+                    onChange={(e) => setDisplayName(e.target.value)}
+                    className="mt-1.5 bg-slate-950 border-slate-800 focus:border-indigo-500 text-slate-100"
+                    placeholder="Chinedu O."
                   />
+                  <p className="text-[11px] text-slate-500 mt-1">How you appear to colleagues in team lists.</p>
+                </div>
+
+                <div>
+                  <Label htmlFor="timezone" className="text-slate-300 font-medium text-xs">
+                    Timezone
+                  </Label>
+                  <div className="mt-1.5">
+                    <CustomSelect
+                      value={timezone}
+                      onChange={setTimezone}
+                      options={TIMEZONES}
+                      searchable
+                      placeholder="Select your timezone"
+                    />
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Used to synchronize timestamps, logs, and notification scheduling.
+                  </p>
                 </div>
 
                 <div className="pt-2 flex justify-end">
                   <Button
                     type="submit"
                     disabled={isSavingProfile}
-                    className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-sm px-5"
+                    className="bg-[#714b67] hover:bg-[#86597a] text-white font-medium text-xs px-5 cursor-pointer disabled:opacity-50"
                   >
                     {isSavingProfile ? (
                       <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />
                         Saving...
                       </>
                     ) : (
@@ -470,7 +407,7 @@ export const ProfileSettings: React.FC = () => {
             <div className="bg-slate-900 border border-slate-800 rounded-sm p-6 shadow-sm">
               <div className="flex items-start justify-between">
                 <div>
-                  <h2 className="text-lg font-semibold text-slate-100 flex items-center gap-2">
+                  <h2 className="text-base font-semibold text-slate-100 flex items-center gap-2">
                     <Mail className="w-4 h-4 text-indigo-400" />
                     <span>Email Address</span>
                   </h2>
@@ -484,6 +421,41 @@ export const ProfileSettings: React.FC = () => {
                 )}
               </div>
 
+              {/* Pending Email Change Banner */}
+              {user?.pendingEmail && (
+                <div className="mt-4 p-3.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 space-y-2">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold">Email change in progress</p>
+                      <p className="text-amber-200/90 mt-0.5">
+                        A confirmation link was sent to <strong className="text-white">{user.pendingEmail}</strong>. Please check that inbox to verify.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 pt-1">
+                    <button
+                      type="button"
+                      disabled={isResendingEmailChange}
+                      onClick={handleResendEmailChange}
+                      className="hover:underline text-[#c79dbd] font-semibold flex items-center gap-1 cursor-pointer"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isResendingEmailChange ? 'animate-spin' : ''}`} />
+                      <span>Resend link</span>
+                    </button>
+                    <span>•</span>
+                    <button
+                      type="button"
+                      disabled={isCancellingEmailChange}
+                      onClick={handleCancelEmailChange}
+                      className="hover:underline text-rose-400 font-semibold cursor-pointer"
+                    >
+                      {isCancellingEmailChange ? 'Cancelling...' : 'Cancel change request'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="mt-4 p-4 rounded-lg bg-slate-950 border border-slate-800/80 flex items-center justify-between">
                 <div>
                   <span className="text-xs text-slate-500 uppercase tracking-wider block">Current Email</span>
@@ -492,12 +464,8 @@ export const ProfileSettings: React.FC = () => {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => {
-                    setNewEmail('');
-                    setEmailChangeSuccess(false);
-                    setIsEmailModalOpen(true);
-                  }}
-                  className="border-slate-700 bg-slate-900 hover:bg-slate-800 text-slate-200 text-xs"
+                  onClick={() => setIsEmailModalOpen(true)}
+                  className="border-slate-700 bg-slate-900 hover:bg-slate-800 text-slate-200 text-xs cursor-pointer"
                 >
                   Change Email
                 </Button>
@@ -509,154 +477,253 @@ export const ProfileSettings: React.FC = () => {
           </div>
         )}
 
-        {/* Tab 2: Security & 2FA */}
+        {/* TAB 2: Security & Authentication */}
         {activeTab === 'security' && (
-          <div className="space-y-6 max-w-2xl">
+          <div className="space-y-6 max-w-2xl animate-in fade-in duration-150">
             {/* Two-Factor Authentication (2FA) Card */}
             <div className="bg-slate-900 border border-slate-800 rounded-sm p-6 shadow-sm">
               <div className="flex items-start justify-between">
                 <div>
-                  <h2 className="text-lg font-semibold text-slate-100 flex items-center gap-2">
+                  <h2 className="text-base font-semibold text-slate-100 flex items-center gap-2">
                     <ShieldCheck className="w-5 h-5 text-indigo-400" />
                     <span>Two-Factor Authentication (2FA)</span>
                   </h2>
                   <p className="text-xs text-slate-400 mt-1">
-                    Add an extra layer of security to your account using Time-based One-Time Passwords (TOTP) from Google Authenticator, Authy, or 1Password.
+                    Require an authenticator code (TOTP) from your mobile device when signing in.
                   </p>
                 </div>
-                {user?.twoFactorEnabled ? (
-                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                    <CheckCircle2 className="w-3 h-3" />
-                    Enabled
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-800 text-slate-400 border border-slate-700">
-                    Disabled
-                  </span>
-                )}
+                <span
+                  className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold ${
+                    user?.twoFactorEnabled
+                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                      : 'bg-slate-800 text-slate-400 border border-slate-700'
+                  }`}
+                >
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      user?.twoFactorEnabled ? 'bg-emerald-400' : 'bg-slate-500'
+                    }`}
+                  />
+                  {user?.twoFactorEnabled ? 'Active' : 'Disabled'}
+                </span>
               </div>
 
-              <div className="mt-5 p-4 rounded-lg bg-slate-950 border border-slate-800/80">
-                {user?.twoFactorEnabled ? (
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-slate-200">2FA is currently active</p>
-                      <p className="text-xs text-slate-400 mt-0.5">
-                        Your account requires a 6-digit code or emergency backup code each time you sign in.
-                      </p>
-                    </div>
+              <div className="mt-5 p-4 rounded-lg bg-slate-950 border border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold text-slate-200">
+                    {user?.twoFactorEnabled
+                      ? 'Authenticator App (TOTP)'
+                      : 'No 2FA Method Configured'}
+                  </p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    {user?.twoFactorEnabled
+                      ? `${user?.twoFactorBackupCodesRemaining ?? 8} recovery backup codes remaining.`
+                      : 'Add an extra barrier against unauthorized access and credential theft.'}
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  {user?.twoFactorEnabled ? (
+                    <>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setIsRegenBackupModalOpen(true)}
+                        className="border-slate-800 bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs cursor-pointer"
+                      >
+                        <Key className="w-3.5 h-3.5 mr-1 text-indigo-400" />
+                        Backup Codes
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setIsDisable2faModalOpen(true)}
+                        className="border-rose-900/50 hover:bg-rose-950/40 text-rose-400 text-xs cursor-pointer"
+                      >
+                        Disable
+                      </Button>
+                    </>
+                  ) : (
                     <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        setDisable2faPassword('');
-                        setIsDisable2faModalOpen(true);
-                      }}
-                      className="border-rose-900/60 bg-rose-950/20 hover:bg-rose-950/40 text-rose-300 text-xs ml-4 flex-shrink-0"
-                    >
-                      Disable 2FA
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-slate-200">Protect your account</p>
-                      <p className="text-xs text-slate-400 mt-0.5">
-                        Require an authentication code in addition to your password when signing in.
-                      </p>
-                    </div>
-                    <Button
-                      size="sm"
                       onClick={handleStart2fa}
                       disabled={isStarting2fa}
-                      className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs ml-4 flex-shrink-0"
+                      size="sm"
+                      className="bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-semibold cursor-pointer"
                     >
-                      {isStarting2fa ? (
-                        <>
-                          <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-                          Starting...
-                        </>
-                      ) : (
-                        'Enable 2FA'
-                      )}
+                      {isStarting2fa ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : null}
+                      Enable 2FA
                     </Button>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             </div>
 
-            {/* Change Password Card */}
+            {/* Passkeys & Biometrics Management Card */}
+            <PasskeyManagementCard />
+
+            {/* Password Management Card */}
             <div className="bg-slate-900 border border-slate-800 rounded-sm p-6 shadow-sm">
-              <h2 className="text-lg font-semibold text-slate-100 flex items-center gap-2">
+              <h2 className="text-base font-semibold text-slate-100 flex items-center gap-2">
                 <Lock className="w-4 h-4 text-indigo-400" />
-                <span>Change Password</span>
+                <span>Account Password</span>
               </h2>
-              <p className="text-xs text-slate-400 mt-1 mb-6">
-                Ensure your account is using a long, random password with uppercase, lowercase, numbers, and special symbols.
+              <p className="text-xs text-slate-400 mt-1">
+                Ensure your account is using a long, random password for maximum defense.
               </p>
 
               {passwordError && (
-                <div className="mb-5 p-3 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <div className="mt-4 p-3 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
                   <span>{passwordError}</span>
                 </div>
               )}
 
-              <form onSubmit={handleUpdatePassword} className="space-y-4">
+              <form onSubmit={handleUpdatePassword} className="space-y-4 mt-5">
                 <div>
-                  <Label htmlFor="currentPassword" className="text-slate-300 font-medium text-xs">
+                  <Label htmlFor="currentPasswordInput" className="text-slate-300 font-medium text-xs">
                     Current Password
                   </Label>
-                  <Input
-                    id="currentPassword"
-                    type="password"
-                    value={currentPassword}
-                    onChange={(e) => setCurrentPassword(e.target.value)}
-                    required
-                    className="mt-1.5 bg-slate-950 border-slate-800 focus:border-indigo-500 focus:ring-indigo-500/20 text-slate-100"
-                    placeholder="••••••••"
-                  />
+                  <div className="relative mt-1.5">
+                    <Input
+                      id="currentPasswordInput"
+                      type={showCurrentPassword ? 'text' : 'password'}
+                      value={currentPassword}
+                      onChange={(e) => setCurrentPassword(e.target.value)}
+                      required
+                      className="bg-slate-950 border-slate-800 text-slate-100 pr-9"
+                      placeholder="••••••••"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowCurrentPassword((v) => !v)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer"
+                      aria-label={showCurrentPassword ? 'Hide current password' : 'Show current password'}
+                    >
+                      {showCurrentPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
                 </div>
 
                 <div>
-                  <Label htmlFor="newPassword" className="text-slate-300 font-medium text-xs">
+                  <Label htmlFor="newPasswordInput" className="text-slate-300 font-medium text-xs">
                     New Password (min 8 chars, mixed case, number, symbol)
                   </Label>
-                  <Input
-                    id="newPassword"
-                    type="password"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    required
-                    className="mt-1.5 bg-slate-950 border-slate-800 focus:border-indigo-500 focus:ring-indigo-500/20 text-slate-100"
-                    placeholder="••••••••"
-                  />
+                  <div className="relative mt-1.5">
+                    <Input
+                      id="newPasswordInput"
+                      type={showNewPassword ? 'text' : 'password'}
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      required
+                      className="bg-slate-950 border-slate-800 text-slate-100 pr-9"
+                      placeholder="••••••••"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowNewPassword((v) => !v)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer"
+                      aria-label={showNewPassword ? 'Hide new password' : 'Show new password'}
+                    >
+                      {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+
+                  {/* Password Strength Indicator */}
+                  {newPassword && (
+                    <div className="mt-2 space-y-1">
+                      <div className="flex justify-between text-[11px] text-slate-400">
+                        <span>Password Strength:</span>
+                        <span className={passwordStrength >= 75 ? 'text-emerald-400' : 'text-amber-400'}>
+                          {passwordStrength >= 100
+                            ? 'Excellent'
+                            : passwordStrength >= 75
+                            ? 'Strong'
+                            : passwordStrength >= 50
+                            ? 'Moderate'
+                            : 'Weak'}
+                        </span>
+                      </div>
+                      <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full transition-all duration-300 ${
+                            passwordStrength >= 75 ? 'bg-emerald-500' : 'bg-amber-500'
+                          }`}
+                          style={{ width: `${passwordStrength}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div>
-                  <Label htmlFor="confirmPassword" className="text-slate-300 font-medium text-xs">
+                  <Label htmlFor="confirmPasswordInput" className="text-slate-300 font-medium text-xs">
                     Confirm New Password
                   </Label>
-                  <Input
-                    id="confirmPassword"
-                    type="password"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    required
-                    className="mt-1.5 bg-slate-950 border-slate-800 focus:border-indigo-500 focus:ring-indigo-500/20 text-slate-100"
-                    placeholder="••••••••"
-                  />
+                  <div className="relative mt-1.5">
+                    <Input
+                      id="confirmPasswordInput"
+                      type={showConfirmPassword ? 'text' : 'password'}
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      required
+                      className="bg-slate-950 border-slate-800 text-slate-100 pr-9"
+                      placeholder="••••••••"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmPassword((v) => !v)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer"
+                      aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}
+                    >
+                      {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
                 </div>
 
-                <div className="pt-2 flex justify-end">
+                {/* 2FA Step-up prompt if active */}
+                {user?.twoFactorEnabled && (
+                  <div className="p-3 rounded bg-indigo-500/10 border border-indigo-500/20 space-y-1.5">
+                    <Label htmlFor="twoFactorStepUpInput" className="text-xs font-semibold text-indigo-300">
+                      Two-Factor Authentication Code
+                    </Label>
+                    <Input
+                      id="twoFactorStepUpInput"
+                      type="text"
+                      maxLength={6}
+                      placeholder="123456"
+                      value={twoFactorStepUpCode}
+                      onChange={(e) => setTwoFactorStepUpCode(e.target.value.replace(/\D/g, ''))}
+                      className="bg-slate-950 border-slate-800 text-slate-100 font-mono tracking-widest text-sm"
+                      required
+                    />
+                    <p className="text-[11px] text-slate-400">
+                      Step-up authentication required since 2FA is active on your account.
+                    </p>
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2 pt-1">
+                  <input
+                    type="checkbox"
+                    id="revokeOtherSessionsCheckbox"
+                    checked={revokeOtherSessions}
+                    onChange={(e) => setRevokeOtherSessions(e.target.checked)}
+                    className="rounded border-slate-700 bg-slate-950 text-[#714b67] focus:ring-0 cursor-pointer"
+                  />
+                  <Label htmlFor="revokeOtherSessionsCheckbox" className="text-xs text-slate-400 cursor-pointer">
+                    Sign out of all other devices and active browser sessions
+                  </Label>
+                </div>
+
+                <div className="flex justify-end pt-2">
                   <Button
                     type="submit"
-                    disabled={isUpdatingPassword}
-                    className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-sm px-5"
+                    disabled={isUpdatingPassword || !currentPassword || !newPassword}
+                    className="bg-[#714b67] hover:bg-[#86597a] text-white font-medium text-xs px-5 cursor-pointer disabled:opacity-50"
                   >
                     {isUpdatingPassword ? (
                       <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />
                         Updating...
                       </>
                     ) : (
@@ -667,440 +734,146 @@ export const ProfileSettings: React.FC = () => {
               </form>
             </div>
 
-            {/* Linked Identities / Connected Accounts Card */}
+            {/* Active Sessions */}
+            <div className="bg-slate-900 border border-slate-800 rounded-sm p-6 shadow-sm">
+              <ActiveSessions />
+            </div>
+
+            {/* Security Events Audit Log */}
+            <SecurityActivityCard />
+          </div>
+        )}
+
+        {/* TAB 3: Privacy & Compliance */}
+        {activeTab === 'privacy' && (
+          <div className="space-y-6 max-w-2xl animate-in fade-in duration-150">
+            {/* Linked Identities / Social Logins */}
             <div className="bg-slate-900 border border-slate-800 rounded-sm p-6 shadow-sm">
               <LinkedIdentities />
             </div>
 
-            {/* Active Devices & Sessions Card */}
+            {/* GDPR Data Portability (Article 20) */}
             <div className="bg-slate-900 border border-slate-800 rounded-sm p-6 shadow-sm">
-              <ActiveSessions />
+              <div className="flex items-start justify-between">
+                <div>
+                  <h2 className="text-base font-semibold text-slate-100 flex items-center gap-2">
+                    <Download className="w-4 h-4 text-indigo-400" />
+                    <span>Download Personal Data (GDPR Article 20)</span>
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Export a machine-readable archive containing your account profile, organization roles, and consent records.
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-5 p-4 rounded-lg bg-slate-950 border border-slate-800/80 flex items-center justify-between">
+                <div>
+                  <span className="text-xs font-semibold text-slate-200">Personal Data Export</span>
+                  <span className="text-[11px] text-slate-400 block mt-0.5">JSON format • Includes profile and telemetry metadata</span>
+                </div>
+                <Button
+                  onClick={handleExportData}
+                  disabled={isExporting}
+                  size="sm"
+                  className="bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-semibold cursor-pointer disabled:opacity-50"
+                >
+                  {isExporting ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />
+                      Exporting...
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-3.5 h-3.5 mr-1.5" />
+                      Download JSON
+                    </>
+                  )}
+                </Button>
+              </div>
             </div>
-          </div>
-        )}
 
-        {/* Tab 3: Privacy & Data (GDPR) */}
-        {activeTab === 'privacy' && (
-          <div className="space-y-6 max-w-2xl">
-            {/* GDPR Export Card */}
-            <div className="bg-slate-900 border border-slate-800 rounded-sm p-6 shadow-sm">
-              <h2 className="text-lg font-semibold text-slate-100 flex items-center gap-2">
-                <Download className="w-4 h-4 text-indigo-400" />
-                <span>Export Personal Data (GDPR Art. 20)</span>
-              </h2>
-              <p className="text-xs text-slate-400 mt-1 mb-5">
-                Download a machine-readable JSON copy of all personal information, identities, organization memberships, and activity records linked to your account.
-              </p>
+            {/* GDPR Account Deletion (Article 17) */}
+            <div className="bg-slate-900 border border-rose-900/40 rounded-sm p-6 shadow-sm">
+              <div className="flex items-start justify-between">
+                <div>
+                  <h2 className="text-base font-semibold text-rose-400 flex items-center gap-2">
+                    <Trash2 className="w-4 h-4" />
+                    <span>Delete Account (GDPR Article 17)</span>
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Request permanent erasure of your user identity and revoke all memberships.
+                  </p>
+                </div>
+              </div>
 
-              <Button
-                onClick={handleExportData}
-                disabled={isExporting}
-                variant="outline"
-                className="border-slate-700 bg-slate-950 hover:bg-slate-800 text-slate-200 text-xs"
-              >
-                {isExporting ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />
-                    Generating Export...
-                  </>
-                ) : (
-                  <>
-                    <Download className="w-3.5 h-3.5 mr-2 text-indigo-400" />
-                    Download Personal Data (.json)
-                  </>
-                )}
-              </Button>
-            </div>
-
-            {/* Danger Zone: Delete Account */}
-            <div className="bg-rose-950/20 border border-rose-900/40 rounded-sm p-6 shadow-sm">
-              <h2 className="text-lg font-semibold text-rose-400 flex items-center gap-2">
-                <Trash2 className="w-4 h-4 text-rose-400" />
-                <span>Danger Zone: Delete Account (GDPR Art. 17)</span>
-              </h2>
-              <p className="text-xs text-slate-300 mt-1 mb-5">
-                Permanently delete your account and all associated personal data. This action is immediate and cannot be undone.
-              </p>
-
-              <Button
-                onClick={() => {
-                  setDeletePassword('');
-                  setDeleteConfirmationText('');
-                  setIsDeleteModalOpen(true);
-                }}
-                className="bg-rose-600 hover:bg-rose-500 text-white text-xs font-medium"
-              >
-                Delete My Account
-              </Button>
+              <div className="mt-4 p-4 rounded-lg bg-slate-950 border border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="text-xs text-slate-300">
+                  <p className="font-semibold text-rose-300">Irreversible Action</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Includes a 14-day recovery grace period. Signing back in within 14 days cancels the deletion request.
+                  </p>
+                </div>
+                <Button
+                  onClick={() => setIsDeleteModalOpen(true)}
+                  className="bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold px-4 cursor-pointer shrink-0"
+                >
+                  Delete Account
+                </Button>
+              </div>
             </div>
           </div>
         )}
       </main>
 
-      {/* 2FA Setup / Backup Codes Modal */}
-      {is2faModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-slate-900 border border-slate-800 rounded-sm p-6 max-w-lg w-full shadow-2xl relative max-h-[90vh] overflow-y-auto">
-            {backupCodes ? (
-              <div className="space-y-5">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center flex-shrink-0">
-                    <ShieldCheck className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-bold text-slate-100">Save Your Recovery Backup Codes</h3>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      Store these 8 emergency codes in a secure password manager.
-                    </p>
-                  </div>
-                </div>
+      {/* Extracted Modals */}
+      <TwoFactorSetupModal
+        isOpen={is2faModalOpen}
+        onClose={() => setIs2faModalOpen(false)}
+        secret={twoFactorSecret}
+        otpauthUrl={twoFactorOtpauthUrl}
+        onSuccess={async () => {
+          updateUser({ twoFactorEnabled: true });
+          await refreshSession();
+        }}
+      />
 
-                <div className="p-3.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs flex items-start gap-2">
-                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                  <span>
-                    If you lose access to your phone or authenticator app, these single-use codes are the only way to recover account access.
-                  </span>
-                </div>
+      <DisableTwoFactorModal
+        isOpen={isDisable2faModalOpen}
+        onClose={() => setIsDisable2faModalOpen(false)}
+        onSuccess={async () => {
+          updateUser({ twoFactorEnabled: false });
+          await refreshSession();
+          setIsDisable2faModalOpen(false);
+        }}
+      />
 
-                <div className="grid grid-cols-2 gap-2 p-3 bg-slate-950 border border-slate-800 rounded-lg">
-                  {backupCodes.map((code, idx) => (
-                    <div key={idx} className="font-mono text-xs text-center py-2 px-3 bg-slate-900/60 rounded border border-slate-800/80 text-slate-200 tracking-wider">
-                      {code}
-                    </div>
-                  ))}
-                </div>
+      <RegenerateBackupCodesModal
+        isOpen={isRegenBackupModalOpen}
+        onClose={() => setIsRegenBackupModalOpen(false)}
+        onSuccess={async () => {
+          await refreshSession();
+        }}
+      />
 
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={handleCopyBackupCodes}
-                    className="flex-1 border-slate-800 bg-slate-950 text-slate-300 hover:bg-slate-800 text-xs"
-                  >
-                    {copiedBackupCodes ? (
-                      <>
-                        <Check className="w-3.5 h-3.5 mr-1.5 text-emerald-400" />
-                        Copied!
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-3.5 h-3.5 mr-1.5" />
-                        Copy All Codes
-                      </>
-                    )}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={handleDownloadBackupCodes}
-                    className="flex-1 border-slate-800 bg-slate-950 text-slate-300 hover:bg-slate-800 text-xs"
-                  >
-                    <Download className="w-3.5 h-3.5 mr-1.5 text-indigo-400" />
-                    Download (.txt)
-                  </Button>
-                </div>
+      <ChangeEmailModal
+        isOpen={isEmailModalOpen}
+        onClose={() => setIsEmailModalOpen(false)}
+        currentEmail={user?.email}
+        onSuccess={async (newEmail) => {
+          updateUser({ pendingEmail: newEmail });
+          await refreshSession();
+        }}
+      />
 
-                <Button
-                  onClick={() => setIs2faModalOpen(false)}
-                  className="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-sm mt-2"
-                >
-                  I Have Safely Saved My Codes
-                </Button>
-              </div>
-            ) : (
-              <div className="space-y-5">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center flex-shrink-0">
-                    <QrCode className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-bold text-slate-100">Set Up Two-Factor Authentication</h3>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      Scan the QR code with Google Authenticator, Authy, or 1Password.
-                    </p>
-                  </div>
-                </div>
-
-                {/* QR Code Container */}
-                <div className="flex flex-col items-center justify-center p-4 bg-white rounded-sm shadow-inner mx-auto w-fit">
-                  {twoFactorOtpauthUrl && (
-                    <img
-                      src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(
-                        twoFactorOtpauthUrl
-                      )}`}
-                      alt="2FA QR Code"
-                      className="w-44 h-44 rounded"
-                    />
-                  )}
-                </div>
-
-                {/* Manual Secret Key */}
-                <div className="p-3 bg-slate-950 border border-slate-800 rounded-lg space-y-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Manual Setup Key</span>
-                    <button
-                      type="button"
-                      onClick={handleCopySecret}
-                      className="text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1 font-medium"
-                    >
-                      {copiedSecret ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                      <span>{copiedSecret ? 'Copied' : 'Copy'}</span>
-                    </button>
-                  </div>
-                  <p className="font-mono text-xs text-slate-200 break-all select-all">{twoFactorSecret}</p>
-                </div>
-
-                {/* Verification Code Input */}
-                <form onSubmit={handleVerify2fa} className="space-y-4">
-                  <div>
-                    <Label htmlFor="verify2faCode" className="text-slate-300 font-medium text-xs">
-                      Enter 6-Digit Code From Your App
-                    </Label>
-                    <Input
-                      id="verify2faCode"
-                      type="text"
-                      maxLength={6}
-                      autoFocus
-                      placeholder="123456"
-                      value={twoFactorVerifyCode}
-                      onChange={(e) => setTwoFactorVerifyCode(e.target.value)}
-                      className="mt-1.5 bg-slate-950 border-slate-800 text-center font-mono text-lg tracking-widest text-slate-100"
-                    />
-                  </div>
-
-                  <div className="flex justify-end gap-3 pt-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => setIs2faModalOpen(false)}
-                      className="border-slate-800 bg-slate-950 text-slate-300 hover:bg-slate-800 text-xs"
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      type="submit"
-                      disabled={isVerifying2fa || twoFactorVerifyCode.trim().length !== 6}
-                      className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs px-5"
-                    >
-                      {isVerifying2fa ? (
-                        <>
-                          <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-                          Verifying...
-                        </>
-                      ) : (
-                        'Activate 2FA'
-                      )}
-                    </Button>
-                  </div>
-                </form>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Disable 2FA Modal */}
-      {isDisable2faModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-slate-900 border border-slate-800 rounded-sm p-6 max-w-md w-full shadow-2xl">
-            <h3 className="text-lg font-bold text-rose-400 flex items-center gap-2">
-              <Shield className="w-5 h-5" />
-              <span>Disable Two-Factor Authentication</span>
-            </h3>
-            <p className="text-xs text-slate-300 mt-2">
-              Disabling 2FA reduces your account security. Please enter your account password to confirm.
-            </p>
-
-            <form onSubmit={handleDisable2fa} className="space-y-4 mt-5">
-              <div>
-                <Label htmlFor="disable2faPassword" className="text-slate-300 font-medium text-xs">
-                  Account Password
-                </Label>
-                <Input
-                  id="disable2faPassword"
-                  type="password"
-                  value={disable2faPassword}
-                  onChange={(e) => setDisable2faPassword(e.target.value)}
-                  className="mt-1 bg-slate-950 border-slate-800 text-slate-100 text-sm"
-                  placeholder="••••••••"
-                  autoFocus
-                />
-              </div>
-
-              <div className="flex justify-end gap-3 pt-3">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setIsDisable2faModalOpen(false)}
-                  className="border-slate-800 bg-slate-950 text-slate-300 hover:bg-slate-800 text-xs"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  disabled={isDisabling2fa}
-                  className="bg-rose-600 hover:bg-rose-500 text-white font-medium text-xs px-4"
-                >
-                  {isDisabling2fa ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />
-                      Disabling...
-                    </>
-                  ) : (
-                    'Disable 2FA'
-                  )}
-                </Button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Change Email Dialog Modal */}
-      {isEmailModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-slate-900 border border-slate-800 rounded-sm p-6 max-w-md w-full shadow-2xl relative">
-            <h3 className="text-lg font-semibold text-slate-100">Change Account Email</h3>
-            <p className="text-xs text-slate-400 mt-1 mb-5">
-              Enter your new email address. We'll send a confirmation link to verify ownership.
-            </p>
-
-            {emailChangeSuccess ? (
-              <div className="text-center py-4 space-y-4">
-                <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto">
-                  <CheckCircle2 className="w-6 h-6" />
-                </div>
-                <div>
-                  <h4 className="text-sm font-semibold text-slate-100">Confirmation Link Sent</h4>
-                  <p className="text-xs text-slate-400 mt-1">
-                    We sent a verification link to <span className="font-medium text-slate-200">{newEmail}</span>. Please click the link to confirm your new email.
-                  </p>
-                </div>
-                <Button
-                  onClick={() => setIsEmailModalOpen(false)}
-                  className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm"
-                >
-                  Done
-                </Button>
-              </div>
-            ) : (
-              <form onSubmit={handleRequestEmailChange} className="space-y-4">
-                <div>
-                  <Label htmlFor="modalNewEmail" className="text-slate-300 font-medium text-xs">
-                    New Email Address
-                  </Label>
-                  <Input
-                    id="modalNewEmail"
-                    type="email"
-                    value={newEmail}
-                    onChange={(e) => setNewEmail(e.target.value)}
-                    required
-                    autoFocus
-                    className="mt-1.5 bg-slate-950 border-slate-800 focus:border-indigo-500 focus:ring-indigo-500/20 text-slate-100"
-                    placeholder="new.email@example.com"
-                  />
-                </div>
-
-                <div className="flex justify-end gap-3 pt-3">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => setIsEmailModalOpen(false)}
-                    className="border-slate-800 bg-slate-950 text-slate-300 hover:bg-slate-800 text-xs"
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    type="submit"
-                    disabled={isSendingEmailRequest}
-                    className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs px-4"
-                  >
-                    {isSendingEmailRequest ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />
-                        Sending...
-                      </>
-                    ) : (
-                      'Send Verification Link'
-                    )}
-                  </Button>
-                </div>
-              </form>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Delete Account Modal */}
-      {isDeleteModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-slate-900 border border-rose-900/50 rounded-sm p-6 max-w-md w-full shadow-2xl">
-            <h3 className="text-lg font-bold text-rose-400 flex items-center gap-2">
-              <Trash2 className="w-5 h-5" />
-              <span>Confirm Account Deletion</span>
-            </h3>
-            <p className="text-xs text-slate-300 mt-2">
-              This will permanently delete your account, organization memberships, and personal data.
-            </p>
-
-            <form onSubmit={handleDeleteAccount} className="space-y-4 mt-5">
-              <div>
-                <Label htmlFor="delPassword" className="text-slate-300 font-medium text-xs">
-                  Enter Account Password (if applicable)
-                </Label>
-                <Input
-                  id="delPassword"
-                  type="password"
-                  value={deletePassword}
-                  onChange={(e) => setDeletePassword(e.target.value)}
-                  className="mt-1 bg-slate-950 border-slate-800 text-slate-100 text-sm"
-                  placeholder="••••••••"
-                />
-              </div>
-
-              <div>
-                <Label htmlFor="confirmDeleteText" className="text-slate-300 font-medium text-xs">
-                  Type <span className="font-semibold text-rose-400">delete my account</span> to confirm
-                </Label>
-                <Input
-                  id="confirmDeleteText"
-                  type="text"
-                  value={deleteConfirmationText}
-                  onChange={(e) => setDeleteConfirmationText(e.target.value)}
-                  required
-                  className="mt-1 bg-slate-950 border-slate-800 text-slate-100 text-sm"
-                  placeholder="delete my account"
-                />
-              </div>
-
-              <div className="flex justify-end gap-3 pt-3">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setIsDeleteModalOpen(false)}
-                  className="border-slate-800 bg-slate-950 text-slate-300 hover:bg-slate-800 text-xs"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  disabled={isDeletingAccount || deleteConfirmationText.trim().toLowerCase() !== 'delete my account'}
-                  className="bg-rose-600 hover:bg-rose-500 text-white font-medium text-xs px-4"
-                >
-                  {isDeletingAccount ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />
-                      Deleting...
-                    </>
-                  ) : (
-                    'Permanently Delete'
-                  )}
-                </Button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      <DeleteAccountModal
+        isOpen={isDeleteModalOpen}
+        onClose={() => setIsDeleteModalOpen(false)}
+        onSuccess={async () => {
+          setIsDeleteModalOpen(false);
+          await logout();
+          navigate('/');
+        }}
+      />
     </div>
   );
 };

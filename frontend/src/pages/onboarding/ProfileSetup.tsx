@@ -20,6 +20,7 @@ import {
   CheckCircle2,
   ArrowRight,
   ShieldCheck,
+  ShieldAlert,
 } from 'lucide-react';
 
 const TIMEZONE_OPTIONS: SelectOption[] = [
@@ -81,6 +82,13 @@ export const ProfileSetup: React.FC = () => {
   const [isSendingPhoneOtp, setIsSendingPhoneOtp] = useState(false);
   const [isVerifyingPhoneOtp, setIsVerifyingPhoneOtp] = useState(false);
   const [phoneVerified, setPhoneVerified] = useState(Boolean(user?.phoneVerifiedAt));
+  const [hasSkippedPhone, setHasSkippedPhone] = useState(() => {
+    try {
+      return Boolean(localStorage.getItem('phone_verification_skipped'));
+    } catch {
+      return false;
+    }
+  });
 
   useEffect(() => {
     if (user) {
@@ -108,12 +116,19 @@ export const ProfileSetup: React.FC = () => {
     }
     setIsSendingPhoneOtp(true);
     try {
-      await api.post('/users/me/phone/verify', {
-        action: 'request_otp',
-        phone: phone.trim(),
-      });
+      const res = await api.post<{ success: boolean; message?: string; data?: { phoneNormalized?: string } }>(
+        '/users/me/phone/verification/start',
+        {
+          phone: phone.trim(),
+          purpose: 'user_phone_verification',
+        }
+      );
+      if (res.data?.phoneNormalized) {
+        setPhone(res.data.phoneNormalized);
+      }
       setIsPhoneOtpModalOpen(true);
-      toast.success('Verification code sent via SMS.');
+      setPhoneOtp('');
+      toast.success(res.message || 'Verification code sent via SMS.');
     } catch (err: any) {
       toast.error(err.message || 'Failed to send verification SMS.');
     } finally {
@@ -122,19 +137,35 @@ export const ProfileSetup: React.FC = () => {
   };
 
   const handleVerifyPhoneOtp = async () => {
-    if (!phoneOtp.trim() || phoneOtp.length < 4) {
-      toast.error('Please enter the 6-digit code sent to your phone.');
+    if (!phoneOtp.trim() || phoneOtp.length !== 6) {
+      toast.error('Please enter the full 6-digit code sent to your phone.');
       return;
     }
     setIsVerifyingPhoneOtp(true);
     try {
-      await api.post('/users/me/phone/verify', {
-        action: 'verify_code',
-        phone: phone.trim(),
-        code: phoneOtp.trim(),
-      });
+      const res = await api.post<{ success: boolean; message?: string; data?: { phoneNormalized?: string } }>(
+        '/users/me/phone/verification/verify',
+        {
+          code: phoneOtp.trim(),
+          purpose: 'user_phone_verification',
+        }
+      );
+      if (!res.success) {
+        throw new Error('Invalid verification code.');
+      }
+      if (res.data?.phoneNormalized) {
+        setPhone(res.data.phoneNormalized);
+      }
       setPhoneVerified(true);
+      setHasSkippedPhone(false);
+      try {
+        localStorage.removeItem('phone_verification_skipped');
+      } catch {
+        // ignore
+      }
       setIsPhoneOtpModalOpen(false);
+      setPhoneOtp('');
+      await refreshSession();
       toast.success('Phone number verified successfully!');
     } catch (err: any) {
       toast.error(err.message || 'Invalid or expired verification code.');
@@ -269,6 +300,14 @@ export const ProfileSetup: React.FC = () => {
 
           {/* Phone Number with SMS Verification */}
           <div className="space-y-1.5">
+            {hasSkippedPhone && !phoneVerified && (
+              <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 flex items-start gap-2 mb-2">
+                <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <span>
+                  Phone verification was skipped earlier. Adding a verified number enhances account security and enables SMS critical alerts.
+                </span>
+              </div>
+            )}
             <div className="flex items-center justify-between">
               <Label htmlFor="phone" className="text-xs font-medium text-slate-300">
                 Phone Number (optional but encouraged)
@@ -447,8 +486,8 @@ export const ProfileSetup: React.FC = () => {
                 <Button
                   type="button"
                   onClick={handleVerifyPhoneOtp}
-                  disabled={isVerifyingPhoneOtp || phoneOtp.length < 4}
-                  className="flex-1 h-9 bg-[#714b67] hover:bg-[#8d5b80] text-xs text-white"
+                  disabled={isVerifyingPhoneOtp || phoneOtp.length !== 6}
+                  className="flex-1 h-9 bg-[#714b67] hover:bg-[#8d5b80] text-xs text-white cursor-pointer disabled:opacity-50"
                 >
                   {isVerifyingPhoneOtp ? <Spinner size="sm" /> : 'Confirm OTP'}
                 </Button>

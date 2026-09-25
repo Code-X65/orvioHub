@@ -23,6 +23,13 @@ describe('Zoho-Style Model: Organization -> Application Activation -> Branch Set
   const originalIsApplicationActiveForOrg = dataService.isApplicationActiveForOrg;
   const originalGetOrganizationWorkspaces = dataService.getOrganizationWorkspaces;
 
+  const originalGetOrganizationCountForUser = (dataService as any).getOrganizationCountForUser;
+  const originalGetEntitlementContext = (dataService as any).getEntitlementContext;
+  const originalGetWorkspaceSubscription = (dataService as any).getWorkspaceSubscription;
+  const originalCompleteInventoryOnboarding = (dataService as any).completeInventoryOnboarding;
+  const originalGetOrganizationCreationEligibility = (dataService as any).getOrganizationCreationEligibility;
+  const originalGetUserMemberships = (dataService as any).getUserMemberships;
+
   before(async () => {
     app = await buildApp();
     await app.ready();
@@ -43,7 +50,22 @@ describe('Zoho-Style Model: Organization -> Application Activation -> Branch Set
     } as any);
 
     dataService.logAudit = async () => ({} as any);
-    dataService.getOrganizationWorkspaces = async () => [] as any;
+    (dataService as any).getOrganizationCountForUser = async () => 0;
+    (dataService as any).getOrganizationCreationEligibility = async () => ({
+      allowed: true,
+      currentOwnedOrganizations: 0,
+      maximumOwnedOrganizations: 3,
+      remainingOwnedOrganizations: 3,
+    });
+    (dataService as any).getUserMemberships = async () => [];
+    (dataService as any).getOrganizationWorkspaces = async () => [{ id: 'ws_123', _id: 'ws_123', planKey: 'standard' }] as any;
+    (dataService as any).getWorkspaceSubscription = async () => ({ planKey: 'standard', status: 'active' }) as any;
+    (dataService as any).getEntitlementContext = async () => ({
+      planKey: 'standard',
+      features: {
+        'workspace.max_branches': { allowed: true, limit: 3, currentUsage: 1 },
+      },
+    }) as any;
   });
 
   after(async () => {
@@ -60,6 +82,12 @@ describe('Zoho-Style Model: Organization -> Application Activation -> Branch Set
     dataService.getOrganizationApps = originalGetOrganizationApps;
     dataService.isApplicationActiveForOrg = originalIsApplicationActiveForOrg;
     dataService.getOrganizationWorkspaces = originalGetOrganizationWorkspaces;
+    (dataService as any).getOrganizationCountForUser = originalGetOrganizationCountForUser;
+    (dataService as any).getEntitlementContext = originalGetEntitlementContext;
+    (dataService as any).getWorkspaceSubscription = originalGetWorkspaceSubscription;
+    (dataService as any).completeInventoryOnboarding = originalCompleteInventoryOnboarding;
+    (dataService as any).getOrganizationCreationEligibility = originalGetOrganizationCreationEligibility;
+    (dataService as any).getUserMemberships = originalGetUserMemberships;
     await app.close();
   });
 
@@ -239,6 +267,9 @@ describe('Zoho-Style Model: Organization -> Application Activation -> Branch Set
   });
 
   test('US-A3: Branch creation fails if application is not activated', async () => {
+    dataService.isApplicationActiveForOrg = async () => ({
+      active: false,
+    });
     dataService.createBranch = async () => {
       throw new Error('APPLICATION_NOT_ACTIVATED');
     };
@@ -261,6 +292,12 @@ describe('Zoho-Style Model: Organization -> Application Activation -> Branch Set
   });
 
   test('US-A3: Branch creation succeeds after application is activated', async () => {
+    dataService.isApplicationActiveForOrg = async () => ({
+      active: true,
+      status: 'active',
+      planId: 'standard',
+      app: { key: 'inventory', name: 'Inventory' },
+    });
     dataService.createBranch = async (args: any) => ({
       branchId: 'branch_created_123',
       name: args.name,
@@ -309,5 +346,36 @@ describe('Zoho-Style Model: Organization -> Application Activation -> Branch Set
     assert.strictEqual(body.success, true);
     assert.strictEqual(body.data.active, true);
     assert.strictEqual(body.data.status, 'trial');
+  });
+
+  test('US-A5: POST /api/v1/organizations/:id/inventory-onboarding/complete marks onboarding finished', async () => {
+    let completedArgs: any = null;
+    (dataService as any).completeInventoryOnboarding = async (orgId: string, branchId?: string, userId?: string) => {
+      completedArgs = { orgId, branchId, userId };
+      return {
+        success: true,
+        organizationId: orgId,
+        branchId,
+        completedAt: Date.now(),
+      };
+    };
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/organizations/${testOrgId}/inventory-onboarding/complete`,
+      headers: {
+        ...getAuthHeaders(),
+      },
+      payload: {
+        branchId: 'branch_created_123',
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    const body = JSON.parse(res.payload);
+    assert.strictEqual(body.success, true);
+    assert.strictEqual(completedArgs.orgId, testOrgId);
+    assert.strictEqual(completedArgs.branchId, 'branch_created_123');
+    assert.strictEqual(completedArgs.userId, testUserId);
   });
 });

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { DashboardStatsSkeleton } from '@/components/common/LoadingSkeletons';
 
 export interface WorkspaceAnalyticsProps {
   workspaceId: string;
@@ -42,8 +43,8 @@ export const WorkspaceAnalyticsView: React.FC<WorkspaceAnalyticsProps> = ({ work
 
   if (loading) {
     return (
-      <div className="p-6 text-center text-sm text-gray-500">
-        Loading organization analytics...
+      <div className="py-2">
+        <DashboardStatsSkeleton count={3} />
       </div>
     );
   }

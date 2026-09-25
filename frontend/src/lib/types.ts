@@ -47,9 +47,12 @@ export interface User {
   theme?: 'dark' | 'light' | 'system';
   layoutDensity?: 'compact' | 'comfortable';
   twoFactorEnabled?: boolean;
+  twoFactorBackupCodesRemaining?: number;
+  pendingEmail?: string;
   planKey?: 'free_trial' | 'standard' | 'premium' | string;
   subscriptionStatus?: string;
   status?: string;
+  role?: Role | string;
   phoneVerified?: boolean;
   personalOnboardingCompleted?: boolean;
 }
@@ -162,7 +165,6 @@ export interface RememberedAccount {
   displayName?: string;
   avatarUrl?: string;
   token?: string;
-  refreshToken?: string;
   lastLoginAt: number;
 }
 

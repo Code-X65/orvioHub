@@ -11,11 +11,14 @@ import OrganizationDetails from "./pages/OrganizationDetails";
 import Invitations from "./pages/Invitations";
 import Onboarding from "./pages/Onboarding";
 import Products from "./pages/Products";
+import Applications from "./pages/Applications";
 import ApplicationWorkspaces from "./pages/ApplicationWorkspaces";
 import InventoryTeamExplorer from "./pages/InventoryTeamExplorer";
 import Plans from "./pages/Plans";
 import { Subscriptions } from "./pages/Subscriptions";
 import { SubscriptionDetails } from "./pages/SubscriptionDetails";
+import { BillingAnalytics } from "./pages/BillingAnalytics";
+import { InvoiceManagement } from "./pages/InvoiceManagement";
 import AuditLogs from "./pages/AuditLogs";
 import PhoneChallenges from "./pages/PhoneChallenges";
 import Settings from "./pages/Settings";
@@ -37,6 +40,11 @@ export const App: React.FC = () => {
           <Route path="/organizations/:id" element={<OrganizationDetails />} />
           
           {/* Billing & Subscriptions Routes */}
+          <Route path="/billing/analytics" element={<BillingAnalytics />} />
+          <Route path="/analytics/billing" element={<BillingAnalytics />} />
+          <Route path="/invoices" element={<InvoiceManagement />} />
+          <Route path="/billing/invoices" element={<InvoiceManagement />} />
+          
           <Route path="/subscriptions" element={<Subscriptions />} />
           <Route path="/subscriptions/:id" element={<SubscriptionDetails />} />
           <Route path="/billing/subscriptions" element={<Subscriptions />} />
@@ -52,6 +60,8 @@ export const App: React.FC = () => {
           <Route path="/invitations" element={<Invitations />} />
           <Route path="/onboarding" element={<Onboarding />} />
           <Route path="/products" element={<Products />} />
+          <Route path="/applications" element={<Applications />} />
+          <Route path="/admin/applications" element={<Applications />} />
           <Route path="/applications/inventory/team" element={<InventoryTeamExplorer />} />
           <Route path="/admin/inventory/team" element={<InventoryTeamExplorer />} />
           <Route path="/applications/:appKey" element={<ApplicationWorkspaces />} />

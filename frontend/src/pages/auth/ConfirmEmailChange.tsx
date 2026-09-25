@@ -30,7 +30,6 @@ export const ConfirmEmailChange: React.FC = () => {
         }>('/auth/email/confirm-change', { token });
 
         if (res.token && res.user) {
-          localStorage.setItem('orvio_auth_token', res.token);
           setAuthData({
             user: res.user,
             token: res.token,

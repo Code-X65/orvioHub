@@ -592,13 +592,13 @@ export const onboardingRoutes: FastifyPluginAsync = async (fastify) => {
     }
   );
 
-  // POST /api/v1/onboarding/share-link
-  fastify.post(
+  // GET /api/v1/onboarding/share-link
+  fastify.get(
     '/share-link',
     {
       schema: {
         tags: ['Onboarding'],
-        summary: 'Generate a shareable invite link for teammates',
+        summary: 'Get active shareable invite link for teammates',
         security: [{ bearerAuth: [] }],
       },
     },
@@ -615,16 +615,79 @@ export const onboardingRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      const body = (request.body as { role?: 'ADMIN' | 'MANAGER' | 'MEMBER' }) || {};
+      const link = await dataService.getActiveShareableInviteLink(targetOrgId, request.user.id);
+      return reply.send({
+        success: true,
+        data: link,
+      });
+    }
+  );
+
+  // POST /api/v1/onboarding/share-link
+  fastify.post(
+    '/share-link',
+    {
+      schema: {
+        tags: ['Onboarding'],
+        summary: 'Generate or regenerate a shareable invite link for teammates',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const status = await dataService.getOnboardingStatus(request.user.id);
+      const targetOrgId = status.organization?.id;
+      if (!targetOrgId) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.ORGANIZATION_NOT_FOUND,
+            message: 'Organization not found for active onboarding session.',
+          },
+        });
+      }
+
+      const body = (request.body as { role?: any; expiresInDays?: number; regenerate?: boolean }) || {};
       const result = await dataService.generateShareableInviteLink(
         targetOrgId,
         request.user.id,
-        body.role || 'MEMBER'
+        body.role || 'MEMBER',
+        body.expiresInDays
       );
 
       return reply.send({
         success: true,
         data: result,
+      });
+    }
+  );
+
+  // DELETE /api/v1/onboarding/share-link
+  fastify.delete(
+    '/share-link',
+    {
+      schema: {
+        tags: ['Onboarding'],
+        summary: 'Revoke active shareable invite link for teammates',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const status = await dataService.getOnboardingStatus(request.user.id);
+      const targetOrgId = status.organization?.id;
+      if (!targetOrgId) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.ORGANIZATION_NOT_FOUND,
+            message: 'Organization not found for active onboarding session.',
+          },
+        });
+      }
+
+      await dataService.revokeShareableInviteLinks(targetOrgId, request.user.id);
+      return reply.send({
+        success: true,
+        message: 'Shareable invite link revoked successfully.',
       });
     }
   );
@@ -821,6 +884,432 @@ export const onboardingRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.send({
         success: true,
         data: result,
+      });
+    }
+  );
+
+  // ==========================================
+  // INVENTORY ONBOARDING & FIRST SALE TUTORIAL
+  // ==========================================
+
+  const resolveTargetWorkspaceId = async (request: any, explicitId?: string): Promise<string | null> => {
+    if (explicitId) return explicitId;
+    const headerWs = request.headers['x-workspace-id'] as string;
+    if (headerWs) return headerWs;
+    const queryWs = (request.query as any)?.workspaceId;
+    if (queryWs) return queryWs;
+    const bodyWs = (request.body as any)?.workspaceId;
+    if (bodyWs) return bodyWs;
+    const status = await dataService.getOnboardingStatus(request.user.id).catch(() => null);
+    if (status?.workspace?.id) return status.workspace.id;
+    if (status?.organization?.id) {
+      const wsList = await (dataService as any).getOrganizationWorkspaces(status.organization.id).catch(() => []);
+      if (wsList && wsList.length > 0) {
+        return wsList[0].id || wsList[0]._id;
+      }
+    }
+    return null;
+  };
+
+  // GET /api/v1/onboarding/inventory/status
+  fastify.get(
+    '/inventory/status',
+    {
+      schema: {
+        tags: ['Onboarding'],
+        summary: 'Get inventory onboarding state and progress',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const workspaceId = await resolveTargetWorkspaceId(request);
+      const flow = workspaceId
+        ? await dataService.getInventoryOnboardingFlow(request.user.id, workspaceId)
+        : null;
+
+      const completedSteps = flow?.completedSteps || [];
+      const skippedSteps = flow?.skippedSteps || [];
+      const isFirstSaleCompleted = completedSteps.includes('first_sale_tutorial');
+      const isFirstSaleSkipped = skippedSteps.includes('first_sale_tutorial');
+      const statusNormalized = (flow?.status || '').toLowerCase();
+      const canResume = flow?.currentStep === 'first_sale_tutorial' && (statusNormalized === 'in_progress' || statusNormalized === 'not_started');
+      const isComplete = statusNormalized === 'completed' || (isFirstSaleCompleted || isFirstSaleSkipped);
+
+      return reply.send({
+        success: true,
+        data: {
+          flow: flow || {
+            status: 'not_started',
+            currentStep: 'product_setup',
+            completedSteps: [],
+            skippedSteps: [],
+            stepData: {},
+          },
+          currentStep: flow?.currentStep || 'product_setup',
+          completedSteps,
+          skippedSteps,
+          canResume,
+          isComplete,
+          stepData: flow?.stepData || {},
+        },
+      });
+    }
+  );
+
+  // POST /api/v1/onboarding/inventory/start
+  fastify.post(
+    '/inventory/start',
+    {
+      schema: {
+        tags: ['Onboarding'],
+        summary: 'Start or initialize inventory onboarding flow',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          properties: {
+            workspaceId: { type: 'string' },
+            initialStep: { type: 'string' },
+            flowVersion: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = (request.body || {}) as { workspaceId?: string; initialStep?: string; flowVersion?: string };
+      const workspaceId = await resolveTargetWorkspaceId(request, body.workspaceId);
+
+      const initialStep = body.initialStep || 'product_setup';
+      const flow = await dataService.startInventoryOnboardingFlow(
+        request.user.id,
+        workspaceId || 'workspace_local',
+        initialStep
+      );
+
+      await dataService.logAudit({
+        actorUserId: request.user.id,
+        workspaceId: workspaceId || undefined,
+        productKey: 'inventory',
+        eventType: 'onboarding.inventory_started',
+        metadata: {
+          initialStep,
+          flowVersion: body.flowVersion || '1.0',
+        },
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+      }).catch(() => {});
+
+      if (initialStep === 'first_sale_tutorial') {
+        await dataService.logAudit({
+          actorUserId: request.user.id,
+          workspaceId: workspaceId || undefined,
+          productKey: 'inventory',
+          eventType: 'onboarding.first_sale_started',
+          entityType: 'sale',
+          metadata: { tutorial: true, currentStep: 'first_sale_tutorial' },
+          ipAddress: request.ip,
+          userAgent: request.headers['user-agent'],
+        }).catch(() => {});
+      }
+
+      return reply.send({
+        success: true,
+        data: { flow },
+      });
+    }
+  );
+
+  // POST /api/v1/onboarding/inventory/progress
+  fastify.post(
+    '/inventory/progress',
+    {
+      schema: {
+        tags: ['Onboarding'],
+        summary: 'Update inventory onboarding step progress and draft state',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['currentStep'],
+          properties: {
+            currentStep: { type: 'string' },
+            stepData: { type: 'object' },
+            workspaceId: { type: 'string' },
+            flowId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = request.body as { currentStep: string; stepData?: any; workspaceId?: string; flowId?: string };
+      const workspaceId = await resolveTargetWorkspaceId(request, body.workspaceId);
+
+      const res = await dataService.updateInventoryOnboardingProgress(
+        request.user.id,
+        workspaceId || 'workspace_local',
+        body.currentStep,
+        body.stepData,
+        body.flowId
+      );
+
+      if (body.currentStep === 'first_sale_tutorial') {
+        await dataService.logAudit({
+          actorUserId: request.user.id,
+          workspaceId: workspaceId || undefined,
+          productKey: 'inventory',
+          eventType: 'onboarding.first_sale_started',
+          entityType: 'sale',
+          metadata: {
+            tutorial: true,
+            currentStep: 'first_sale_tutorial',
+            ...(body.stepData || {}),
+          },
+          ipAddress: request.ip,
+          userAgent: request.headers['user-agent'],
+        }).catch(() => {});
+      }
+
+      return reply.send({
+        success: true,
+        data: res,
+      });
+    }
+  );
+
+  // POST /api/v1/onboarding/inventory/complete-step
+  fastify.post(
+    '/inventory/complete-step',
+    {
+      schema: {
+        tags: ['Onboarding'],
+        summary: 'Mark an inventory onboarding step as completed',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['step'],
+          properties: {
+            step: { type: 'string' },
+            nextStep: { type: 'string' },
+            metadata: { type: 'object' },
+            workspaceId: { type: 'string' },
+            flowId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = request.body as {
+        step: string;
+        nextStep?: string;
+        metadata?: any;
+        workspaceId?: string;
+        flowId?: string;
+      };
+      const workspaceId = await resolveTargetWorkspaceId(request, body.workspaceId);
+
+      const nextStep = body.nextStep || (body.step === 'first_sale_tutorial' ? 'completed' : body.step);
+      const res = await dataService.completeInventoryOnboardingStep(
+        request.user.id,
+        workspaceId || 'workspace_local',
+        body.step,
+        nextStep,
+        body.metadata,
+        body.flowId
+      );
+
+      await dataService.logAudit({
+        actorUserId: request.user.id,
+        workspaceId: workspaceId || undefined,
+        productKey: 'inventory',
+        eventType: body.step === 'first_sale_tutorial' ? 'onboarding.first_sale_completed' : 'onboarding.step_completed',
+        entityType: body.step === 'first_sale_tutorial' ? 'sale' : 'step',
+        entityId: body.metadata?.saleId || (body.step === 'first_sale_tutorial' ? 'tutorial_sale' : body.step),
+        metadata: {
+          step: body.step,
+          tutorial: body.step === 'first_sale_tutorial',
+          paymentMethod: body.metadata?.paymentMethod,
+          productCount: body.metadata?.productCount,
+          saleId: body.metadata?.saleId,
+          totalAmount: body.metadata?.totalAmount,
+          ...(body.metadata || {}),
+        },
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+      }).catch(() => {});
+
+      return reply.send({
+        success: true,
+        data: res,
+      });
+    }
+  );
+
+  // POST /api/v1/onboarding/inventory/skip-step
+  fastify.post(
+    '/inventory/skip-step',
+    {
+      schema: {
+        tags: ['Onboarding'],
+        summary: 'Mark an inventory onboarding step as skipped',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['step'],
+          properties: {
+            step: { type: 'string' },
+            nextStep: { type: 'string' },
+            workspaceId: { type: 'string' },
+            flowId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = request.body as {
+        step: string;
+        nextStep?: string;
+        workspaceId?: string;
+        flowId?: string;
+      };
+      const workspaceId = await resolveTargetWorkspaceId(request, body.workspaceId);
+
+      const res = await dataService.skipInventoryOnboardingStep(
+        request.user.id,
+        workspaceId || 'workspace_local',
+        body.step,
+        body.nextStep || 'completed',
+        body.flowId
+      );
+
+      await dataService.logAudit({
+        actorUserId: request.user.id,
+        workspaceId: workspaceId || undefined,
+        productKey: 'inventory',
+        eventType: 'onboarding.step_skipped',
+        metadata: {
+          step: body.step,
+          skipped: true,
+        },
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+      }).catch(() => {});
+
+      return reply.send({
+        success: true,
+        data: res,
+      });
+    }
+  );
+
+  // POST /api/v1/onboarding/inventory/complete
+  fastify.post(
+    '/inventory/complete',
+    {
+      schema: {
+        tags: ['Onboarding'],
+        summary: 'Validate and finalize inventory onboarding',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          properties: {
+            workspaceId: { type: 'string' },
+            branchId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = (request.body || {}) as { workspaceId?: string; branchId?: string };
+      const workspaceId = await resolveTargetWorkspaceId(request, body.workspaceId);
+
+      // Acceptance Criteria:
+      // User cannot mark Inventory onboarding as complete until first_sale_tutorial is completed (or explicitly skipped).
+      const flow = workspaceId
+        ? await dataService.getInventoryOnboardingFlow(request.user.id, workspaceId).catch(() => null)
+        : null;
+
+      if (flow) {
+        const completed = flow.completedSteps || [];
+        const skipped = flow.skippedSteps || [];
+        const isTutorialSatisfied =
+          completed.includes('first_sale_tutorial') || skipped.includes('first_sale_tutorial');
+
+        if (!isTutorialSatisfied) {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: 'STEP_INCOMPLETE',
+              message: 'User cannot mark Inventory onboarding as complete until first_sale_tutorial is completed (or explicitly skipped).',
+              step: 'first_sale_tutorial',
+            },
+          });
+        }
+      }
+
+      if (workspaceId) {
+        await dataService.completeInventoryOnboarding(workspaceId, body.branchId, request.user.id, true).catch(() => {});
+      }
+
+      await dataService.logAudit({
+        actorUserId: request.user.id,
+        workspaceId: workspaceId || undefined,
+        productKey: 'inventory',
+        eventType: 'inventory.onboarding_completed',
+        metadata: {
+          branchId: body.branchId,
+          completedAt: Date.now(),
+        },
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+      }).catch(() => {});
+
+      return reply.send({
+        success: true,
+        data: { completed: true },
+        message: 'Inventory onboarding completed successfully!',
+      });
+    }
+  );
+
+  // POST /api/v1/onboarding/inventory/first-sale-failed
+  fastify.post(
+    '/inventory/first-sale-failed',
+    {
+      schema: {
+        tags: ['Onboarding'],
+        summary: 'Log audit event for failed first sale tutorial attempt',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          properties: {
+            workspaceId: { type: 'string' },
+            error: { type: 'string' },
+            details: { type: 'object' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = (request.body || {}) as { workspaceId?: string; error?: string; details?: any };
+      const workspaceId = await resolveTargetWorkspaceId(request, body.workspaceId);
+
+      await dataService.logAudit({
+        actorUserId: request.user.id,
+        workspaceId: workspaceId || undefined,
+        productKey: 'inventory',
+        eventType: 'onboarding.first_sale_failed',
+        entityType: 'sale',
+        metadata: {
+          tutorial: true,
+          error: body.error || 'Sale creation failed during tutorial',
+          details: body.details,
+        },
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+      }).catch(() => {});
+
+      return reply.send({
+        success: true,
+        data: { logged: true },
+        message: 'Failure event recorded',
       });
     }
   );

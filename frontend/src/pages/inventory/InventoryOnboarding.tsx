@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useTransition } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
@@ -74,10 +74,22 @@ export const InventoryOnboarding: React.FC = () => {
 
   // Questionnaire State (US-2)
   const [questionIndex, setQuestionIndex] = useState(0); // 0 to 3
+  const [direction, setDirection] = useState<'forward' | 'backward'>('forward');
+  const [, startTransition] = useTransition();
   const [previousTools, setPreviousTools] = useState<string[]>([]);
   const [painPoints, setPainPoints] = useState<string[]>([]);
   const [priorityFeatures, setPriorityFeatures] = useState<string[]>([]);
   const [teamComfortLevel, setTeamComfortLevel] = useState<string>('somewhat');
+
+  const changeQuestion = (newIndex: number, isBackward = false) => {
+    setDirection(isBackward ? 'backward' : 'forward');
+    startTransition(() => {
+      setQuestionIndex(newIndex);
+    });
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
 
   // Branch Setup Phase (US-3)
   const [onboardingStage, setOnboardingStage] = useState<'questionnaire' | 'branch_setup'>('questionnaire');
@@ -248,18 +260,18 @@ export const InventoryOnboarding: React.FC = () => {
   return (
     <div className="min-h-screen bg-black text-slate-100 flex flex-col justify-between selection:bg-[#714b67] selection:text-white">
       {/* Top Bar */}
-      <header className="h-16 border-b border-white/10 px-6 flex items-center justify-between bg-[#0d090d]">
+      <header className="h-16 border-b border-white/10 px-4 sm:px-6 flex items-center justify-between bg-[#0d090d]">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-[#714b67] flex items-center justify-center text-white font-bold text-sm shadow-md">
+          <div className="w-8 h-8 rounded-sm bg-[#714b67] flex items-center justify-center text-white font-bold text-sm shadow-md shrink-0">
             <Boxes className="w-4 h-4" />
           </div>
-          <div>
-            <div className="text-xs font-bold text-white flex items-center gap-1.5">
+          <div className="min-w-0">
+            <div className="text-xs font-bold text-white flex items-center gap-1.5 truncate">
               <span>{activeOrgName}</span>
               <span className="text-slate-500">•</span>
               <span className="text-[#c79dbd]">Inventory Setup</span>
             </div>
-            <p className="text-[10px] text-slate-400">First-Time Application Onboarding</p>
+            <p className="text-[10px] text-slate-400 truncate">First-Time Application Onboarding</p>
           </div>
         </div>
 
@@ -267,32 +279,39 @@ export const InventoryOnboarding: React.FC = () => {
           <button
             type="button"
             onClick={() => handleSaveQuestionnaire(true)}
-            className="text-xs text-slate-400 hover:text-white transition-colors"
+            className="text-xs text-slate-400 hover:text-white transition-colors shrink-0 ml-2"
           >
             Skip for now
           </button>
         )}
       </header>
 
-      <main className="flex-1 max-w-2xl w-full mx-auto px-4 sm:px-6 py-8 space-y-8">
+      <main className="flex-1 max-w-2xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6 sm:space-y-8">
         {/* PHASE 1: QUESTIONNAIRE (US-2) */}
         {onboardingStage === 'questionnaire' && (
           <div className="space-y-6">
             {/* Header / Step Tracker */}
             <div className="space-y-3">
-              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#714b67]/20 border border-[#714b67]/30 text-[#c79dbd] text-[11px] font-bold">
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-sm bg-[#714b67]/20 border border-[#714b67]/30 text-[#c79dbd] text-[11px] font-bold">
                 <Sparkles className="w-3 h-3 text-[#FDB02F]" />
                 <span>Help us tailor Inventory for your business</span>
               </div>
-              <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-                {questionIndex === 0 && 'How were you tracking inventory and sales before?'}
-                {questionIndex === 1 && 'What is your biggest pain point with your current setup?'}
-                {questionIndex === 2 && 'Which features are most important right now?'}
-                {questionIndex === 3 && 'How comfortable is your team with apps & software?'}
-              </h1>
-              <p className="text-xs text-slate-400">
-                Question {questionIndex + 1} of 4 — {questionIndex === 2 ? 'Select up to 3' : 'Select options'}
-              </p>
+              <div className="space-y-1">
+                <span className="text-[11px] font-bold text-[#FDB02F] tracking-wide uppercase">
+                  Inventory Onboarding Questionnaire
+                </span>
+                <div className="min-h-[64px] sm:min-h-[56px] flex flex-col justify-center">
+                  <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight transition-all duration-200">
+                    {questionIndex === 0 && 'Previous Tools & Record-Keeping'}
+                    {questionIndex === 1 && 'Current Operational Pain Points'}
+                    {questionIndex === 2 && 'Which features are most important right now?'}
+                    {questionIndex === 3 && 'How comfortable is your team with apps & software?'}
+                  </h1>
+                  <p className="text-xs text-slate-400 mt-0.5 transition-all duration-200">
+                    Question {questionIndex + 1} of 4 — {questionIndex === 2 ? 'Select up to 3' : 'Select options'}
+                  </p>
+                </div>
+              </div>
 
               {/* Progress Dots */}
               <div className="flex gap-1.5 pt-1">
@@ -300,7 +319,7 @@ export const InventoryOnboarding: React.FC = () => {
                   <div
                     key={idx}
                     className={cn(
-                      'h-1 flex-1 rounded-full transition-all duration-300',
+                      'h-1 flex-1 rounded-sm transition-all duration-300',
                       idx <= questionIndex ? 'bg-[#714b67]' : 'bg-white/10'
                     )}
                   />
@@ -310,7 +329,13 @@ export const InventoryOnboarding: React.FC = () => {
 
             {/* Question 1: Previous Tools */}
             {questionIndex === 0 && (
-              <div className="p-6 rounded-2xl bg-[#120b10] border border-white/10 shadow-xl space-y-3">
+              <div
+                key="inv-q-0"
+                className={cn(
+                  "p-4 sm:p-6 rounded-sm bg-[#120b10] border border-white/10 shadow-xl space-y-3 animate-in fade-in duration-200 fill-mode-both",
+                  direction === 'forward' ? 'slide-in-from-right-3' : 'slide-in-from-left-3'
+                )}
+              >
                 {PREVIOUS_TOOLS_OPTIONS.map((opt) => {
                   const isChecked = previousTools.includes(opt.id);
                   return (
@@ -319,7 +344,7 @@ export const InventoryOnboarding: React.FC = () => {
                       type="button"
                       onClick={() => toggleMultiSelect(previousTools, setPreviousTools, opt.id)}
                       className={cn(
-                        'w-full p-3.5 rounded-xl border text-left flex items-center justify-between transition-all',
+                        'w-full p-3.5 rounded-sm border text-left flex items-center justify-between transition-all',
                         isChecked
                           ? 'bg-[#714b67]/25 border-[#714b67] text-white'
                           : 'bg-black/30 border-white/5 text-slate-300 hover:border-white/20'
@@ -328,7 +353,7 @@ export const InventoryOnboarding: React.FC = () => {
                       <span className="text-xs font-semibold">{opt.label}</span>
                       <div
                         className={cn(
-                          'w-4 h-4 rounded flex items-center justify-center text-[10px]',
+                          'w-4 h-4 rounded-sm flex items-center justify-center text-[10px]',
                           isChecked ? 'bg-[#714b67] text-white' : 'border border-white/20'
                         )}
                       >
@@ -342,7 +367,13 @@ export const InventoryOnboarding: React.FC = () => {
 
             {/* Question 2: Pain Points */}
             {questionIndex === 1 && (
-              <div className="p-6 rounded-2xl bg-[#120b10] border border-white/10 shadow-xl space-y-3">
+              <div
+                key="inv-q-1"
+                className={cn(
+                  "p-4 sm:p-6 rounded-sm bg-[#120b10] border border-white/10 shadow-xl space-y-3 animate-in fade-in duration-200 fill-mode-both",
+                  direction === 'forward' ? 'slide-in-from-right-3' : 'slide-in-from-left-3'
+                )}
+              >
                 {PAIN_POINTS_OPTIONS.map((opt) => {
                   const isChecked = painPoints.includes(opt.id);
                   return (
@@ -351,7 +382,7 @@ export const InventoryOnboarding: React.FC = () => {
                       type="button"
                       onClick={() => toggleMultiSelect(painPoints, setPainPoints, opt.id)}
                       className={cn(
-                        'w-full p-3.5 rounded-xl border text-left flex items-center justify-between transition-all',
+                        'w-full p-3.5 rounded-sm border text-left flex items-center justify-between transition-all',
                         isChecked
                           ? 'bg-[#714b67]/25 border-[#714b67] text-white'
                           : 'bg-black/30 border-white/5 text-slate-300 hover:border-white/20'
@@ -360,7 +391,7 @@ export const InventoryOnboarding: React.FC = () => {
                       <span className="text-xs font-semibold">{opt.label}</span>
                       <div
                         className={cn(
-                          'w-4 h-4 rounded flex items-center justify-center text-[10px]',
+                          'w-4 h-4 rounded-sm flex items-center justify-center text-[10px]',
                           isChecked ? 'bg-[#714b67] text-white' : 'border border-white/20'
                         )}
                       >
@@ -374,7 +405,13 @@ export const InventoryOnboarding: React.FC = () => {
 
             {/* Question 3: Priority Features (Max 3) */}
             {questionIndex === 2 && (
-              <div className="p-6 rounded-2xl bg-[#120b10] border border-white/10 shadow-xl space-y-3">
+              <div
+                key="inv-q-2"
+                className={cn(
+                  "p-4 sm:p-6 rounded-sm bg-[#120b10] border border-white/10 shadow-xl space-y-3 animate-in fade-in duration-200 fill-mode-both",
+                  direction === 'forward' ? 'slide-in-from-right-3' : 'slide-in-from-left-3'
+                )}
+              >
                 {PRIORITY_FEATURES_OPTIONS.map((opt) => {
                   const isChecked = priorityFeatures.includes(opt.id);
                   return (
@@ -383,7 +420,7 @@ export const InventoryOnboarding: React.FC = () => {
                       type="button"
                       onClick={() => toggleMultiSelect(priorityFeatures, setPriorityFeatures, opt.id, 3)}
                       className={cn(
-                        'w-full p-3.5 rounded-xl border text-left flex items-center justify-between transition-all',
+                        'w-full p-3.5 rounded-sm border text-left flex items-center justify-between transition-all',
                         isChecked
                           ? 'bg-[#714b67]/25 border-[#714b67] text-white'
                           : 'bg-black/30 border-white/5 text-slate-300 hover:border-white/20'
@@ -392,7 +429,7 @@ export const InventoryOnboarding: React.FC = () => {
                       <span className="text-xs font-semibold">{opt.label}</span>
                       <div
                         className={cn(
-                          'w-4 h-4 rounded flex items-center justify-center text-[10px]',
+                          'w-4 h-4 rounded-sm flex items-center justify-center text-[10px]',
                           isChecked ? 'bg-[#714b67] text-white' : 'border border-white/20'
                         )}
                       >
@@ -406,14 +443,20 @@ export const InventoryOnboarding: React.FC = () => {
 
             {/* Question 4: Team Comfort Level */}
             {questionIndex === 3 && (
-              <div className="p-6 rounded-2xl bg-[#120b10] border border-white/10 shadow-xl space-y-3">
+              <div
+                key="inv-q-3"
+                className={cn(
+                  "p-4 sm:p-6 rounded-sm bg-[#120b10] border border-white/10 shadow-xl space-y-3 animate-in fade-in duration-200 fill-mode-both",
+                  direction === 'forward' ? 'slide-in-from-right-3' : 'slide-in-from-left-3'
+                )}
+              >
                 {TEAM_COMFORT_OPTIONS.map((opt) => (
                   <button
                     key={opt.id}
                     type="button"
                     onClick={() => setTeamComfortLevel(opt.id)}
                     className={cn(
-                      'w-full p-3.5 rounded-xl border text-left transition-all',
+                      'w-full p-3.5 rounded-sm border text-left transition-all',
                       teamComfortLevel === opt.id
                         ? 'bg-[#714b67]/25 border-[#714b67] text-white ring-1 ring-[#714b67]'
                         : 'bg-black/30 border-white/5 text-slate-300 hover:border-white/20'
@@ -427,14 +470,14 @@ export const InventoryOnboarding: React.FC = () => {
             )}
 
             {/* Questionnaire Navigation Controls */}
-            <div className="flex items-center justify-between pt-2">
+            <div className="flex flex-col-reverse sm:flex-row sm:items-center justify-between gap-3 pt-2">
               {questionIndex > 0 ? (
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => setQuestionIndex(questionIndex - 1)}
-                  className="border-white/10 text-slate-300 hover:bg-white/5 text-xs"
+                  onClick={() => changeQuestion(questionIndex - 1, true)}
+                  className="rounded-sm border-white/10 text-slate-300 hover:bg-white/5 text-xs cursor-pointer w-full sm:w-auto"
                 >
                   <ArrowLeft className="w-3.5 h-3.5 mr-1" />
                   <span>Previous</span>
@@ -443,29 +486,29 @@ export const InventoryOnboarding: React.FC = () => {
                 <div />
               )}
 
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
                   onClick={() => {
                     if (questionIndex < 3) {
-                      setQuestionIndex(questionIndex + 1);
+                      changeQuestion(questionIndex + 1);
                     } else {
                       handleSaveQuestionnaire(false);
                     }
                   }}
-                  className="text-slate-400 hover:text-white text-xs"
+                  className="rounded-sm text-slate-400 hover:text-white text-xs cursor-pointer flex-1 sm:flex-none"
                 >
-                  Skip Question
+                  Skip
                 </Button>
 
-                {questionIndex < 4 ? (
+                {questionIndex < 3 ? (
                   <Button
                     type="button"
                     size="sm"
-                    onClick={() => setQuestionIndex(questionIndex + 1)}
-                    className="bg-[#714b67] hover:bg-[#86597a] text-white font-bold text-xs px-5 shadow-md shadow-[#714b67]/20"
+                    onClick={() => changeQuestion(questionIndex + 1)}
+                    className="rounded-sm bg-[#714b67] hover:bg-[#86597a] text-white font-bold text-xs px-5 shadow-md shadow-[#714b67]/20 cursor-pointer flex-1 sm:flex-none"
                   >
                     <span>Next</span>
                     <ArrowRight className="w-3.5 h-3.5 ml-1" />
@@ -476,7 +519,7 @@ export const InventoryOnboarding: React.FC = () => {
                     size="sm"
                     onClick={() => handleSaveQuestionnaire(false)}
                     disabled={isLoading}
-                    className="bg-[#714b67] hover:bg-[#86597a] text-white font-bold text-xs px-5 shadow-md shadow-[#714b67]/20"
+                    className="rounded-sm bg-[#714b67] hover:bg-[#86597a] text-white font-bold text-xs px-5 shadow-md shadow-[#714b67]/20 flex-1 sm:flex-none"
                   >
                     {isLoading ? (
                       <>
@@ -485,7 +528,7 @@ export const InventoryOnboarding: React.FC = () => {
                       </>
                     ) : (
                       <>
-                        <span>Continue to Branches</span>
+                        <span>Continue</span>
                         <ArrowRight className="w-3.5 h-3.5 ml-1" />
                       </>
                     )}
@@ -500,7 +543,7 @@ export const InventoryOnboarding: React.FC = () => {
         {onboardingStage === 'branch_setup' && (
           <div className="space-y-6">
             <div className="space-y-2">
-              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#714b67]/20 border border-[#714b67]/30 text-[#c79dbd] text-[11px] font-bold">
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-sm bg-[#714b67]/20 border border-[#714b67]/30 text-[#c79dbd] text-[11px] font-bold">
                 <Store className="w-3.5 h-3.5 text-[#FDB02F]" />
                 <span>Branch & Location Setup</span>
               </div>
@@ -518,19 +561,19 @@ export const InventoryOnboarding: React.FC = () => {
                 <div
                   key={branch.id || branch._id}
                   className={cn(
-                    "p-4 rounded-xl bg-[#120b10] border border-white/10 flex items-center justify-between gap-4 transition",
+                    "p-4 rounded-sm bg-[#120b10] border border-white/10 flex items-center justify-between gap-4 transition",
                     editingBranchId === (branch.id || branch._id) && "border-[#714b67] bg-[#714b67]/10"
                   )}
                 >
                   <div className="space-y-1 min-w-0">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="font-bold text-xs text-white truncate">{branch.name}</span>
                       {branch.isPrimary && (
-                        <span className="px-2 py-0.2 rounded text-[10px] font-bold bg-[#714b67]/30 border border-[#714b67]/50 text-[#f0d8e8]">
+                        <span className="px-2 py-0.2 rounded-sm text-[10px] font-bold bg-[#714b67]/30 border border-[#714b67]/50 text-[#f0d8e8]">
                           Primary Branch
                         </span>
                       )}
-                      <span className="px-1.5 py-0.2 rounded text-[10px] bg-white/5 text-slate-400 font-mono">
+                      <span className="px-1.5 py-0.2 rounded-sm text-[10px] bg-white/5 text-slate-400 font-mono">
                         {branch.code || 'MAIN'}
                       </span>
                     </div>
@@ -555,7 +598,7 @@ export const InventoryOnboarding: React.FC = () => {
                       setEditingBranchId(branch.id || branch._id || null);
                       toast.info(`Editing branch "${branch.name}"`);
                     }}
-                    className="text-xs text-slate-400 hover:text-white"
+                    className="rounded-sm text-xs text-slate-400 hover:text-white shrink-0"
                   >
                     <Edit2 className="w-3.5 h-3.5 mr-1" />
                     <span>Edit</span>
@@ -570,7 +613,7 @@ export const InventoryOnboarding: React.FC = () => {
                 type="button"
                 variant="outline"
                 onClick={() => setIsAddingBranch(true)}
-                className="w-full py-3 rounded-xl border-dashed border-white/15 bg-white/[0.02] hover:bg-white/5 text-slate-300 text-xs font-semibold flex items-center justify-center gap-2"
+                className="w-full py-3 rounded-sm border-dashed border-white/15 bg-white/[0.02] hover:bg-white/5 text-slate-300 text-xs font-semibold flex items-center justify-center gap-2"
               >
                 <Plus className="w-4 h-4" />
                 <span>Add Another Branch</span>
@@ -578,7 +621,7 @@ export const InventoryOnboarding: React.FC = () => {
             ) : (
               <form
                 onSubmit={handleCreateBranch}
-                className="p-5 rounded-xl bg-[#150d13] border border-[#714b67]/40 space-y-4"
+                className="p-4 sm:p-5 rounded-sm bg-[#150d13] border border-[#714b67]/40 space-y-4"
               >
                 <div className="flex items-center justify-between pb-2 border-b border-white/5">
                   <h3 className="text-xs font-bold text-white">Add New Branch Location</h3>
@@ -600,7 +643,7 @@ export const InventoryOnboarding: React.FC = () => {
                       placeholder="e.g. Ikeja Outlet or Abuja Warehouse"
                       value={newBranchName}
                       onChange={(e) => setNewBranchName(e.target.value)}
-                      className="bg-black/50 border-white/10 text-xs text-white"
+                      className="bg-black/50 border-white/10 text-xs text-white rounded-sm"
                       required
                     />
                   </div>
@@ -613,7 +656,7 @@ export const InventoryOnboarding: React.FC = () => {
                       placeholder="e.g. IKJ, ABJ, WH1"
                       value={newBranchCode}
                       onChange={(e) => setNewBranchCode(e.target.value.toUpperCase())}
-                      className="bg-black/50 border-white/10 text-xs text-white uppercase"
+                      className="bg-black/50 border-white/10 text-xs text-white uppercase rounded-sm"
                       maxLength={6}
                     />
                   </div>
@@ -628,7 +671,7 @@ export const InventoryOnboarding: React.FC = () => {
                       placeholder="e.g. 22 Allen Avenue, Ikeja"
                       value={newBranchAddress}
                       onChange={(e) => setNewBranchAddress(e.target.value)}
-                      className="bg-black/50 border-white/10 text-xs text-white"
+                      className="bg-black/50 border-white/10 text-xs text-white rounded-sm"
                     />
                   </div>
 
@@ -640,7 +683,7 @@ export const InventoryOnboarding: React.FC = () => {
                       placeholder="e.g. 08033221144"
                       value={newBranchPhone}
                       onChange={(e) => setNewBranchPhone(e.target.value)}
-                      className="bg-black/50 border-white/10 text-xs text-white"
+                      className="bg-black/50 border-white/10 text-xs text-white rounded-sm"
                     />
                   </div>
                 </div>
@@ -651,7 +694,7 @@ export const InventoryOnboarding: React.FC = () => {
                     id="isPrimaryCheck"
                     checked={newBranchIsPrimary}
                     onChange={(e) => setNewBranchIsPrimary(e.target.checked)}
-                    className="rounded border-white/20 text-[#714b67] focus:ring-[#714b67]"
+                    className="rounded-sm border-white/20 text-[#714b67] focus:ring-[#714b67]"
                   />
                   <Label htmlFor="isPrimaryCheck" className="text-[11px] text-slate-300 cursor-pointer">
                     Set as primary default branch for transactions
@@ -664,7 +707,7 @@ export const InventoryOnboarding: React.FC = () => {
                     variant="ghost"
                     size="sm"
                     onClick={() => setIsAddingBranch(false)}
-                    className="text-xs text-slate-400"
+                    className="rounded-sm text-xs text-slate-400"
                   >
                     Cancel
                   </Button>
@@ -672,7 +715,7 @@ export const InventoryOnboarding: React.FC = () => {
                     type="submit"
                     size="sm"
                     disabled={isLoading}
-                    className="bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold"
+                    className="rounded-sm bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold"
                   >
                     Save Branch
                   </Button>
@@ -681,13 +724,13 @@ export const InventoryOnboarding: React.FC = () => {
             )}
 
             {/* Launch Inventory Action */}
-            <div className="pt-4 border-t border-white/5 flex items-center justify-between">
+            <div className="pt-4 border-t border-white/5 flex flex-col sm:flex-row items-center justify-between gap-3">
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
                 onClick={() => setOnboardingStage('questionnaire')}
-                className="text-xs text-slate-400"
+                className="rounded-sm text-xs text-slate-400 w-full sm:w-auto"
               >
                 <ArrowLeft className="w-3.5 h-3.5 mr-1" />
                 <span>Preferences</span>
@@ -696,7 +739,7 @@ export const InventoryOnboarding: React.FC = () => {
               <Button
                 type="button"
                 onClick={handleFinishBranchSetup}
-                className="bg-[#714b67] hover:bg-[#86597a] text-white font-bold text-xs px-6 py-2.5 shadow-lg shadow-[#714b67]/30 flex items-center gap-2"
+                className="rounded-sm bg-[#714b67] hover:bg-[#86597a] text-white font-bold text-xs px-6 py-2.5 shadow-lg shadow-[#714b67]/30 flex items-center justify-center gap-2 w-full sm:w-auto"
               >
                 <span>Launch Inventory Workstation</span>
                 <CheckCircle2 className="w-4 h-4 text-emerald-400" />

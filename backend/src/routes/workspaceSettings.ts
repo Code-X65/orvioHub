@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { dataService } from '../services/dataService.js';
 import { ERROR_CODES } from '../config/constants.js';
+import { isValidPhoneNumber, validatePhoneNumber } from '../utils/phoneValidation.js';
 
 const updateGeneralSchema = z.object({
   name: z.string().min(1).optional(),
@@ -14,14 +15,18 @@ const updateGeneralSchema = z.object({
 
 const updateBusinessSchema = z.object({
   email: z.string().email().optional().or(z.literal('')),
-  phone: z.string().optional(),
+  phone: z.string().refine((val) => !val || isValidPhoneNumber(val), {
+    message: 'Please provide a valid phone number (e.g. +234 801 234 5678)',
+  }).optional(),
   category: z.string().optional(),
   description: z.string().optional(),
   legalName: z.string().optional(),
   registrationNumber: z.string().optional(),
   taxId: z.string().optional(),
   supportEmail: z.string().email().optional().or(z.literal('')),
-  supportPhone: z.string().optional(),
+  supportPhone: z.string().refine((val) => !val || isValidPhoneNumber(val), {
+    message: 'Please provide a valid support phone number',
+  }).optional(),
 });
 
 const updateAddressSchema = z.object({
@@ -349,6 +354,15 @@ export const workspaceSettingsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.patch('/workspaces/:workspaceId/settings/contact', async (request, reply) => {
     const { workspaceId } = request.params as { workspaceId: string };
     const body = request.body as any;
+    if (body.phone) {
+      const check = validatePhoneNumber(body.phone);
+      if (!check.valid) {
+        return reply.status(400).send({
+          success: false,
+          error: { code: 'INVALID_PHONE_NUMBER', message: check.error || 'Please provide a valid phone number' },
+        });
+      }
+    }
     try {
       await dataService.updateWorkspaceBusinessSettings(workspaceId, { phone: body.phone, email: body.email }, request.user.id);
       return reply.send({ success: true, message: 'Contact settings updated.' });
@@ -493,4 +507,136 @@ export const workspaceSettingsRoutes: FastifyPluginAsync = async (fastify) => {
     const settings = await dataService.getFullWorkspaceSettings(organizationId, request.user.id);
     return reply.send({ success: true, data: { settings } });
   });
+
+  // Organization Phone Verification Aliases
+  fastify.post('/organizations/:organizationId/settings/phone/verification/start', async (request, reply) => {
+    const { organizationId } = request.params as { organizationId: string };
+    const body = (request.body as { phone?: string; purpose?: string }) || {};
+    const ws = await dataService.getWorkspaceById(organizationId);
+    const phoneToVerify = body.phone || ws?.phone;
+    if (!phoneToVerify) {
+      return reply.status(400).send({ success: false, error: { code: 'PHONE_REQUIRED', message: 'Phone number is required.' } });
+    }
+    try {
+      const challenge = await dataService.startWorkspacePhoneVerification(
+        organizationId,
+        request.user.id,
+        phoneToVerify,
+        body.purpose || 'workspace_phone_verification',
+        request.ip,
+        request.headers['user-agent']
+      );
+      return reply.send({
+        success: true,
+        message: `Verification code sent to ${challenge.phoneNormalized}.`,
+        data: challenge,
+      });
+    } catch (err: any) {
+      return reply.status(400).send({ success: false, error: { code: 'VERIFICATION_START_FAILED', message: err.message } });
+    }
+  });
+
+  fastify.post('/organizations/:organizationId/settings/phone/verification/verify', async (request, reply) => {
+    const { organizationId } = request.params as { organizationId: string };
+    const body = request.body as { code: string; purpose?: string };
+    try {
+      const res = await dataService.verifyWorkspacePhone(
+        organizationId,
+        request.user.id,
+        body.code,
+        body.purpose || 'workspace_phone_verification',
+        request.ip,
+        request.headers['user-agent']
+      );
+      if (!res.success) {
+        return reply.status(400).send({ success: false, error: { code: res.error || 'INVALID_CODE', message: 'Invalid verification code.' } });
+      }
+      return reply.send({ success: true, message: 'Organization phone verified successfully!', data: res });
+    } catch (err: any) {
+      return reply.status(400).send({ success: false, error: { code: 'VERIFICATION_FAILED', message: err.message } });
+    }
+  });
+
+  fastify.post('/organizations/:organizationId/settings/phone/verification/resend', async (request, reply) => {
+    const { organizationId } = request.params as { organizationId: string };
+    const body = (request.body as { purpose?: string }) || {};
+    try {
+      const res = await dataService.resendWorkspacePhoneVerification(
+        organizationId,
+        request.user.id,
+        body.purpose || 'workspace_phone_verification',
+        request.ip,
+        request.headers['user-agent']
+      );
+      return reply.send({ success: true, message: 'Verification code resent.', data: res });
+    } catch (err: any) {
+      return reply.status(400).send({ success: false, error: { code: 'RESEND_FAILED', message: err.message } });
+    }
+  });
+
+  // Organization Branch Phone Verification Aliases
+  fastify.post('/organizations/:organizationId/branches/:branchId/phone/verification/start', async (request, reply) => {
+    const { organizationId, branchId } = request.params as { organizationId: string; branchId: string };
+    const body = (request.body as { phone?: string; purpose?: string }) || {};
+    const branch = await dataService.getBranchById(branchId);
+    const phoneToVerify = body.phone || branch?.phone;
+    if (!phoneToVerify) {
+      return reply.status(400).send({ success: false, error: { code: 'PHONE_REQUIRED', message: 'Phone number is required.' } });
+    }
+    try {
+      const challenge = await dataService.startBranchPhoneVerification(
+        branchId,
+        organizationId,
+        request.user.id,
+        phoneToVerify,
+        body.purpose || 'branch_phone_verification',
+        request.ip,
+        request.headers['user-agent']
+      );
+      return reply.send({ success: true, message: `Verification code sent to ${challenge.phoneNormalized}.`, data: challenge });
+    } catch (err: any) {
+      return reply.status(400).send({ success: false, error: { code: 'VERIFICATION_START_FAILED', message: err.message } });
+    }
+  });
+
+  fastify.post('/organizations/:organizationId/branches/:branchId/phone/verification/verify', async (request, reply) => {
+    const { organizationId, branchId } = request.params as { organizationId: string; branchId: string };
+    const body = request.body as { code: string; purpose?: string };
+    try {
+      const res = await dataService.verifyBranchPhone(
+        branchId,
+        organizationId,
+        request.user.id,
+        body.code,
+        body.purpose || 'branch_phone_verification',
+        request.ip,
+        request.headers['user-agent']
+      );
+      if (!res.success) {
+        return reply.status(400).send({ success: false, error: { code: res.error || 'INVALID_CODE', message: 'Invalid verification code.' } });
+      }
+      return reply.send({ success: true, message: 'Branch phone verified successfully!', data: res });
+    } catch (err: any) {
+      return reply.status(400).send({ success: false, error: { code: 'VERIFICATION_FAILED', message: err.message } });
+    }
+  });
+
+  fastify.post('/organizations/:organizationId/branches/:branchId/phone/verification/resend', async (request, reply) => {
+    const { organizationId, branchId } = request.params as { organizationId: string; branchId: string };
+    const body = (request.body as { purpose?: string }) || {};
+    try {
+      const res = await dataService.resendBranchPhoneVerification(
+        branchId,
+        organizationId,
+        request.user.id,
+        body.purpose || 'branch_phone_verification',
+        request.ip,
+        request.headers['user-agent']
+      );
+      return reply.send({ success: true, message: 'Verification code resent.', data: res });
+    } catch (err: any) {
+      return reply.status(400).send({ success: false, error: { code: 'RESEND_FAILED', message: err.message } });
+    }
+  });
 };
+

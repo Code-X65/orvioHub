@@ -9,6 +9,8 @@ import { ERROR_CODES, AUDIT_EVENTS, PRODUCT_CATALOG, type ProductKey } from '../
 import { setAuthCookies, clearAuthCookies } from '../utils/cookies.js';
 import { toPublicUser } from '../utils/userSerializer.js';
 import { maskEmail } from '../utils/emailUtils.js';
+import { checkBreachedPassword } from '../utils/breachedPassword.js';
+import { emailService } from '../services/email.js';
 import type { JwtPayload } from '../plugins/auth.js';
 
 const accountsBaseUrl = () => {
@@ -75,6 +77,8 @@ const signupSchema = z
 const loginSchema = z.object({
   email: z.string().email('Invalid email address'),
   password: z.string().min(1, 'Password is required'),
+  deviceId: z.string().optional(),
+  botTrap: z.string().optional(),
 });
 
 const resendVerificationSchema = z.object({
@@ -109,6 +113,25 @@ const resetPasswordSchema = z.object({
 const changePasswordSchema = z.object({
   currentPassword: z.string().min(1, 'Current password is required'),
   newPassword: strongPasswordSchema,
+  twoFactorCode: z.string().optional(),
+});
+
+const passkeyRegisterVerifySchema = z.object({
+  id: z.string().min(1, 'Passkey credential ID is required'),
+  rawId: z.string().optional(),
+  response: z.record(z.any()).optional(),
+  deviceName: z.string().optional(),
+});
+
+const passkeyLoginOptionsSchema = z.object({
+  email: z.string().email('Invalid email address').optional(),
+});
+
+const passkeyLoginVerifySchema = z.object({
+  id: z.string().min(1, 'Passkey credential ID is required'),
+  rawId: z.string().optional(),
+  response: z.record(z.any()).optional(),
+  clientExtensionResults: z.record(z.any()).optional(),
 });
 
 export const updateProfileSchema = z.object({
@@ -140,6 +163,8 @@ export const updateProfileSchema = z.object({
 
 const requestEmailChangeSchema = z.object({
   newEmail: z.string().email('Invalid email address'),
+  password: z.string().optional(),
+  stepUpToken: z.string().optional(),
 });
 
 const confirmEmailChangeSchema = z.object({
@@ -150,17 +175,28 @@ const refreshSchema = z.object({
   refreshToken: z.string().min(1, 'Refresh token is required'),
 });
 
+const verifyPasswordSchema = z.object({
+  password: z.string().min(1, 'Password is required'),
+});
+
 const verifyTwoFactorSchema = z.object({
   code: z.string().min(1, 'Verification code is required'),
 });
 
 const disableTwoFactorSchema = z.object({
   password: z.string().optional(),
+  stepUpToken: z.string().optional(),
 });
 
 const loginTwoFactorSchema = z.object({
   tempToken: z.string().min(1, 'Temporary token is required'),
   code: z.string().min(1, 'Verification code or backup code is required'),
+});
+
+const webAuthnMfaChallengeSchema = z.object({
+  tempToken: z.string().min(1, 'Temporary token is required'),
+  credentialId: z.string().min(1, 'Credential ID is required'),
+  response: z.record(z.any()).optional(),
 });
 
 const oauthAuthorizeSchema = z.object({
@@ -181,71 +217,19 @@ const oauthTokenSchema = z.object({
 });
 
 export const authRoutes: FastifyPluginAsync = async (fastify) => {
-  // POST /api/v1/auth/verify-password (Step-up authentication for sensitive operations)
-  fastify.post(
-    '/verify-password',
-    {
-      onRequest: [fastify.authenticate],
-      config: {
-        rateLimit: { max: 10, timeWindow: '1 minute' },
-      },
-      schema: {
-        tags: ['Auth'],
-        summary: 'Verify account password for sensitive step-up actions',
-        body: {
-          type: 'object',
-          required: ['password'],
-          properties: {
-            password: { type: 'string' },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const user = request.user;
-      if (!user) {
-        return reply.status(401).send({
-          success: false,
-          error: { code: 'UNAUTHORIZED', message: 'Authentication required.' },
-        });
-      }
-
-      const body = request.body as { password?: string };
-      if (!body?.password || typeof body.password !== 'string') {
-        return reply.status(400).send({
-          success: false,
-          error: { code: ERROR_CODES.VALIDATION_ERROR, message: 'Password is required.' },
-        });
-      }
-
-      const isMatch = await dataService.verifyPassword(user, body.password);
-      if (!isMatch) {
-        return reply.status(401).send({
-          success: false,
-          error: { code: 'INVALID_PASSWORD', message: 'Incorrect password provided.' },
-        });
-      }
-
-      return reply.send({
-        success: true,
-        data: { verified: true },
-      });
-    }
-  );
-
   // POST /api/v1/auth/refresh
   fastify.post(
     '/refresh',
     {
       config: {
-        rateLimit: { max: 15, timeWindow: '1 minute' },
+        rateLimit: { max: 120, timeWindow: '1 minute' },
       },
       schema: {
         tags: ['Auth'],
         summary: 'Refresh short-lived access token using rotating refresh token',
         body: {
           type: 'object',
-          // refreshToken is optional in body — can also be provided via orvio_refresh_token cookie
+          // refreshToken is optional in body — primary source is HttpOnly orvio_refresh cookie
           properties: {
             refreshToken: { type: 'string' },
           },
@@ -253,11 +237,9 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      // Accept refresh token from body (primary) or wildcard cookie (cross-subdomain fallback).
-      // The orvio_refresh_token cookie is shared across all *.orviohub.* subdomains, so any
-      // surface (e.g. marketing root domain, where localStorage is isolated) can silently refresh.
+      // Accept refresh token from HttpOnly cookie (primary/secure) or body (fallback for mobile/api clients).
       const bodyToken = (request.body as any)?.refreshToken as string | undefined;
-      const cookieToken = request.cookies?.orvio_refresh_token;
+      const cookieToken = request.cookies?.orvio_refresh || request.cookies?.orvio_refresh_token || request.cookies?.refresh_token;
       const refreshTokenValue = bodyToken || cookieToken;
 
       if (!refreshTokenValue) {
@@ -265,7 +247,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           success: false,
           error: {
             code: ERROR_CODES.VALIDATION_ERROR,
-            message: 'Refresh token is required (body or cookie).',
+            message: 'Refresh token is required (cookie or body).',
           },
         });
       }
@@ -279,6 +261,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           userId: result.user.id,
           email: result.user.email,
           tokenVersion: result.user.tokenVersion ?? 0,
+          sessionId: result.sessionId,
         });
 
         setAuthCookies(reply, { token: accessToken, refreshToken: result.refreshToken });
@@ -288,6 +271,10 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           data: {
             token: accessToken,
             refreshToken: result.refreshToken,
+            session: {
+              id: result.sessionId,
+              expiresAt: result.expiresAt,
+            },
             user: {
               id: result.user.id,
               email: result.user.email,
@@ -338,6 +325,96 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     }
   );
 
+  // GET /api/v1/auth/check-email
+  fastify.get(
+    '/check-email',
+    {
+      config: {
+        rateLimit: { max: 60, timeWindow: '1 minute' },
+      },
+      schema: {
+        tags: ['Auth'],
+        summary: 'Check if an email is available for registration',
+        querystring: {
+          type: 'object',
+          required: ['email'],
+          properties: {
+            email: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { email } = request.query as { email?: string };
+      if (!email || typeof email !== 'string') {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: 'Email parameter is required.',
+          },
+        });
+      }
+
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      const normalizedEmail = email.toLowerCase().trim();
+      if (!emailRegex.test(normalizedEmail)) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: 'Invalid email address format.',
+          },
+        });
+      }
+
+      const existingUser = await dataService.getUserByEmail(normalizedEmail);
+      if (!existingUser) {
+        return reply.status(200).send({
+          success: true,
+          available: true,
+        });
+      }
+
+      if (existingUser.status === 'pending_email_verification' || !existingUser.emailVerified) {
+        return reply.status(200).send({
+          success: true,
+          available: false,
+          status: 'pending_verification',
+          message: 'An account with this email is pending verification.',
+        });
+      }
+
+      return reply.status(200).send({
+        success: true,
+        available: false,
+        status: 'registered',
+        message: 'An account with this email already exists.',
+      });
+    }
+  );
+
+  // GET /api/v1/auth/idempotency-key
+  fastify.get(
+    '/idempotency-key',
+    {
+      config: {
+        rateLimit: { max: 60, timeWindow: '1 minute' },
+      },
+      schema: {
+        tags: ['Auth'],
+        summary: 'Generate a server-issued idempotency key',
+      },
+    },
+    async (request, reply) => {
+      const idempotencyKey = crypto.randomUUID();
+      return reply.status(200).send({
+        success: true,
+        idempotencyKey,
+      });
+    }
+  );
+
   // POST /api/v1/auth/signup
   fastify.post(
     '/signup',
@@ -379,6 +456,20 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
             code: ERROR_CODES.VALIDATION_ERROR,
             message: 'Please correct the highlighted fields.',
             fields,
+          },
+        });
+      }
+
+      const breached = await checkBreachedPassword(parsed.data.password);
+      if (breached.isBreached) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.PASSWORD_BREACHED,
+            message: `This password was found in a public data breach (${breached.count.toLocaleString()} times). For your security, please choose a different password.`,
+            fields: {
+              password: 'This password has appeared in a known data breach. Please choose a different password.',
+            },
           },
         });
       }
@@ -635,6 +726,17 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
+      // Silent rejection for automated bot traps / credential stuffing
+      if (parsed.data.botTrap && parsed.data.botTrap.trim().length > 0) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: 'Invalid submission.',
+          },
+        });
+      }
+
       const normalizedEmail = parsed.data.email.trim().toLowerCase();
       await dataService.logAuthEvent({
         eventType: 'login_started',
@@ -812,11 +914,17 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           userAgent: request.headers['user-agent'],
           metadata: { email: parsed.data.email, failedAttempts: failedResult.failedAttempts },
         });
+        const remainingAttempts = Math.max(0, 5 - failedResult.failedAttempts);
         return reply.status(401).send({
           success: false,
           error: {
             code: ERROR_CODES.UNAUTHENTICATED,
-            message: 'Invalid email or password.',
+            message:
+              remainingAttempts <= 2
+                ? `Invalid email or password. Warning: Account will be temporarily locked after ${remainingAttempts} more failed attempt${remainingAttempts === 1 ? '' : 's'}.`
+                : 'Invalid email or password.',
+            failedAttempts: failedResult.failedAttempts,
+            remainingAttempts,
           },
         });
       }
@@ -890,7 +998,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       if (user.twoFactorEnabled) {
         const tempToken = fastify.jwt.sign(
           { userId: user.id, email: user.email, is2faPending: true },
-          { expiresIn: '5m' }
+          { expiresIn: '30m' }
         );
         return reply.send({
           success: true,
@@ -901,8 +1009,55 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
+      // Geo & Device Anomaly Detection
+      try {
+        const priorSessions = await dataService.getUserSessions(user.id);
+        if (priorSessions && priorSessions.length > 0) {
+          const currentIp = request.ip;
+          const currentUa = request.headers['user-agent'] || '';
+          const currentDeviceId = parsed.data.deviceId;
+
+          const hasKnownIp = priorSessions.some((s: any) => s.ipAddress && s.ipAddress === currentIp);
+          const hasKnownDevice = priorSessions.some((s: any) => {
+            if (currentDeviceId && s.deviceId && s.deviceId === currentDeviceId) return true;
+            if (s.userAgent && currentUa && s.userAgent === currentUa) return true;
+            return false;
+          });
+
+          if (!hasKnownIp && !hasKnownDevice) {
+            await dataService.logAuthEvent({
+              eventType: 'login_anomaly_detected',
+              userId: user.id,
+              ipAddress: currentIp,
+              userAgent: currentUa,
+              metadata: { reason: 'UNRECOGNIZED_DEVICE_AND_IP', deviceId: currentDeviceId },
+            });
+            await dataService.logAudit({
+              actorUserId: user.id,
+              eventType: AUDIT_EVENTS.AUTH_NEW_DEVICE_DETECTED,
+              ipAddress: currentIp,
+              userAgent: currentUa,
+              metadata: { reason: 'UNRECOGNIZED_DEVICE_AND_IP' },
+            });
+
+            // Send non-blocking security notification email
+            emailService.sendDirect(user.email, 'securityAlert', {
+              name: user.name || user.firstName || 'there',
+              action: 'New sign-in from unrecognized device',
+              details: 'We noticed a sign-in to your OrvioHub account from a new device or IP address.',
+              device: currentUa ? currentUa.slice(0, 80) : 'Unrecognized browser/device',
+              ipAddress: currentIp,
+              timestamp: new Date().toUTCString(),
+            }).catch(() => {});
+          }
+        }
+      } catch {
+        // Non-blocking anomaly evaluation
+      }
+
       await dataService.touchLastLogin(user.id, request.ip);
       const session = await dataService.createSession(user.id, {
+        deviceId: parsed.data.deviceId,
         userAgent: request.headers['user-agent'],
         ipAddress: request.ip,
         authenticationMethod: 'password',
@@ -1039,9 +1194,40 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      const parsed = disableTwoFactorSchema.safeParse(request.body);
+      const parsed = disableTwoFactorSchema.safeParse(request.body || {});
+      const user = await dataService.getUserById(request.user.id);
+      if (!user) {
+        return reply.status(401).send({
+          success: false,
+          error: { code: ERROR_CODES.UNAUTHENTICATED, message: 'User not found.' },
+        });
+      }
+
+      const stepUpToken = (request.body as any)?.stepUpToken || request.headers['x-step-up-token'];
+      let isStepUpVerified = false;
+      if (stepUpToken && typeof stepUpToken === 'string') {
+        try {
+          const decoded: any = fastify.jwt.verify(stepUpToken);
+          if (decoded && decoded.purpose === 'step_up' && decoded.userId === user.id) {
+            isStepUpVerified = true;
+          }
+        } catch {}
+      }
+
+      if (user.passwordHash && !isStepUpVerified) {
+        if (!parsed.success || !parsed.data.password) {
+          return reply.status(401).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.INVALID_CREDENTIALS,
+              message: 'Password confirmation or step-up authentication is required to disable 2FA.',
+            },
+          });
+        }
+      }
+
       try {
-        await dataService.disableTwoFactor(request.user.id, parsed.success ? parsed.data.password : undefined);
+        await dataService.disableTwoFactor(request.user.id, isStepUpVerified ? undefined : (parsed.success ? parsed.data.password : undefined));
         return reply.send({
           success: true,
           message: 'Two-factor authentication successfully disabled.',
@@ -1148,6 +1334,534 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post('/2fa/login-verify', { config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } }, loginTwoFactorHandler);
   fastify.post('/2fa/challenge', { config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } }, loginTwoFactorHandler);
   fastify.post('/mfa/challenge', { config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } }, loginTwoFactorHandler);
+
+  // POST /api/v1/auth/2fa/resend-challenge
+  fastify.post(
+    '/2fa/resend-challenge',
+    {
+      config: {
+        rateLimit: { max: 5, timeWindow: '1 minute' },
+      },
+      schema: {
+        tags: ['Auth'],
+        summary: 'Refresh or reissue a 2FA temporary challenge token',
+        body: {
+          type: 'object',
+          properties: {
+            tempToken: { type: 'string' },
+            email: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = (request.body as any) || {};
+      let userId: string | null = null;
+      let email: string | null = null;
+
+      if (body.tempToken) {
+        try {
+          const decoded = fastify.jwt.decode<{ userId: string; email: string; is2faPending?: boolean; iat?: number }>(body.tempToken);
+          if (decoded?.is2faPending && decoded.userId) {
+            const issuedAt = (decoded.iat || 0) * 1000;
+            if (Date.now() - issuedAt < 30 * 60 * 1000) {
+              userId = decoded.userId;
+              email = decoded.email;
+            }
+          }
+        } catch {}
+      }
+
+      if (!userId && body.email) {
+        const user = await dataService.getUserByEmail(body.email);
+        if (user && user.twoFactorEnabled) {
+          userId = user.id;
+          email = user.email;
+        }
+      }
+
+      if (!userId || !email) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.INVALID_TOKEN,
+            message: 'Unable to refresh 2FA challenge. Please sign in again with your password.',
+          },
+        });
+      }
+
+      const freshUser = await dataService.getUserById(userId);
+      if (!freshUser || freshUser.status === 'SUSPENDED' || freshUser.status === 'INACTIVE') {
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.UNAUTHENTICATED,
+            message: 'Account is inactive or suspended.',
+          },
+        });
+      }
+
+      const newTempToken = fastify.jwt.sign(
+        { userId: freshUser.id, email: freshUser.email, is2faPending: true },
+        { expiresIn: '30m' }
+      );
+
+      return reply.send({
+        success: true,
+        data: {
+          twoFactorRequired: true,
+          tempToken: newTempToken,
+          message: '2FA challenge refreshed successfully.',
+        },
+      });
+    }
+  );
+
+  // -------------------------------------------------------------
+  // WebAuthn / FIDO2 Second Factor (2FA / MFA) Routes
+  // -------------------------------------------------------------
+  // POST /api/v1/auth/2fa/webauthn/register-options (Authenticated)
+  fastify.post(
+    '/2fa/webauthn/register-options',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Auth'],
+        summary: 'Generate WebAuthn registration options for 2FA security key creation',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const options = await dataService.generatePasskeyRegistrationOptions(request.user.id);
+      return reply.send({
+        success: true,
+        data: options,
+      });
+    }
+  );
+
+  // POST /api/v1/auth/2fa/webauthn/register-verify (Authenticated)
+  fastify.post(
+    '/2fa/webauthn/register-verify',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Auth'],
+        summary: 'Verify and register a WebAuthn 2FA security key credential',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const parsed = passkeyRegisterVerifySchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: parsed.error.issues[0]?.message || 'Invalid security key credential payload.',
+          },
+        });
+      }
+
+      const credential = await dataService.savePasskeyCredential(request.user.id, {
+        ...parsed.data,
+        deviceName: parsed.data.deviceName || 'FIDO2 Security Key',
+      });
+
+      await dataService.logAuthEvent({
+        eventType: '2fa_webauthn_registered',
+        userId: request.user.id,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+        metadata: { credentialId: credential.id, deviceName: credential.deviceName },
+      });
+
+      return reply.send({
+        success: true,
+        message: 'WebAuthn 2FA security key registered successfully.',
+        data: { credential },
+      });
+    }
+  );
+
+  // POST /api/v1/auth/2fa/webauthn/challenge (Public with tempToken)
+  const webAuthn2faChallengeHandler = async (request: any, reply: any) => {
+    const parsed = webAuthnMfaChallengeSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.VALIDATION_ERROR,
+          message: 'Temporary token and security key credential ID are required.',
+        },
+      });
+    }
+
+    let decoded: { userId: string; email: string; is2faPending?: boolean };
+    try {
+      decoded = fastify.jwt.verify(parsed.data.tempToken);
+      if (!decoded.is2faPending || !decoded.userId) {
+        throw new Error('Invalid temporary token.');
+      }
+    } catch {
+      return reply.status(401).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INVALID_TOKEN,
+          message: 'Invalid or expired 2FA session token. Please sign in again.',
+        },
+      });
+    }
+
+    try {
+      const { user, session } = await dataService.verifyWebAuthnMfaLogin(
+        decoded.userId,
+        parsed.data.credentialId,
+        request.headers['user-agent'],
+        request.ip
+      );
+
+      const accessToken = fastify.jwt.sign(
+        {
+          userId: user.id,
+          email: user.email,
+          sessionId: session.sessionId,
+          tokenVersion: user.tokenVersion ?? 1,
+        },
+        { expiresIn: '15m' }
+      );
+
+      const status = await dataService.getOnboardingStatus(user.id);
+
+      setAuthCookies(reply, { token: accessToken, refreshToken: session.refreshToken });
+
+      return reply.send({
+        success: true,
+        data: {
+          user: toPublicUser(user),
+          token: accessToken,
+          refreshToken: session.refreshToken,
+          onboarding: status,
+          session: {
+            id: session.sessionId,
+          },
+        },
+      });
+    } catch (err: any) {
+      if (err.code === 'INVALID_CREDENTIAL' || err.message?.includes('not recognized')) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.INVALID_2FA_CODE,
+            message: 'Security key was not recognized for this account.',
+          },
+        });
+      }
+      throw err;
+    }
+  };
+
+  fastify.post('/2fa/webauthn/challenge', { config: { rateLimit: { max: 15, timeWindow: '15 minutes' } } }, webAuthn2faChallengeHandler);
+  fastify.post('/2fa/webauthn/login-verify', { config: { rateLimit: { max: 15, timeWindow: '15 minutes' } } }, webAuthn2faChallengeHandler);
+
+  // -------------------------------------------------------------
+  // Step-Up Password Verification Routes
+  // -------------------------------------------------------------
+  // POST /api/v1/auth/verify-password & /api/v1/auth/step-up (Authenticated)
+  const stepUpVerifyHandler = async (request: any, reply: any) => {
+    const parsed = verifyPasswordSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.VALIDATION_ERROR,
+          message: 'Password is required for step-up verification.',
+        },
+      });
+    }
+
+    const user = await dataService.getUserById(request.user.id);
+    if (!user || !user.passwordHash) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.VALIDATION_ERROR,
+          message: 'Account does not have password credentials configured.',
+        },
+      });
+    }
+
+    const isMatch = await dataService.verifyPassword(user, parsed.data.password);
+    if (!isMatch) {
+      return reply.status(401).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INVALID_CREDENTIALS,
+          message: 'Incorrect password.',
+        },
+      });
+    }
+
+    const stepUpToken = (fastify.jwt.sign as any)(
+      {
+        userId: user.id,
+        email: user.email,
+        purpose: 'step_up',
+        tokenVersion: user.tokenVersion ?? 1,
+      },
+      { expiresIn: '5m' }
+    );
+
+    return reply.send({
+      success: true,
+      message: 'Step-up authentication verified successfully.',
+      data: {
+        stepUpToken,
+        expiresIn: 300,
+      },
+    });
+  };
+
+  fastify.post('/verify-password', { preHandler: [fastify.authenticate] }, stepUpVerifyHandler);
+  fastify.post('/step-up', { preHandler: [fastify.authenticate] }, stepUpVerifyHandler);
+
+  // -------------------------------------------------------------
+  // WebAuthn / Passkey Routes
+  // -------------------------------------------------------------
+  // POST /api/v1/auth/passkey/register/options (Authenticated)
+  fastify.post(
+    '/passkey/register/options',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Auth'],
+        summary: 'Generate WebAuthn registration options for passkey creation',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const options = await dataService.generatePasskeyRegistrationOptions(request.user.id);
+      return reply.send({
+        success: true,
+        data: options,
+      });
+    }
+  );
+
+  // POST /api/v1/auth/passkey/register/verify (Authenticated)
+  fastify.post(
+    '/passkey/register/verify',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Auth'],
+        summary: 'Verify and register a new WebAuthn passkey credential',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const parsed = passkeyRegisterVerifySchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: parsed.error.issues[0]?.message || 'Invalid passkey credential payload.',
+          },
+        });
+      }
+
+      const credential = await dataService.savePasskeyCredential(request.user.id, parsed.data);
+      await dataService.logAuthEvent({
+        eventType: 'passkey_registered',
+        userId: request.user.id,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+        metadata: { credentialId: credential.id, deviceName: credential.deviceName },
+      });
+
+      return reply.send({
+        success: true,
+        message: 'Passkey registered successfully.',
+        data: { credential },
+      });
+    }
+  );
+
+  // GET /api/v1/auth/passkey/credentials (Authenticated)
+  fastify.get(
+    '/passkey/credentials',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Auth'],
+        summary: 'List registered passkeys for the current user',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const list = await dataService.getUserPasskeys(request.user.id);
+      return reply.send({
+        success: true,
+        data: list,
+      });
+    }
+  );
+
+  // DELETE /api/v1/auth/passkey/credentials/:credentialId (Authenticated)
+  fastify.delete(
+    '/passkey/credentials/:credentialId',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Auth'],
+        summary: 'Delete a registered passkey credential',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['credentialId'],
+          properties: {
+            credentialId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { credentialId } = request.params as { credentialId: string };
+      await dataService.deleteUserPasskey(request.user.id, credentialId);
+      await dataService.logAuthEvent({
+        eventType: 'passkey_deleted',
+        userId: request.user.id,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+        metadata: { credentialId },
+      });
+      return reply.send({
+        success: true,
+        message: 'Passkey deleted successfully.',
+      });
+    }
+  );
+
+  // POST /api/v1/auth/passkey/login/options (Public)
+  fastify.post(
+    '/passkey/login/options',
+    {
+      config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+      schema: {
+        tags: ['Auth'],
+        summary: 'Generate WebAuthn authentication assertion options for passkey sign-in',
+      },
+    },
+    async (request, reply) => {
+      const parsed = passkeyLoginOptionsSchema.safeParse(request.body || {});
+      const email = parsed.success ? parsed.data.email : undefined;
+      const options = await dataService.generatePasskeyLoginOptions(email);
+      return reply.send({
+        success: true,
+        data: options,
+      });
+    }
+  );
+
+  // POST /api/v1/auth/passkey/login/verify (Public)
+  fastify.post(
+    '/passkey/login/verify',
+    {
+      config: { rateLimit: { max: 15, timeWindow: '15 minutes' } },
+      schema: {
+        tags: ['Auth'],
+        summary: 'Verify WebAuthn passkey assertion and complete biometric sign-in',
+      },
+    },
+    async (request, reply) => {
+      const parsed = passkeyLoginVerifySchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: parsed.error.issues[0]?.message || 'Passkey assertion payload is required.',
+          },
+        });
+      }
+
+      try {
+        const { user, session } = await dataService.verifyPasskeyLogin(
+          parsed.data.id,
+          parsed.data.response?.clientDataJSON,
+          request.headers['user-agent'],
+          request.ip
+        );
+
+        await dataService.touchLastLogin(user.id, request.ip);
+
+        const jwtToken = fastify.jwt.sign(
+          {
+            userId: user.id,
+            email: user.email,
+            sessionId: session.sessionId,
+            tokenVersion: user.tokenVersion ?? 1,
+          },
+          { expiresIn: '15m' }
+        );
+
+        await dataService.logAuthEvent({
+          eventType: 'login_success',
+          userId: user.id,
+          sessionId: session.sessionId,
+          ipAddress: request.ip,
+          userAgent: request.headers['user-agent'],
+          metadata: { authenticationMethod: 'passkey', credentialId: parsed.data.id },
+        });
+
+        await dataService.logAudit({
+          actorUserId: user.id,
+          eventType: AUDIT_EVENTS.AUTH_LOGIN_SUCCESS,
+          ipAddress: request.ip,
+          userAgent: request.headers['user-agent'],
+          metadata: { authenticationMethod: 'passkey' },
+        });
+
+        setAuthCookies(reply, { token: jwtToken, refreshToken: session.refreshToken });
+
+        return reply.send({
+          success: true,
+          data: {
+            status: 'authenticated',
+            user: toPublicUser(user),
+            token: jwtToken,
+            refreshToken: session.refreshToken,
+            session: {
+              id: session.sessionId,
+              lastVisitedUrl: session.lastVisitedUrl,
+              lastVisitedSubdomain: session.lastVisitedSubdomain,
+            },
+          },
+        });
+      } catch (err: any) {
+        if (err.code === 'INVALID_CREDENTIAL' || err.message?.includes('not recognized')) {
+          return reply.status(401).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.UNAUTHENTICATED,
+              message: 'Passkey was not recognized or has been removed.',
+            },
+          });
+        }
+        if (err.code === 'USER_NOT_ACTIVE') {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.FORBIDDEN,
+              message: 'Account is invalid or suspended.',
+            },
+          });
+        }
+        throw err;
+      }
+    }
+  );
 
   const resendCooldownMap = new Map<string, number>();
 
@@ -1549,6 +2263,12 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     '/change-pending-email',
     {
+      config: {
+        rateLimit: {
+          max: 5,
+          timeWindow: '15 minutes',
+        },
+      },
       schema: {
         tags: ['Auth'],
         summary: 'Update email address for a pending unverified account',
@@ -1647,12 +2367,30 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           },
         });
       }
+      if (err.code === 'CODE_LOCKED' || msg.includes('CODE_LOCKED')) {
+        return reply.status(429).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.CODE_LOCKED,
+            message: 'Too many failed verification attempts. This code has been locked. Please request a new code.',
+            attemptsRemaining: 0,
+          },
+        });
+      }
       if (err.code === 'INVALID_CODE' || msg.includes('INVALID_CODE')) {
+        let attemptsRemaining: number | undefined = undefined;
+        if (msg.includes('INVALID_CODE:')) {
+          const match = msg.match(/INVALID_CODE:(\d+)/);
+          if (match) attemptsRemaining = parseInt(match[1], 10);
+        }
         return reply.status(400).send({
           success: false,
           error: {
             code: ERROR_CODES.VALIDATION_ERROR,
-            message: 'Invalid verification code. Please check the 6 digits and try again.',
+            message: attemptsRemaining !== undefined
+              ? `Invalid verification code. ${attemptsRemaining} attempt${attemptsRemaining === 1 ? '' : 's'} remaining.`
+              : 'Invalid verification code. Please check the 6 digits and try again.',
+            attemptsRemaining,
           },
         });
       }
@@ -1663,6 +2401,12 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     '/verify-email',
     {
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: '1 minute',
+        },
+      },
       schema: {
         tags: ['Auth'],
         summary: 'Verify user email address using token or 6-digit code (POST)',
@@ -1682,6 +2426,12 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get(
     '/verify-email',
     {
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: '1 minute',
+        },
+      },
       schema: {
         tags: ['Auth'],
         summary: 'Verify user email address using token link (GET)',
@@ -1755,7 +2505,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get(
     '/session',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [fastify.authenticateOptional],
       schema: {
         tags: ['Auth'],
         summary: 'Get active session details and authentication context',
@@ -1763,6 +2513,23 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
+      if (!request.user) {
+        return reply.send({
+          success: true,
+          data: {
+            authenticated: false,
+            user: null,
+            session: null,
+            access: {
+              level: 'none',
+              canAccessApplications: false,
+              canCreateWorkspace: false,
+            },
+          },
+          requestId: request.id,
+        });
+      }
+
       await dataService.logAudit({
         actorUserId: request.user.id,
         eventType: AUDIT_EVENTS.AUTH_SESSION_CHECKED,
@@ -1771,25 +2538,18 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       });
 
       const sessionContext = request.sessionId ? await dataService.getSessionById(request.sessionId) : null;
-      const isEmailVerified = Boolean(request.user.emailVerified);
-      const isPendingVerification = !isEmailVerified || request.user.status === 'pending_email_verification';
+      const freshUser = await dataService.getUserById(request.user.id);
+      const userToSerialize = freshUser || request.user;
+      const isEmailVerified = Boolean(userToSerialize.emailVerified);
+      const isPendingVerification = !isEmailVerified || userToSerialize.status === 'pending_email_verification';
 
       const responseData: Record<string, any> = {
         authenticated: true,
-        user: {
-          id: request.user.id,
-          status: request.user.status || (isEmailVerified ? 'active' : 'pending_email_verification'),
-          emailVerified: isEmailVerified,
-          email: request.user.email,
-          name: request.user.name,
-          firstName: request.user.firstName,
-          lastName: request.user.lastName,
-          avatarUrl: request.user.avatarUrl || request.user.avatar,
-        },
+        user: toPublicUser(userToSerialize),
         session: {
           id: request.sessionId,
-          expiresAt: sessionContext?.expiresAt,
-          tokenVersion: request.user.tokenVersion ?? 1,
+          expiresAt: sessionContext?.expiresAt || ((request.user as any)?.exp ? (request.user as any).exp * 1000 : Date.now() + 7 * 86_400_000),
+          tokenVersion: userToSerialize.tokenVersion ?? 1,
           ipAddress: request.ip,
           userAgent: request.headers['user-agent'],
           lastVisitedUrl: sessionContext?.lastVisitedUrl,
@@ -1818,6 +2578,11 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       responseData.status = responseData.user.status;
       responseData.accessLevel = responseData.access.level;
       responseData.emailVerified = isEmailVerified;
+
+      reply.header('Cache-Control', 'private, max-age=60, stale-while-revalidate=300');
+      const tokenVersion = userToSerialize.tokenVersion ?? 1;
+      const updatedAt = userToSerialize.updatedAt || (userToSerialize as any)._creationTime || Date.now();
+      reply.header('ETag', `"${tokenVersion}-${updatedAt}"`);
 
       return reply.send({
         success: true,
@@ -1910,7 +2675,11 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       const body = (request.body as { refreshToken?: string } | undefined) || {};
-      const refreshToken = body.refreshToken || request.cookies?.refresh_token || request.cookies?.orvio_refresh_token;
+      const refreshToken =
+        body.refreshToken ||
+        request.cookies?.orvio_refresh ||
+        request.cookies?.orvio_refresh_token ||
+        request.cookies?.refresh_token;
 
       if (!userId && !refreshToken && !sessionId) {
         clearAuthCookies(reply);
@@ -1944,6 +2713,10 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.send({
         success: true,
         message: 'Successfully logged out.',
+        data: {
+          sessionInvalidated: true,
+          loggedOutAt: Date.now(),
+        },
       });
     }
   );
@@ -2126,6 +2899,40 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
+      const user = await dataService.getUserById(request.user.id);
+      const stepUpToken = (request.body as any)?.stepUpToken || request.headers['x-step-up-token'];
+      let isStepUpVerified = false;
+      if (stepUpToken && typeof stepUpToken === 'string') {
+        try {
+          const decoded: any = fastify.jwt.verify(stepUpToken);
+          if (decoded && decoded.purpose === 'step_up' && decoded.userId === request.user.id) {
+            isStepUpVerified = true;
+          }
+        } catch {}
+      }
+
+      if (user?.passwordHash && !isStepUpVerified) {
+        if (!parsed.data.password) {
+          return reply.status(401).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.INVALID_CREDENTIALS,
+              message: 'Password confirmation or step-up authentication is required to change email.',
+            },
+          });
+        }
+        const isMatch = await dataService.verifyPassword(user, parsed.data.password);
+        if (!isMatch) {
+          return reply.status(401).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.INVALID_CREDENTIALS,
+              message: 'Incorrect password.',
+            },
+          });
+        }
+      }
+
       try {
         await dataService.requestEmailChange(request.user.id, parsed.data.newEmail);
         return reply.send({
@@ -2223,6 +3030,52 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         }
         throw err;
       }
+    }
+  );
+
+  // POST /api/v1/auth/email/cancel-change (Authenticated)
+  fastify.post(
+    '/email/cancel-change',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Auth'],
+        summary: 'Cancel pending email change request',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      await dataService.cancelEmailChange(request.user.id);
+      await dataService.logAuthEvent({
+        eventType: 'email_change_cancelled',
+        userId: request.user.id,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+      });
+      return reply.send({
+        success: true,
+        message: 'Pending email change request cancelled.',
+      });
+    }
+  );
+
+  // DELETE /api/v1/auth/email/change-request (Authenticated alias)
+  fastify.delete(
+    '/email/change-request',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Auth'],
+        summary: 'Cancel pending email change request',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      await dataService.cancelEmailChange(request.user.id);
+      return reply.send({
+        success: true,
+        message: 'Pending email change request cancelled.',
+      });
     }
   );
 
@@ -2366,9 +3219,10 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
 
       return reply.send({
         success: true,
+        message: 'If an account exists with this email, reset instructions will be sent.',
         data: {
           status: 'reset_request_received',
-          message: 'If an account matches that email, reset instructions will be sent.',
+          message: 'If an account exists with this email, reset instructions will be sent.',
         },
         requestId: request.id,
       });
@@ -2410,6 +3264,21 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
+      const breached = await checkBreachedPassword(parsed.data.password);
+      if (breached.isBreached) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.PASSWORD_BREACHED,
+            message: `This password was found in a public data breach (${breached.count.toLocaleString()} times). For your security, please choose a different password.`,
+            fields: {
+              password: 'This password has appeared in a known data breach. Please choose a different password.',
+            },
+          },
+          requestId: request.id,
+        });
+      }
+
       try {
         const { user } = await dataService.resetPassword(parsed.data.token, parsed.data.password);
         await dataService.logAuthEvent({
@@ -2426,7 +3295,9 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.send({
           success: true,
+          message: 'Password successfully reset. You can now log in with your new password.',
           data: {
+            user,
             status: 'password_reset_completed',
             message: 'Password successfully reset. You can now log in with your new password.',
           },
@@ -2446,6 +3317,16 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           metadata: { reason: err.code || err.message },
         });
 
+        if (err.code === 'PASSWORD_REUSED') {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.PASSWORD_REUSED,
+              message: 'Your new password cannot be the same as your previous password.',
+            },
+            requestId: request.id,
+          });
+        }
         if (
           err.code === 'PASSWORD_RESET_TOKEN_USED' ||
           err.code === 'TOKEN_ALREADY_USED' ||
@@ -2470,7 +3351,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           return reply.status(400).send({
             success: false,
             error: {
-              code: ERROR_CODES.PASSWORD_RESET_TOKEN_EXPIRED,
+              code: err.code === 'TOKEN_EXPIRED' ? ERROR_CODES.TOKEN_EXPIRED : ERROR_CODES.PASSWORD_RESET_TOKEN_EXPIRED,
               message: 'Password reset token has expired. Please request a new one.',
             },
             requestId: request.id,
@@ -2506,6 +3387,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           properties: {
             currentPassword: { type: 'string' },
             newPassword: { type: 'string' },
+            twoFactorCode: { type: 'string' },
           },
         },
       },
@@ -2527,8 +3409,38 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
+      if (parsed.data.currentPassword === parsed.data.newPassword) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.PASSWORD_REUSED,
+            message: 'Your new password cannot be the same as your current password.',
+          },
+        });
+      }
+
+      const breached = await checkBreachedPassword(parsed.data.newPassword);
+      if (breached.isBreached) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.PASSWORD_BREACHED,
+            message: `This password was found in a public data breach (${breached.count.toLocaleString()} times). For your security, please choose a different password.`,
+            fields: {
+              newPassword: 'This password has appeared in a known data breach. Please choose a different password.',
+            },
+          },
+        });
+      }
+
       try {
-        await dataService.changePassword(request.user.id, parsed.data.currentPassword, parsed.data.newPassword);
+        await dataService.changePassword(
+          request.user.id,
+          parsed.data.currentPassword,
+          parsed.data.newPassword,
+          undefined,
+          parsed.data.twoFactorCode
+        );
         await dataService.logAuthEvent({
           eventType: 'password_changed',
           userId: request.user.id,
@@ -2540,6 +3452,33 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           message: 'Password successfully updated.',
         });
       } catch (err: any) {
+        if (err.code === 'PASSWORD_REUSED') {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.PASSWORD_REUSED,
+              message: 'Your new password cannot be the same as your current password.',
+            },
+          });
+        }
+        if (err.code === 'STEP_UP_AUTH_REQUIRED') {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.STEP_UP_AUTH_REQUIRED,
+              message: 'Two-factor verification code is required to change password.',
+            },
+          });
+        }
+        if (err.code === 'INVALID_2FA_CODE') {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.INVALID_2FA_CODE,
+              message: 'Invalid two-factor authentication code.',
+            },
+          });
+        }
         if (err.code === 'INVALID_CREDENTIALS') {
           return reply.status(400).send({
             success: false,
@@ -2687,7 +3626,12 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       const profile = await oauthService.exchangeGoogleCode(code, flowResult.flow.pkceVerifier);
-      const { user } = await dataService.handleSocialAuth(profile);
+      const { user, isNew } = await dataService.handleSocialAuth(profile);
+      if (isNew) {
+        dataService.sendWelcomeEmail(user, 'google').catch((err) => {
+          console.warn('[Google OAuth] Welcome email error:', err?.message || err);
+        });
+      }
       const session = await dataService.createSession(user.id, {
         userAgent: request.headers['user-agent'],
         ipAddress: request.ip,
@@ -2721,8 +3665,11 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       });
 
       setAuthCookies(reply, { token: jwtToken, refreshToken: session.refreshToken });
-      // Redirect cleanly without exposing tokens in URL parameters
-      return reply.redirect(`${accountsBaseUrl()}/auth/callback`);
+      const handoff = await dataService.createCrossSubdomainHandoff(user.id, session.sessionId);
+      const returnToParam = flowResult.flow.returnTo ? `&returnTo=${encodeURIComponent(flowResult.flow.returnTo)}` : '';
+      return reply.redirect(
+        `${accountsBaseUrl()}/auth/callback?code=${encodeURIComponent(handoff.code)}${returnToParam}`
+      );
     } catch (err: any) {
       console.error('[Google OAuth Error]:', err?.message || err);
       const errorCode = err.code || (err.message?.includes('OAUTH_') ? err.message : ERROR_CODES.OAUTH_PROVIDER_ERROR);
@@ -2744,6 +3691,104 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.get('/google/callback', { schema: { tags: ['Auth'], summary: 'Google OAuth callback' } }, googleCallbackHandler);
   fastify.get('/providers/google/callback', { schema: { tags: ['Auth'], summary: 'Google OAuth callback (Alias)' } }, googleCallbackHandler);
+
+  const googleOneTapHandler = async (request: any, reply: any) => {
+    const { credential } = (request.body || {}) as { credential?: string };
+
+    if (!credential) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.VALIDATION_ERROR,
+          message: 'Google ID token credential is required.',
+        },
+      });
+    }
+
+    try {
+      const profile = await oauthService.verifyGoogleIdToken(credential);
+      const { user, isNew } = await dataService.handleSocialAuth(profile);
+      if (isNew) {
+        dataService.sendWelcomeEmail(user, 'google').catch((err) => {
+          console.warn('[Google One Tap] Welcome email error:', err?.message || err);
+        });
+      }
+
+      const session = await dataService.createSession(user.id, {
+        userAgent: request.headers['user-agent'],
+        ipAddress: request.ip,
+        authenticationMethod: 'oauth',
+        tokenVersion: user.tokenVersion ?? 1,
+      });
+
+      const jwtToken = fastify.jwt.sign(
+        {
+          userId: user.id,
+          email: user.email,
+          sessionId: session.sessionId,
+          tokenVersion: user.tokenVersion ?? 1,
+        },
+        { expiresIn: '15m' }
+      );
+
+      await dataService.logAuthEvent({
+        eventType: 'oauth_one_tap_completed',
+        userId: user.id,
+        sessionId: session.sessionId,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+        metadata: { provider: 'google', isNew },
+      });
+
+      await dataService.logAudit({
+        actorUserId: user.id,
+        eventType: AUDIT_EVENTS.AUTH_OAUTH_CALLBACK_COMPLETED,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+        metadata: { provider: 'google', isNew, method: 'one_tap' },
+      });
+
+      setAuthCookies(reply, { token: jwtToken, refreshToken: session.refreshToken });
+
+      const onboarding = await dataService.getOnboardingProgress(user.id);
+      const memberships = await dataService.getUserMemberships(user.id);
+
+      return reply.send({
+        success: true,
+        data: {
+          user: toPublicUser(user),
+          token: jwtToken,
+          refreshToken: session.refreshToken,
+          onboarding,
+          memberships,
+          isNew,
+        },
+      });
+    } catch (err: any) {
+      console.error('[Google One Tap Error]:', err?.message || err);
+      const errorCode = err.code || ERROR_CODES.OAUTH_PROVIDER_ERROR;
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: errorCode,
+          message: err.message || 'Google One Tap authentication failed.',
+        },
+      });
+    }
+  };
+
+  fastify.post('/google/one-tap', { schema: { tags: ['Auth'], summary: 'Google One Tap credential verification' } }, googleOneTapHandler);
+  fastify.post('/providers/google/one-tap', { schema: { tags: ['Auth'], summary: 'Google One Tap credential verification (Alias)' } }, googleOneTapHandler);
+
+  fastify.get('/config', { schema: { tags: ['Auth'], summary: 'Get public auth configuration' } }, async () => {
+    return {
+      success: true,
+      data: {
+        googleClientId: env.GOOGLE_CLIENT_ID || undefined,
+        facebookAppId: env.FACEBOOK_APP_ID || undefined,
+      },
+    };
+  });
 
   // --- Facebook OAuth ---
 
@@ -2866,7 +3911,12 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       const profile = await oauthService.exchangeFacebookCode(code, flowResult.flow.pkceVerifier);
-      const { user } = await dataService.handleSocialAuth(profile);
+      const { user, isNew } = await dataService.handleSocialAuth(profile);
+      if (isNew) {
+        dataService.sendWelcomeEmail(user, 'facebook').catch((err) => {
+          console.warn('[Facebook OAuth] Welcome email error:', err?.message || err);
+        });
+      }
       const session = await dataService.createSession(user.id, {
         userAgent: request.headers['user-agent'],
         ipAddress: request.ip,
@@ -2900,7 +3950,11 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       });
 
       setAuthCookies(reply, { token: jwtToken, refreshToken: session.refreshToken });
-      return reply.redirect(`${accountsBaseUrl()}/auth/callback`);
+      const handoff = await dataService.createCrossSubdomainHandoff(user.id, session.sessionId);
+      const returnToParam = flowResult.flow.returnTo ? `&returnTo=${encodeURIComponent(flowResult.flow.returnTo)}` : '';
+      return reply.redirect(
+        `${accountsBaseUrl()}/auth/callback?code=${encodeURIComponent(handoff.code)}${returnToParam}`
+      );
     } catch (err: any) {
       console.error('[Facebook OAuth Error]:', err?.message || err);
       const errorCode = err.code || (err.message?.includes('OAUTH_') ? err.message : ERROR_CODES.OAUTH_PROVIDER_ERROR);
@@ -3299,6 +4353,141 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           },
         });
       }
+    }
+  );
+
+  // POST /api/v1/auth/handoff/code
+  // Issues an ephemeral (30s) single-use cross-subdomain handoff code for the authenticated user
+  fastify.post(
+    '/handoff/code',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Auth'],
+        summary: 'Generate an ephemeral, single-use code for secure cross-subdomain authentication handoff',
+      },
+    },
+    async (request, reply) => {
+      const result = await dataService.createCrossSubdomainHandoff(request.user.id, request.sessionId);
+      return reply.send({
+        success: true,
+        data: result,
+      });
+    }
+  );
+
+  // POST /api/v1/auth/handoff/exchange
+  // Consumes the single-use handoff code on the target domain and sets HttpOnly session cookies
+  fastify.post(
+    '/handoff/exchange',
+    {
+      config: {
+        rateLimit: { max: 15, timeWindow: '1 minute' },
+      },
+      schema: {
+        tags: ['Auth'],
+        summary: 'Exchange a single-use handoff code for session cookies on the target subdomain',
+        body: {
+          type: 'object',
+          required: ['code'],
+          properties: {
+            code: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = request.body as { code: string };
+      if (!body?.code) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: 'Handoff code is required.',
+          },
+        });
+      }
+
+      try {
+        const result = await dataService.exchangeCrossSubdomainHandoff(
+          body.code,
+          request.headers['user-agent'],
+          request.ip
+        );
+
+        const accessToken = fastify.jwt.sign({
+          userId: result.user.id,
+          email: result.user.email,
+          sessionId: result.session.sessionId,
+          tokenVersion: result.tokenVersion,
+        });
+
+        setAuthCookies(reply, { token: accessToken, refreshToken: result.session.refreshToken });
+
+        const onboarding = await dataService.getOnboardingStatus(result.user.id);
+        const memberships = await dataService.getUserMemberships(result.user.id);
+
+        return reply.send({
+          success: true,
+          data: {
+            token: accessToken,
+            refreshToken: result.session.refreshToken,
+            user: toPublicUser(result.user),
+            onboarding,
+            memberships,
+          },
+        });
+      } catch (err: any) {
+        if (err.code === 'USER_NOT_ACTIVE') {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: 'ACCOUNT_INACTIVE',
+              message: 'Account is inactive or suspended.',
+            },
+          });
+        }
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: 'INVALID_HANDOFF_CODE',
+            message: 'Handoff code is invalid, expired, or already used.',
+          },
+        });
+      }
+    }
+  );
+
+  // 17. GET /api/v1/auth/sessions/stats (Admin-only session telemetry and diagnostics)
+  fastify.get(
+    '/sessions/stats',
+    {
+      preHandler: [fastify.authenticate],
+    },
+    async (request, reply) => {
+      const user = request.user as any;
+      const isAdmin =
+        user?.role === 'admin' ||
+        user?.role === 'ADMIN' ||
+        user?.role === 'SYSTEM_ADMIN' ||
+        user?.role === 'super_admin' ||
+        user?.isSystemAdmin === true;
+
+      if (!isAdmin) {
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.FORBIDDEN,
+            message: 'Administrative privileges required to access session analytics.',
+          },
+        });
+      }
+
+      const stats = await dataService.getSessionStats();
+      return reply.send({
+        success: true,
+        data: stats,
+      });
     }
   );
 };

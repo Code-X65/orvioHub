@@ -506,7 +506,12 @@ export const UserDetails: React.FC = () => {
       )}
 
       {activeTab === "organizations" && (
-        <UserOrganizationsTab organizationsData={organizationsData} loading={tabLoading} />
+        <UserOrganizationsTab
+          userId={id!}
+          organizationsData={organizationsData}
+          loading={tabLoading}
+          onRefresh={() => loadTabData("organizations")}
+        />
       )}
 
       {activeTab === "access" && (

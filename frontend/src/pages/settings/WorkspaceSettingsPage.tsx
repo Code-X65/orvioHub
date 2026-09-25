@@ -16,6 +16,8 @@ import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import { CustomSelect } from '@/components/ui/custom-select';
 import { Spinner } from '@/components/ui/spinner';
+import { OtpVerificationModal } from '@/components/phone/OtpVerificationModal';
+import { validatePhoneNumber } from '@/lib/phoneValidation';
 import {
   Building2,
   Briefcase,
@@ -42,6 +44,8 @@ import {
   Layers,
   ShieldCheck,
   Sliders,
+  CheckCircle2,
+  AlertCircle,
 } from 'lucide-react';
 
 interface MemberRecord {
@@ -212,9 +216,13 @@ export const WorkspaceSettingsPage: React.FC = () => {
   const [businessForm, setBusinessForm] = useState({
     email: '',
     phone: '',
+    phoneVerified: false,
+    phoneStatus: 'unverified' as 'unverified' | 'pending' | 'verified',
     category: '',
     description: '',
   });
+  const [isPhoneVerifyModalOpen, setIsPhoneVerifyModalOpen] = useState(false);
+  const [isStartingPhoneVerify, setIsStartingPhoneVerify] = useState(false);
 
   const [addressForm, setAddressForm] = useState<NigerianAddress>({
     country: 'Nigeria',
@@ -325,6 +333,8 @@ export const WorkspaceSettingsPage: React.FC = () => {
         setBusinessForm({
           email: s.email || '',
           phone: s.phone || '',
+          phoneVerified: Boolean(s.phoneVerified),
+          phoneStatus: s.phoneStatus || (s.phoneVerified ? 'verified' : 'unverified'),
           category: s.category || '',
           description: s.description || '',
         });
@@ -595,6 +605,13 @@ export const WorkspaceSettingsPage: React.FC = () => {
   const handleSaveBusiness = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!workspaceId) return;
+    if (businessForm.phone && businessForm.phone.trim()) {
+      const val = validatePhoneNumber(businessForm.phone.trim());
+      if (!val.valid) {
+        toast.error(val.error || 'Please enter a valid official business phone number.');
+        return;
+      }
+    }
     setIsSaving(true);
     try {
       await api.patch(`/workspaces/${workspaceId}/settings/business`, businessForm);
@@ -833,15 +850,63 @@ export const WorkspaceSettingsPage: React.FC = () => {
             </div>
 
             <div className="space-y-1.5">
-              <Label className="text-xs text-slate-200">Official Business Phone</Label>
-              <Input
-                type="tel"
-                value={businessForm.phone}
-                onChange={(e) => setBusinessForm({ ...businessForm, phone: e.target.value })}
-                placeholder="+234 800 000 0000"
-                disabled={!isOwnerOrAdmin}
-                className="bg-black/40 border-white/10 text-xs"
-              />
+              <div className="flex items-center justify-between">
+                <Label className="text-xs text-slate-200">Official Business Phone</Label>
+                {businessForm.phone && (
+                  businessForm.phoneVerified ? (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                      <CheckCircle2 className="w-3 h-3" /> Verified
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                      <AlertCircle className="w-3 h-3" /> Unverified
+                    </span>
+                  )
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Input
+                  type="tel"
+                  value={businessForm.phone}
+                  onChange={(e) => setBusinessForm({ ...businessForm, phone: e.target.value, phoneVerified: false, phoneStatus: 'unverified' })}
+                  placeholder="+234 800 000 0000"
+                  disabled={!isOwnerOrAdmin}
+                  className="bg-black/40 border-white/10 text-xs flex-1"
+                />
+                {isOwnerOrAdmin && businessForm.phone && !businessForm.phoneVerified && (
+                  <Button
+                    type="button"
+                    onClick={async () => {
+                      if (!businessForm.phone) {
+                        toast.error('Please enter a phone number first.');
+                        return;
+                      }
+                      setIsStartingPhoneVerify(true);
+                      try {
+                        await api.post(`/workspaces/${workspaceId}/settings/phone/verification/start`, {
+                          phone: businessForm.phone,
+                        });
+                        setIsPhoneVerifyModalOpen(true);
+                        toast.success(`Verification code sent to ${businessForm.phone}`);
+                      } catch (err: any) {
+                        toast.error(err.message || 'Failed to start phone verification.');
+                      } finally {
+                        setIsStartingPhoneVerify(false);
+                      }
+                    }}
+                    disabled={isStartingPhoneVerify}
+                    className="h-9 px-3 bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-semibold rounded-md cursor-pointer shrink-0"
+                  >
+                    {isStartingPhoneVerify ? <Spinner size="sm" className="mr-1" /> : <ShieldCheck className="w-3.5 h-3.5 mr-1" />}
+                    Verify
+                  </Button>
+                )}
+              </div>
+              <p className="text-[10px] text-slate-500">
+                {businessForm.phoneVerified
+                  ? 'This phone number is verified and authenticated for this organization.'
+                  : 'Verify this number with a one-time SMS code to enable urgent notifications.'}
+              </p>
             </div>
 
             <div className="space-y-1.5">
@@ -2231,6 +2296,29 @@ export const WorkspaceSettingsPage: React.FC = () => {
           />
         </div>
       )}
+      {/* Organization Phone Verification Modal */}
+      <OtpVerificationModal
+        isOpen={isPhoneVerifyModalOpen}
+        phone={businessForm.phone}
+        title="Verify Organization Phone"
+        subtitle={`We sent a 6-digit verification code to verify ${generalForm.name || 'organization'}'s official phone.`}
+        onClose={() => setIsPhoneVerifyModalOpen(false)}
+        onSuccess={() => {
+          setBusinessForm((prev) => ({ ...prev, phoneVerified: true, phoneStatus: 'verified' }));
+          loadSettings();
+        }}
+        onVerifyOverride={async (otp: string) => {
+          await api.post(`/workspaces/${workspaceId}/settings/phone/verification/verify`, {
+            code: otp,
+          });
+          setBusinessForm((prev) => ({ ...prev, phoneVerified: true, phoneStatus: 'verified' }));
+          toast.success('Organization phone number verified!');
+        }}
+        onResendOverride={async () => {
+          await api.post(`/workspaces/${workspaceId}/settings/phone/verification/resend`, {});
+          toast.success('Verification code resent.');
+        }}
+      />
     </SettingsLayout>
   );
 };

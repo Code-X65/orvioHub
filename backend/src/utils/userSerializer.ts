@@ -20,6 +20,8 @@ export interface PublicUser {
   phoneVisibility?: 'private' | 'workspace';
   country?: string;
   state?: string;
+  stateCode?: string;
+  lga?: string;
   city?: string;
   timezone: string;
   timezoneLabel?: string;
@@ -43,7 +45,9 @@ export interface PublicUser {
     | 'SUSPENDED';
   emailVerified: boolean;
   emailVerifiedAt?: number;
+  pendingEmail?: string;
   twoFactorEnabled: boolean;
+  twoFactorBackupCodesRemaining?: number;
   createdAt?: number;
   updatedAt?: number;
   lastLoginAt?: number;
@@ -84,11 +88,13 @@ export function toPublicUser(
     avatar,
     avatarUrl: avatar,
     phone: user.phone,
-    phoneVerified: Boolean(user.phoneVerifiedAt),
+    phoneVerified: Boolean(user.phoneVerifiedAt || (user as any).phoneVerified || user.phoneStatus === 'verified'),
     phoneVerifiedAt: user.phoneVerifiedAt,
     phoneVisibility: user.phoneVisibility || 'private',
     country: user.country || 'NG',
     state: user.state,
+    stateCode: user.stateCode,
+    lga: user.lga,
     city: user.city,
     timezone: user.timezone || 'Africa/Lagos',
     timezoneLabel: 'West Africa Time (WAT)',
@@ -103,7 +109,9 @@ export function toPublicUser(
     status: user.status || (user.emailVerified ? 'active' : 'pending_email_verification'),
     emailVerified: Boolean(user.emailVerified),
     emailVerifiedAt: user.emailVerifiedAt,
+    pendingEmail: user.pendingEmail,
     twoFactorEnabled: Boolean(user.twoFactorEnabled),
+    twoFactorBackupCodesRemaining: Array.isArray(user.twoFactorBackupCodes) ? user.twoFactorBackupCodes.length : (user.twoFactorEnabled ? 8 : 0),
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
     lastLoginAt: user.lastLoginAt,

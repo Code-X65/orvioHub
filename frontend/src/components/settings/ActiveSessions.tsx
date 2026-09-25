@@ -44,15 +44,14 @@ export const ActiveSessions: React.FC = () => {
   };
 
   const handleRevokeAllOther = async () => {
-    if (!window.confirm('Are you sure you want to sign out of all other devices?')) return;
+    if (!window.confirm('Are you sure you want to sign out of all other devices? Your current session will remain active.')) return;
     try {
       setRevokingAll(true);
-      await api.post('/auth/logout-all');
-      toast.success('Signed out of all devices.');
-      await logoutAllAccounts();
-      window.location.href = '/login';
+      await api.post('/users/me/sessions/revoke-all');
+      toast.success('All other devices have been signed out.');
+      await fetchSessions();
     } catch (err: any) {
-      toast.error(err.message || 'Failed to sign out of all devices.');
+      toast.error(err.message || 'Failed to sign out of other devices.');
     } finally {
       setRevokingAll(false);
     }
@@ -131,7 +130,7 @@ export const ActiveSessions: React.FC = () => {
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 border border-rose-200/80 dark:border-rose-900/50 hover:bg-rose-100 transition-colors shrink-0"
           >
             {revokingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <LogOut className="w-3.5 h-3.5" />}
-            <span>Sign out all devices</span>
+            <span>Sign out other devices</span>
           </button>
         )}
       </div>

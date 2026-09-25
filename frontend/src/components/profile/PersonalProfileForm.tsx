@@ -13,13 +13,21 @@ import { ProfilePhotoUploader } from './ProfilePhotoUploader';
 import { UnsavedChangesGuard } from './UnsavedChangesGuard';
 import { ProfileSaveState } from './ProfileSaveState';
 
+import { validatePhoneNumber } from '@/lib/phoneValidation';
+
 export const personalProfileSchema = z.object({
   firstName: z.string().trim().min(1, 'First name is required').max(100, 'First name must be under 100 characters'),
   lastName: z.string().trim().min(1, 'Last name is required').max(100, 'Last name must be under 100 characters'),
   displayName: z.string().trim().max(100, 'Display name must be under 100 characters').optional(),
   jobTitle: z.string().trim().max(100, 'Job title must be under 100 characters').optional(),
   department: z.string().trim().max(100, 'Department must be under 100 characters').optional(),
-  phone: z.string().trim().optional(),
+  phone: z
+    .string()
+    .trim()
+    .min(1, 'Phone number is required')
+    .refine((val) => validatePhoneNumber(val).valid, {
+      message: 'Please enter a valid phone number (e.g. 0801 234 5678 or +234 801 234 5678).',
+    }),
   country: z.literal('NG'),
   timezone: z.literal('Africa/Lagos'),
 });
@@ -42,6 +50,7 @@ export interface PersonalProfileFormProps {
   onSubmit: (data: PersonalProfileFormData) => Promise<void>;
   onSaveAvatar: (croppedDataUrl: string) => Promise<void>;
   onRemoveAvatar: () => Promise<void>;
+  onPhoneVerified?: (verifiedPhone: string) => void;
   isLoading?: boolean;
 }
 
@@ -50,10 +59,12 @@ export const PersonalProfileForm: React.FC<PersonalProfileFormProps> = ({
   onSubmit,
   onSaveAvatar,
   onRemoveAvatar,
+  onPhoneVerified,
   isLoading = false,
 }) => {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [phoneVerifiedState, setPhoneVerifiedState] = useState(Boolean(initialValues?.phoneVerified));
 
   const {
     register,
@@ -80,19 +91,32 @@ export const PersonalProfileForm: React.FC<PersonalProfileFormProps> = ({
 
   // Sync form when initial values change and form is not dirty
   useEffect(() => {
-    if (initialValues && !isDirty) {
-      reset({
-        firstName: initialValues.firstName || initialValues.name?.split(' ')[0] || '',
-        lastName: initialValues.lastName || initialValues.name?.split(' ').slice(1).join(' ') || '',
-        displayName: initialValues.displayName || '',
-        jobTitle: initialValues.jobTitle || '',
-        department: initialValues.department || '',
-        phone: initialValues.phone || '',
-        country: 'NG',
-        timezone: 'Africa/Lagos',
-      });
+    if (initialValues) {
+      if (initialValues.phoneVerified !== undefined) {
+        setPhoneVerifiedState(Boolean(initialValues.phoneVerified));
+      }
+      if (!isDirty) {
+        reset({
+          firstName: initialValues.firstName || initialValues.name?.split(' ')[0] || '',
+          lastName: initialValues.lastName || initialValues.name?.split(' ').slice(1).join(' ') || '',
+          displayName: initialValues.displayName || '',
+          jobTitle: initialValues.jobTitle || '',
+          department: initialValues.department || '',
+          phone: initialValues.phone || phoneValue || '',
+          country: 'NG',
+          timezone: 'Africa/Lagos',
+        });
+      }
     }
   }, [initialValues, isDirty, reset]);
+
+  const handlePhoneVerified = (verifiedPhone: string) => {
+    setPhoneVerifiedState(true);
+    setValue('phone', verifiedPhone, { shouldDirty: true, shouldValidate: true });
+    if (onPhoneVerified) {
+      onPhoneVerified(verifiedPhone);
+    }
+  };
 
   const handleFormSubmit = async (data: PersonalProfileFormData) => {
     setSaveStatus('saving');
@@ -215,13 +239,14 @@ export const PersonalProfileForm: React.FC<PersonalProfileFormProps> = ({
           <ReadOnlyTimezoneField />
         </div>
 
-        {/* Phone Number (Optional) */}
+        {/* Phone Number */}
         <PhoneNumberField
           value={phoneValue || ''}
           onChange={(val) => {
             setValue('phone', val, { shouldDirty: true, shouldValidate: true });
           }}
-          phoneVerified={initialValues?.phoneVerified}
+          phoneVerified={phoneVerifiedState}
+          onPhoneVerified={handlePhoneVerified}
           error={errors.phone?.message}
           disabled={isLoading || saveStatus === 'saving'}
         />

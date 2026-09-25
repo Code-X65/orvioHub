@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { dataService } from '../services/dataService.js';
 import { entitlementService } from '../services/entitlementService.js';
 import { ERROR_CODES, AUDIT_EVENTS } from '../config/constants.js';
-import { INVENTORY_ROLE_PERMISSIONS, type InventoryRole } from '../config/inventoryRbac.js';
 
 const createBranchSchema = z.object({
   name: z.string().min(1, 'Branch name is required').transform((s) => s.trim()),
@@ -26,7 +25,6 @@ const createBranchSchema = z.object({
   address: z.string().optional(),
   phone: z.string().optional(),
   email: z.string().email().optional().or(z.literal('')),
-  managerId: z.string().optional(),
   isPrimary: z.boolean().optional().default(false),
   openingHours: z.record(z.any()).optional(),
 });
@@ -52,53 +50,27 @@ const updateBranchSchema = z.object({
   address: z.string().optional(),
   phone: z.string().optional(),
   email: z.string().email().optional().or(z.literal('')),
-  managerId: z.string().optional(),
   isPrimary: z.boolean().optional(),
   status: z.enum(['active', 'suspended', 'archived', 'setup_incomplete', 'creating']).optional(),
   openingHours: z.record(z.any()).optional(),
   receiptFooter: z.string().optional(),
+  paperWidth: z.string().optional(),
+  tin: z.string().optional(),
+  vatRate: z.number().optional(),
+  enableVat: z.boolean().optional(),
+  showCashier: z.boolean().optional(),
+  showCustomer: z.boolean().optional(),
+  showBarcode: z.boolean().optional(),
+  headerText: z.string().optional(),
+  footerMessage: z.string().optional(),
+  returnPolicy: z.string().optional(),
+  receiptPrefix: z.string().optional(),
+  tagline: z.string().optional(),
   negativeStockAllowed: z.boolean().optional(),
   lowStockThreshold: z.number().optional(),
-});
-
-const assignBranchMemberSchema = z.object({
-  userId: z.string().min(1, 'User ID is required'),
-  role: z
-    .enum([
-      'inventory_owner',
-      'inventory_manager',
-      'branch_manager',
-      'cashier',
-      'sales_attendant',
-      'stock_manager',
-      'accountant',
-      'inventory_staff',
-      'inventory_viewer',
-      'viewer',
-    ])
-    .default('inventory_viewer'),
-  roleOverride: z.string().optional(),
-  permissions: z.array(z.string()).optional(),
-});
-
-const updateBranchMemberSchema = z.object({
-  role: z
-    .enum([
-      'inventory_owner',
-      'inventory_manager',
-      'branch_manager',
-      'cashier',
-      'sales_attendant',
-      'stock_manager',
-      'accountant',
-      'inventory_staff',
-      'inventory_viewer',
-      'viewer',
-    ])
-    .optional(),
-  roleOverride: z.string().optional(),
-  permissions: z.array(z.string()).optional(),
-  status: z.enum(['active', 'suspended', 'removed']).optional(),
+  stockAdjustmentApprovalRequired: z.boolean().optional(),
+  discrepancyApprovalThreshold: z.number().optional(),
+  enforceStockCountApproval: z.boolean().optional(),
 });
 
 export const branchSettingsRoutes: FastifyPluginAsync = async (fastify) => {
@@ -215,7 +187,7 @@ export const branchSettingsRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       const branchId = await dataService.createBranch({
         workspaceId: tenantId,
-        actorUserId: request.user.id,
+        callerUserId: request.user.id,
         ...parsed.data,
       });
 
@@ -300,27 +272,53 @@ export const branchSettingsRoutes: FastifyPluginAsync = async (fastify) => {
 
     try {
       // 1. Update operational settings if included
-      if (
-        parsed.data.openingHours !== undefined ||
-        parsed.data.receiptFooter !== undefined ||
-        parsed.data.negativeStockAllowed !== undefined ||
-        parsed.data.lowStockThreshold !== undefined
-      ) {
+      const operationalKeys = [
+        'openingHours',
+        'receiptFooter',
+        'paperWidth',
+        'tin',
+        'vatRate',
+        'enableVat',
+        'showCashier',
+        'showCustomer',
+        'showBarcode',
+        'headerText',
+        'footerMessage',
+        'returnPolicy',
+        'receiptPrefix',
+        'tagline',
+        'negativeStockAllowed',
+        'lowStockThreshold',
+        'stockAdjustmentApprovalRequired',
+        'discrepancyApprovalThreshold',
+        'enforceStockCountApproval',
+      ];
+
+      const operationalUpdates: Record<string, any> = {};
+      let hasOperationalUpdates = false;
+
+      for (const k of operationalKeys) {
+        if ((parsed.data as any)[k] !== undefined) {
+          operationalUpdates[k] = (parsed.data as any)[k];
+          hasOperationalUpdates = true;
+        }
+      }
+
+      if (hasOperationalUpdates) {
         await dataService.updateBranchOperationalSettings(
           branchId,
-          {
-            openingHours: parsed.data.openingHours,
-            receiptFooter: parsed.data.receiptFooter,
-            negativeStockAllowed: parsed.data.negativeStockAllowed,
-            lowStockThreshold: parsed.data.lowStockThreshold,
-          },
+          operationalUpdates,
           request.user.id,
           tenantId
         );
       }
 
       // 2. Update core branch metadata
-      const { openingHours, receiptFooter, negativeStockAllowed, lowStockThreshold, ...metaPatch } = parsed.data;
+      const metaPatch: Record<string, any> = { ...parsed.data };
+      for (const k of operationalKeys) {
+        delete metaPatch[k];
+      }
+
       if (Object.keys(metaPatch).length > 0) {
         await dataService.updateBranch(branchId, {
           ...metaPatch,
@@ -452,162 +450,74 @@ export const branchSettingsRoutes: FastifyPluginAsync = async (fastify) => {
     }
   };
 
+
   // -------------------------------------------------------------
-  // 9. BRANCH MEMBERS: LIST
+  // 12b. BRANCH PHONE VERIFICATION HANDLERS
   // -------------------------------------------------------------
-  const listBranchMembersHandler = async (request: any, reply: any) => {
+  const startBranchPhoneVerificationHandler = async (request: any, reply: any) => {
     const { branchId } = request.params as { branchId: string };
     const tenantId = getTenantId(request);
+    const body = (request.body as { phone?: string; purpose?: string }) || {};
+    const branch = await dataService.getBranchById(branchId);
+    const phoneToVerify = body.phone || branch?.phone;
+    if (!phoneToVerify) {
+      return reply.status(400).send({ success: false, error: { code: 'PHONE_REQUIRED', message: 'Phone number is required.' } });
+    }
     try {
-      const members = await dataService.listBranchMembers(tenantId, {
-        applicationKey: 'inventory',
+      const challenge = await dataService.startBranchPhoneVerification(
         branchId,
-      });
-      return reply.send({
-        success: true,
-        data: { members },
-        requestId: request.id,
-      });
+        tenantId,
+        request.user.id,
+        phoneToVerify,
+        body.purpose || 'branch_phone_verification',
+        request.ip,
+        request.headers['user-agent']
+      );
+      return reply.send({ success: true, message: `Verification code sent to ${challenge.phoneNormalized}.`, data: challenge });
     } catch (err: any) {
-      return reply.status(500).send({
-        success: false,
-        error: { code: ERROR_CODES.INTERNAL_SERVER_ERROR, message: err.message },
-      });
+      return reply.status(400).send({ success: false, error: { code: 'VERIFICATION_START_FAILED', message: err.message } });
     }
   };
 
-  // -------------------------------------------------------------
-  // 10. BRANCH MEMBERS: ADD / ASSIGN
-  // -------------------------------------------------------------
-  const addBranchMemberHandler = async (request: any, reply: any) => {
+  const verifyBranchPhoneVerificationHandler = async (request: any, reply: any) => {
     const { branchId } = request.params as { branchId: string };
     const tenantId = getTenantId(request);
-    const parsed = assignBranchMemberSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({
-        success: false,
-        error: {
-          code: ERROR_CODES.VALIDATION_ERROR,
-          message: 'Invalid branch member payload',
-          details: parsed.error.format(),
-        },
-      });
-    }
-
+    const body = request.body as { code: string; purpose?: string };
     try {
-      const result = await dataService.addBranchAccess({
-        workspaceId: tenantId,
-        userId: parsed.data.userId,
+      const res = await dataService.verifyBranchPhone(
         branchId,
-        roleOverride: parsed.data.roleOverride || parsed.data.role,
-        permissions: parsed.data.permissions || INVENTORY_ROLE_PERMISSIONS[parsed.data.role as InventoryRole] || [],
-        assignedByUserId: request.user.id,
-      });
-
-      await logBranchAudit(request, 'branch.member_added', 'branch.member_added', branchId, {
-        assignedUserId: parsed.data.userId,
-        role: parsed.data.role,
-      });
-
-      return reply.status(201).send({
-        success: true,
-        data: result,
-        message: 'Member assigned to branch successfully.',
-        requestId: request.id,
-      });
+        tenantId,
+        request.user.id,
+        body.code,
+        body.purpose || 'branch_phone_verification',
+        request.ip,
+        request.headers['user-agent']
+      );
+      if (!res.success) {
+        return reply.status(400).send({ success: false, error: { code: res.error || 'INVALID_CODE', message: 'Invalid verification code.' } });
+      }
+      return reply.send({ success: true, message: 'Branch phone verified successfully!', data: res });
     } catch (err: any) {
-      return reply.status(400).send({
-        success: false,
-        error: { code: 'ASSIGN_MEMBER_FAILED', message: err.message },
-      });
+      return reply.status(400).send({ success: false, error: { code: 'VERIFICATION_FAILED', message: err.message } });
     }
   };
 
-  // -------------------------------------------------------------
-  // 11. BRANCH MEMBERS: UPDATE ROLE / STATUS
-  // -------------------------------------------------------------
-  const updateBranchMemberHandler = async (request: any, reply: any) => {
-    const { branchId, membershipId } = request.params as { branchId: string; membershipId: string };
+  const resendBranchPhoneVerificationHandler = async (request: any, reply: any) => {
+    const { branchId } = request.params as { branchId: string };
     const tenantId = getTenantId(request);
-    const parsed = updateBranchMemberSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({
-        success: false,
-        error: { code: ERROR_CODES.VALIDATION_ERROR, message: 'Invalid member update payload' },
-      });
-    }
-
+    const body = (request.body as { purpose?: string }) || {};
     try {
-      let updated: any = null;
-      if (parsed.data.role) {
-        updated = await dataService.updateBranchMemberRole({
-          workspaceId: tenantId,
-          membershipId,
-          role: parsed.data.role,
-          permissions: parsed.data.permissions || (INVENTORY_ROLE_PERMISSIONS as any)[parsed.data.role] || [],
-          updatedBy: request.user.id,
-        });
-      }
-
-      if (parsed.data.status) {
-        updated = await dataService.setBranchMemberStatus({
-          workspaceId: tenantId,
-          membershipId,
-          status: parsed.data.status,
-          actingUserId: request.user.id,
-        });
-      }
-
-      await logBranchAudit(request, 'branch.member_updated', 'branch.member_updated', branchId, {
-        membershipId,
-        updates: parsed.data,
-      });
-
-      return reply.send({
-        success: true,
-        data: { member: updated },
-        message: 'Branch member updated successfully.',
-        requestId: request.id,
-      });
+      const res = await dataService.resendBranchPhoneVerification(
+        branchId,
+        tenantId,
+        request.user.id,
+        body.purpose || 'branch_phone_verification',
+        request.ip,
+        request.headers['user-agent']
+      );
+      return reply.send({ success: true, message: 'Verification code resent.', data: res });
     } catch (err: any) {
-      return reply.status(400).send({
-        success: false,
-        error: { code: 'UPDATE_MEMBER_FAILED', message: err.message },
-      });
-    }
-  };
-
-  // -------------------------------------------------------------
-  // 12. BRANCH MEMBERS: REMOVE
-  // -------------------------------------------------------------
-  const removeBranchMemberHandler = async (request: any, reply: any) => {
-    const { branchId, membershipId } = request.params as { branchId: string; membershipId: string };
-    const tenantId = getTenantId(request);
-    const reason = request.body?.reason || 'Removed by administrator';
-    try {
-      const result = await dataService.removeBranchMember({
-        workspaceId: tenantId,
-        membershipId,
-        reason,
-        actingUserId: request.user.id,
-      });
-
-      await logBranchAudit(request, 'branch.member_removed', 'branch.member_removed', branchId, {
-        membershipId,
-        reason,
-      });
-
-      return reply.send({
-        success: true,
-        data: result,
-        message: 'Member removed from branch.',
-        requestId: request.id,
-      });
-    } catch (err: any) {
-      return reply.status(400).send({
-        success: false,
-        error: { code: 'REMOVE_MEMBER_FAILED', message: err.message },
-      });
+      return reply.status(400).send({ success: false, error: { code: 'RESEND_FAILED', message: err.message } });
     }
   };
 
@@ -617,15 +527,12 @@ export const branchSettingsRoutes: FastifyPluginAsync = async (fastify) => {
   const demoContextHandler = async (request: any, reply: any) => {
     const tenantId = getTenantId(request);
     const branchId = request.body?.branchId || request.query?.branchId;
-    const userId = request.user.id;
+    const userId = request.user?.id || request.body?.userId;
 
     try {
-      // 1. Resolve fine-grained context from dataService / Convex
-      const invCtx = await dataService.resolveInventoryContext({
-        workspaceId: tenantId,
-        userId,
-        branchId,
-      });
+      const invCtx = {
+        permissions: ['inventory.view', 'branch.view', 'branch.update'],
+      };
 
       // 2. Fetch active branch details
       let targetBranch: any = null;
@@ -642,6 +549,22 @@ export const branchSettingsRoutes: FastifyPluginAsync = async (fastify) => {
       const wsProducts = await dataService.getWorkspaceProducts(tenantId).catch(() => []);
       const wsProduct = Array.isArray(wsProducts) ? wsProducts.find((p: any) => (p.productKey || p.key || p.applicationKey) === 'inventory') : null;
       const isSetupComplete = wsProduct?.status === 'active' || wsProduct?.status === 'ACTIVE';
+
+      // 4. Stateful first-visit check
+      const resolvedBranchId = targetBranch?._id || targetBranch?.id || branchId;
+      const visit = userId
+        ? await dataService.getDashboardVisitStatus({
+            userId,
+            organizationId: request.tenantContext?.organizationId || tenantId,
+            workspaceId: tenantId,
+            branchId: resolvedBranchId,
+            productKey: 'inventory',
+          })
+        : {
+            isFirstVisit: true,
+            visitCount: 0,
+            firstVisitedAt: null,
+          };
 
       return reply.send({
         success: true,
@@ -672,6 +595,11 @@ export const branchSettingsRoutes: FastifyPluginAsync = async (fastify) => {
             inventorySetupStatus: isSetupComplete ? 'complete' : 'setup_incomplete',
             branchSetupStatus: targetBranch ? 'complete' : 'pending',
           },
+          visit: {
+            isFirstVisit: visit.isFirstVisit,
+            visitCount: visit.visitCount,
+            firstVisitedAt: visit.firstVisitedAt,
+          },
           demoMetrics: {
             totalProducts: 12,
             lowStockCount: 2,
@@ -683,6 +611,7 @@ export const branchSettingsRoutes: FastifyPluginAsync = async (fastify) => {
         },
         requestId: request.id,
       });
+
     } catch (err: any) {
       request.log.error({ err, tenantId }, 'Failed to resolve demo context');
       return reply.status(500).send({
@@ -711,6 +640,40 @@ export const branchSettingsRoutes: FastifyPluginAsync = async (fastify) => {
     ...branchPreHandlers,
     fastify.requireActiveBranch,
   ];
+
+  const listBranchMembersHandler = async (request: any, reply: any) => {
+    const { branchId } = request.params as { branchId: string };
+    try {
+      const members = await dataService.getBranchMembers(getTenantId(request), branchId, 'inventory');
+      return reply.send({ success: true, members, data: { members }, requestId: request.id });
+    } catch (err: any) {
+      return reply.status(400).send({ success: false, error: { code: 'BRANCH_MEMBERS_LIST_FAILED', message: err.message || 'Unable to load branch staff.' } });
+    }
+  };
+
+  const upsertBranchMemberHandler = async (request: any, reply: any) => {
+    const { branchId } = request.params as { branchId: string };
+    const body = z.object({ userId: z.string().min(1), role: z.enum(['branch_manager', 'sales_attendant', 'stock_manager', 'viewer']) }).safeParse(request.body);
+    if (!body.success) return reply.status(400).send({ success: false, error: { code: ERROR_CODES.VALIDATION_ERROR, message: 'Invalid branch staff assignment.' } });
+    try {
+      await dataService.upsertBranchMember({ workspaceId: getTenantId(request), branchId, userId: body.data.userId, callerUserId: request.user.id, role: body.data.role });
+      await logBranchAudit(request, 'branch.member_assigned', 'branch.member_assigned', branchId, body.data);
+      return reply.send({ success: true, message: 'Branch staff assignment saved.', requestId: request.id });
+    } catch (err: any) {
+      return reply.status(400).send({ success: false, error: { code: err.message || 'BRANCH_MEMBER_ASSIGNMENT_FAILED', message: err.message || 'Unable to save branch staff assignment.' } });
+    }
+  };
+
+  const removeBranchMemberHandler = async (request: any, reply: any) => {
+    const { branchId, userId } = request.params as { branchId: string; userId: string };
+    try {
+      await dataService.removeBranchMember({ workspaceId: getTenantId(request), branchId, userId, callerUserId: request.user.id });
+      await logBranchAudit(request, 'branch.member_removed', 'branch.member_removed', branchId, { userId });
+      return reply.send({ success: true, requestId: request.id });
+    } catch (err: any) {
+      return reply.status(400).send({ success: false, error: { code: err.message || 'BRANCH_MEMBER_REMOVE_FAILED', message: err.message || 'Unable to remove branch staff assignment.' } });
+    }
+  };
 
   const prefixes = [
     '/workspaces/:workspaceId',
@@ -800,33 +763,28 @@ export const branchSettingsRoutes: FastifyPluginAsync = async (fastify) => {
       archiveBranchHandler
     );
 
-    // 9. Branch Members: List
-    fastify.get(
-      `${prefix}/inventory/branches/:branchId/members`,
-      { preHandler: [...branchPreHandlers, fastify.requireBranchPermission('branch.view')] },
-      listBranchMembersHandler
-    );
-
-    // 10. Branch Members: Add/Assign
+    // 9. Branch Phone Verification
     fastify.post(
-      `${prefix}/inventory/branches/:branchId/members`,
-      { preHandler: [...branchActivePreHandlers, fastify.requireBranchPermission('branch.manage_staff')] },
-      addBranchMemberHandler
+      `${prefix}/inventory/branches/:branchId/phone/verification/start`,
+      { preHandler: [...branchActivePreHandlers, fastify.requireBranchPermission('branch.update')] },
+      startBranchPhoneVerificationHandler
+    );
+    fastify.post(
+      `${prefix}/inventory/branches/:branchId/phone/verification/verify`,
+      { preHandler: [...branchActivePreHandlers, fastify.requireBranchPermission('branch.update')] },
+      verifyBranchPhoneVerificationHandler
+    );
+    fastify.post(
+      `${prefix}/inventory/branches/:branchId/phone/verification/resend`,
+      { preHandler: [...branchActivePreHandlers, fastify.requireBranchPermission('branch.update')] },
+      resendBranchPhoneVerificationHandler
     );
 
-    // 11. Branch Members: Update
-    fastify.patch(
-      `${prefix}/inventory/branches/:branchId/members/:membershipId`,
-      { preHandler: [...branchActivePreHandlers, fastify.requireBranchPermission('branch.manage_staff')] },
-      updateBranchMemberHandler
-    );
-
-    // 12. Branch Members: Remove
-    fastify.delete(
-      `${prefix}/inventory/branches/:branchId/members/:membershipId`,
-      { preHandler: [...branchActivePreHandlers, fastify.requireBranchPermission('branch.manage_staff')] },
-      removeBranchMemberHandler
-    );
+    // 10. Branch team assignment is a first-class, tenant-scoped lifecycle.
+    fastify.get(`${prefix}/inventory/branches/:branchId/members`, { preHandler: [...branchPreHandlers, fastify.requireBranchPermission('branch.view')] }, listBranchMembersHandler);
+    fastify.post(`${prefix}/inventory/branches/:branchId/members`, { preHandler: [...branchActivePreHandlers, fastify.requireWorkspaceRole(['owner', 'admin'])] }, upsertBranchMemberHandler);
+    fastify.patch(`${prefix}/inventory/branches/:branchId/members/:userId`, { preHandler: [...branchActivePreHandlers, fastify.requireWorkspaceRole(['owner', 'admin'])] }, upsertBranchMemberHandler);
+    fastify.delete(`${prefix}/inventory/branches/:branchId/members/:userId`, { preHandler: [...branchActivePreHandlers, fastify.requireWorkspaceRole(['owner', 'admin'])] }, removeBranchMemberHandler);
 
     // 13. Demo Context
     fastify.post(`${prefix}/inventory/demo-context`, { preHandler: basePreHandlers }, demoContextHandler);
@@ -834,19 +792,16 @@ export const branchSettingsRoutes: FastifyPluginAsync = async (fastify) => {
     fastify.get(`${prefix}/inventory/context`, { preHandler: basePreHandlers }, demoContextHandler);
   }
 
-  // Top-level direct demo-context & context routes
-  fastify.post('/inventory/demo-context', { preHandler: [fastify.resolveWorkspace] }, demoContextHandler);
-  fastify.get('/inventory/demo-context', { preHandler: [fastify.resolveWorkspace] }, demoContextHandler);
-  fastify.get('/inventory/context', { preHandler: [fastify.resolveWorkspace] }, demoContextHandler);
-
-  // Top-level dashboard opened audit logger
-  fastify.post('/inventory/log-dashboard-opened', async (request: any, reply: any) => {
+  // Dashboard activity is scoped to the same tenant guard chain as inventory context.
+  const logDashboardOpenedHandler = async (request: any, reply: any) => {
     const tenantId = getTenantId(request);
     const branchId = request.body?.branchId || request.query?.branchId;
+    const userId = request.user?.id || request.body?.actorUserId || request.body?.userId;
+
     try {
       if (tenantId) {
         await dataService.logAudit({
-          actorUserId: request.user?.id || 'system',
+          actorUserId: userId || 'system',
           workspaceId: tenantId,
           productKey: 'inventory',
           eventType: 'inventory.dashboard_opened',
@@ -860,11 +815,29 @@ export const branchSettingsRoutes: FastifyPluginAsync = async (fastify) => {
             branchId,
           },
         });
+
+        if (userId) {
+          await dataService.recordDashboardVisit({
+            userId,
+            organizationId: request.tenantContext?.organizationId || tenantId,
+            workspaceId: tenantId,
+            branchId,
+            productKey: 'inventory',
+          });
+        }
       }
       return reply.send({ success: true });
     } catch (err: any) {
       request.log.warn({ err, tenantId }, 'Failed to log dashboard opened');
       return reply.send({ success: false });
     }
+  };
+  for (const prefix of prefixes) {
+    fastify.post(`${prefix}/inventory/log-dashboard-opened`, { preHandler: basePreHandlers }, logDashboardOpenedHandler);
+  }
+
+  // Top-level dashboard welcome acknowledgment (deprecated no-op)
+  fastify.post('/inventory/acknowledge-welcome', async (_request: any, reply: any) => {
+    return reply.send({ success: true });
   });
 };

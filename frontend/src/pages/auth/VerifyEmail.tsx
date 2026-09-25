@@ -10,6 +10,7 @@ import { ChangePendingEmailForm, type ChangePendingEmailResponse } from '@/compo
 import { AuthLayout } from './AuthLayout';
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
+import { AccessibleOtpInput } from '@/components/common/AccessibleOtpInput';
 import {
   Mail,
   CheckCircle2,
@@ -21,12 +22,18 @@ import {
   ChevronDown,
   ChevronUp,
   ShieldCheck,
+  Eye,
+  EyeOff,
+  AlertTriangle,
+  Lock,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
 export interface VerifyEmailProps {
   initialChangeOpen?: boolean;
 }
+
+export type VerifyEmailMode = 'TOKEN_AUTO_VERIFY' | 'CODE_ENTRY' | 'CHANGE_EMAIL' | 'SUCCESS' | 'ERROR';
 
 export const VerifyEmail: React.FC<VerifyEmailProps> = ({ initialChangeOpen = false }) => {
   const navigate = useNavigate();
@@ -42,39 +49,44 @@ export const VerifyEmail: React.FC<VerifyEmailProps> = ({ initialChangeOpen = fa
   const initialEmail = emailFromQuery || location.state?.email || user?.email || pending?.email || '';
 
   const [currentRegisteredEmail, setCurrentRegisteredEmail] = useState(initialEmail);
-  const [maskedEmail, setMaskedEmail] = useState(() => maskEmail(initialEmail));
+  const [maskedEmail, setMaskedEmail] = useState(() => (initialEmail ? maskEmail(initialEmail) : ''));
 
-  const [, setVerificationStatus] = useState<
-    'pending' | 'sending' | 'sent' | 'verified' | 'expired' | 'failed'
-  >('pending');
-  const [changeEmailOpen, setChangeEmailOpen] = useState(
-    Boolean(initialChangeOpen || location.pathname.endsWith('/change') || searchParams.get('action') === 'change')
-  );
+  // Clear state machine mode
+  const [mode, setMode] = useState<VerifyEmailMode>(() => {
+    if (token) return 'TOKEN_AUTO_VERIFY';
+    if (initialChangeOpen || location.pathname.endsWith('/change') || searchParams.get('action') === 'change') {
+      return 'CHANGE_EMAIL';
+    }
+    return 'CODE_ENTRY';
+  });
 
   const setAuthData = useAuthStore((state) => state.setAuthData);
 
-  const [verificationState, setVerificationState] = useState<'IDLE' | 'LOADING' | 'SUCCESS' | 'ERROR'>('IDLE');
   const [errorMessage, setErrorMessage] = useState('');
+  const [attemptsRemaining, setAttemptsRemaining] = useState<number | null>(null);
+  const [isLocked, setIsLocked] = useState(false);
   const [isResending, setIsResending] = useState(false);
   const [isVerifyingCode, setIsVerifyingCode] = useState(false);
   const [cooldown, setCooldown] = useState(0);
   const [showHelp, setShowHelp] = useState(false);
+  const [showDigits, setShowDigits] = useState(true);
   const verifyingRef = useRef(false);
 
   // 6-digit code inputs
   const [codeDigits, setCodeDigits] = useState<string[]>(['', '', '', '', '', '']);
   const digitInputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
-  // Keep masked email in sync if initialEmail changes
+  // Keep masked email in sync if initialEmail or currentRegisteredEmail changes
   useEffect(() => {
-    if (initialEmail && !maskedEmail) {
-      setMaskedEmail(maskEmail(initialEmail));
-      setCurrentRegisteredEmail(initialEmail);
+    const effective = currentRegisteredEmail || initialEmail;
+    if (effective) {
+      setMaskedEmail(maskEmail(effective));
     }
-  }, [initialEmail, maskedEmail]);
+  }, [initialEmail, currentRegisteredEmail]);
 
+  // Redirect if user is already verified
   useEffect(() => {
-    if (verificationState === 'LOADING' || verificationState === 'SUCCESS') {
+    if (mode === 'TOKEN_AUTO_VERIFY' || mode === 'SUCCESS') {
       return;
     }
 
@@ -90,7 +102,7 @@ export const VerifyEmail: React.FC<VerifyEmailProps> = ({ initialChangeOpen = fa
       }
       navigate('/onboard/personal', { replace: true });
     }
-  }, [user?.emailVerified, searchParams, navigate, verificationState]);
+  }, [user?.emailVerified, searchParams, navigate, mode]);
 
   // Cooldown countdown effect
   useEffect(() => {
@@ -99,32 +111,28 @@ export const VerifyEmail: React.FC<VerifyEmailProps> = ({ initialChangeOpen = fa
     return () => clearInterval(timer);
   }, [cooldown]);
 
-  // Auto-focus first digit input on mount if not auto-verifying via URL token and form not open
+  // Auto-focus first digit input on mount if in CODE_ENTRY mode
   useEffect(() => {
-    if (!token && !changeEmailOpen && digitInputRefs.current[0]) {
+    if (mode === 'CODE_ENTRY' && digitInputRefs.current[0]) {
       digitInputRefs.current[0]?.focus();
     }
-  }, [token, changeEmailOpen]);
+  }, [mode]);
 
   // Auto-verify if token is provided in URL
   useEffect(() => {
-    if (token && verificationState === 'IDLE' && !verifyingRef.current) {
+    if (token && mode === 'TOKEN_AUTO_VERIFY' && !verifyingRef.current) {
       verifyingRef.current = true;
       executeVerification({ token });
     }
-  }, [token]);
+  }, [token, mode]);
 
   const executeVerification = async (payload: { token?: string; code?: string; email?: string }) => {
-    setVerificationState('LOADING');
-    setVerificationStatus('sending');
-
     try {
       const response = await api.post<AuthResponse>('/auth/verify-email', payload);
 
       clearPendingSignup();
       setAuthData(response);
-      setVerificationState('SUCCESS');
-      setVerificationStatus('verified');
+      setMode('SUCCESS');
       toast.success('Email verified successfully!');
 
       const returnTo = searchParams.get('redirect') || searchParams.get('return_to') || searchParams.get('returnTo');
@@ -144,9 +152,20 @@ export const VerifyEmail: React.FC<VerifyEmailProps> = ({ initialChangeOpen = fa
         navigate('/onboard/personal', { replace: true });
       }, 600);
     } catch (error: any) {
-      setVerificationState('ERROR');
-      setVerificationStatus('failed');
-      setErrorMessage(error.message || 'Failed to verify email. The code or token may be expired.');
+      const errCode = error?.code || error?.response?.data?.code || error?.data?.code;
+      const remaining = error?.attemptsRemaining ?? error?.details?.attemptsRemaining ?? error?.data?.error?.attemptsRemaining ?? error?.response?.data?.error?.attemptsRemaining;
+      
+      if (errCode === 'CODE_LOCKED' || error?.status === 429 || (error?.message && error.message.toLowerCase().includes('locked'))) {
+        setIsLocked(true);
+        setAttemptsRemaining(0);
+        setErrorMessage('This verification code has been locked due to too many failed attempts. Please request a new code.');
+      } else {
+        if (typeof remaining === 'number') {
+          setAttemptsRemaining(remaining);
+        }
+        setErrorMessage(error.message || 'Failed to verify email. The code or token may be expired.');
+      }
+      setMode('ERROR');
     }
   };
 
@@ -188,8 +207,8 @@ export const VerifyEmail: React.FC<VerifyEmailProps> = ({ initialChangeOpen = fa
     digitInputRefs.current[focusIndex]?.focus();
   };
 
-  const handleVerifyCode = async () => {
-    const fullCode = codeDigits.join('');
+  const handleVerifyCode = async (overrideCode?: string) => {
+    const fullCode = overrideCode || codeDigits.join('');
     if (fullCode.length !== 6) {
       toast.error('Please enter the complete 6-digit code.');
       return;
@@ -202,8 +221,8 @@ export const VerifyEmail: React.FC<VerifyEmailProps> = ({ initialChangeOpen = fa
   const handleResend = async () => {
     const toSend = currentRegisteredEmail || user?.email;
     if (!toSend || !toSend.includes('@')) {
-      toast.error('No registered email address found. Please change your email address.');
-      setChangeEmailOpen(true);
+      toast.error('No registered email address found. Please enter your email address.');
+      setMode('CHANGE_EMAIL');
       return;
     }
 
@@ -212,11 +231,14 @@ export const VerifyEmail: React.FC<VerifyEmailProps> = ({ initialChangeOpen = fa
       await api.post('/auth/resend-verification', { email: toSend.trim() });
       toast.success('A fresh verification code and link has been sent to your inbox!');
       setCooldown(60);
-      setVerificationStatus('sent');
       setCodeDigits(['', '', '', '', '', '']);
-      if (digitInputRefs.current[0]) {
+      setIsLocked(false);
+      setAttemptsRemaining(null);
+      setErrorMessage('');
+      setMode('CODE_ENTRY');
+      setTimeout(() => {
         digitInputRefs.current[0]?.focus();
-      }
+      }, 50);
     } catch (error: any) {
       toast.error(error.message || 'Failed to resend verification email.');
     } finally {
@@ -226,35 +248,40 @@ export const VerifyEmail: React.FC<VerifyEmailProps> = ({ initialChangeOpen = fa
 
   const handleEmailChangeSuccess = (newMasked: string, res: ChangePendingEmailResponse) => {
     setMaskedEmail(newMasked);
-    setVerificationStatus('sent');
-    setChangeEmailOpen(false);
-    setCodeDigits(['', '', '', '', '', '']); // Clear old OTP digits
-    setCooldown(60); // Reset resend countdown
-    setVerificationState('IDLE');
+    setCodeDigits(['', '', '', '', '', '']);
+    setCooldown(60);
+    setIsLocked(false);
+    setAttemptsRemaining(null);
+    setErrorMessage('');
+    setMode('CODE_ENTRY');
 
     if (res.email) {
       setCurrentRegisteredEmail(res.email);
       updatePendingSignupEmail(res.email);
     }
 
-    if (digitInputRefs.current[0]) {
+    setTimeout(() => {
       digitInputRefs.current[0]?.focus();
-    }
+    }, 50);
   };
 
-  if (verificationState === 'LOADING') {
+  const displayedEmail = maskedEmail || (currentRegisteredEmail ? maskEmail(currentRegisteredEmail) : 'your work email');
+
+  // 1. AUTO-VERIFYING VIA TOKEN
+  if (mode === 'TOKEN_AUTO_VERIFY') {
     return (
       <AuthLayout>
         <div className="flex flex-col items-center justify-center text-center space-y-4 py-8">
           <Spinner size="lg" className="text-[#714b67]" />
           <h2 className="text-xl font-bold text-white">Verifying your email...</h2>
-          <p className="text-xs text-slate-400">Confirming your verification code.</p>
+          <p className="text-xs text-slate-400">Validating your security link. You'll be redirected shortly.</p>
         </div>
       </AuthLayout>
     );
   }
 
-  if (verificationState === 'SUCCESS') {
+  // 2. SUCCESS STATE
+  if (mode === 'SUCCESS') {
     return (
       <AuthLayout>
         <div className="flex flex-col items-center justify-center text-center space-y-4 py-8 animate-in fade-in duration-200">
@@ -272,7 +299,8 @@ export const VerifyEmail: React.FC<VerifyEmailProps> = ({ initialChangeOpen = fa
     );
   }
 
-  if (verificationState === 'ERROR') {
+  // 3. ERROR STATE
+  if (mode === 'ERROR') {
     return (
       <AuthLayout>
         <div className="flex flex-col items-center justify-center text-center space-y-4 py-6 animate-in fade-in duration-200">
@@ -282,40 +310,52 @@ export const VerifyEmail: React.FC<VerifyEmailProps> = ({ initialChangeOpen = fa
           <h2 className="text-2xl font-bold text-white">Verification Failed</h2>
           <p className="text-xs text-slate-400 max-w-xs mx-auto">{errorMessage}</p>
 
-          {/* Change Email Drawer/Form or Code Input */}
-          {changeEmailOpen ? (
-            <ChangePendingEmailForm
-              currentMaskedEmail={maskedEmail || maskEmail(currentRegisteredEmail)}
-              isOpen={changeEmailOpen}
-              onClose={() => setChangeEmailOpen(false)}
-              onSuccess={handleEmailChangeSuccess}
-              onSessionExpired={() => navigate('/login')}
-            />
+          {isLocked ? (
+            <div className="w-full mt-2 p-4 rounded-sm bg-rose-950/40 border border-rose-500/30 text-left space-y-3">
+              <div className="flex items-center gap-2 text-rose-300 text-xs font-semibold">
+                <Lock className="w-4 h-4 text-rose-400" />
+                <span>Verification Code Locked</span>
+              </div>
+              <p className="text-xs text-rose-200/80">
+                For security reasons, this code has been permanently invalidated after 5 consecutive failed attempts.
+              </p>
+              <Button
+                className="w-full h-10 bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-semibold rounded-xs cursor-pointer"
+                onClick={handleResend}
+                disabled={isResending}
+              >
+                {isResending ? <Spinner size="sm" className="mr-2" /> : <RefreshCw className="w-3.5 h-3.5 mr-2" />}
+                Send New Verification Code
+              </Button>
+            </div>
           ) : (
             <div className="w-full mt-2 p-4 rounded-sm bg-[#140e12] border border-white/5 text-left space-y-3">
-              <p className="text-xs text-slate-300 font-medium">Try entering the 6-digit code again:</p>
-              <div className="flex items-center justify-between gap-1.5" onPaste={handleDigitPaste}>
-                {codeDigits.map((digit, idx) => (
-                  <input
-                    key={idx}
-                    ref={(el) => {
-                      digitInputRefs.current[idx] = el;
-                    }}
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={1}
-                    value={digit}
-                    onChange={(e) => handleDigitChange(idx, e.target.value)}
-                    onKeyDown={(e) => handleDigitKeyDown(idx, e)}
-                    className="w-10 h-11 text-center text-lg font-bold bg-[#0a0609] border border-white/10 rounded-xs text-white focus:outline-none focus:border-[#c79dbd] focus:ring-1 focus:ring-[#c79dbd]"
-                  />
-                ))}
+              {attemptsRemaining !== null && attemptsRemaining > 0 && (
+                <div className="p-2.5 rounded-xs bg-amber-950/40 border border-amber-500/30 flex items-center gap-2 text-xs text-amber-300">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>
+                    <strong>{attemptsRemaining} attempt{attemptsRemaining === 1 ? '' : 's'} remaining</strong> before this code is locked.
+                  </span>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <p className="text-xs text-slate-200 font-medium">Re-enter 6-digit code:</p>
+                <AccessibleOtpInput
+                  digits={codeDigits}
+                  onChange={setCodeDigits}
+                  onComplete={(code) => handleVerifyCode(code)}
+                  disabled={isVerifyingCode}
+                  groupAriaLabel="Re-enter 6-digit verification code"
+                  ariaDescribedBy={attemptsRemaining !== null ? 'reenter-attempts' : undefined}
+                />
               </div>
 
               <Button
-                className="w-full h-10 bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-semibold rounded-xs cursor-pointer"
-                onClick={handleVerifyCode}
+                className="w-full h-11 bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-semibold rounded-xs cursor-pointer disabled:opacity-50"
+                onClick={() => handleVerifyCode()}
                 disabled={isVerifyingCode || codeDigits.join('').length !== 6}
+                aria-busy={isVerifyingCode}
               >
                 {isVerifyingCode ? <Spinner size="sm" className="mr-2" /> : null}
                 Verify Code
@@ -334,29 +374,75 @@ export const VerifyEmail: React.FC<VerifyEmailProps> = ({ initialChangeOpen = fa
 
                 <button
                   type="button"
-                  onClick={() => setChangeEmailOpen(true)}
+                  onClick={() => setMode('CHANGE_EMAIL')}
                   className="hover:text-white flex items-center gap-1 transition-colors cursor-pointer text-[#c79dbd]"
                 >
                   <Edit3 className="w-3 h-3" />
-                  <span>Change email address</span>
+                  <span>Update email address</span>
                 </button>
               </div>
             </div>
           )}
 
-          <div className="w-full pt-2">
-            <Link to="/login" className="text-xs text-slate-400 hover:text-white transition-colors">
+          <div className="w-full pt-2 flex items-center justify-between text-xs text-slate-400">
+            <Link to="/login" className="hover:text-white transition-colors">
               &larr; Back to sign in
             </Link>
+            <button
+              type="button"
+              onClick={() => {
+                setErrorMessage('');
+                setMode('CODE_ENTRY');
+              }}
+              className="hover:text-white transition-colors text-slate-400"
+            >
+              Back to code entry
+            </button>
           </div>
         </div>
       </AuthLayout>
     );
   }
 
-  const displayedEmail = maskedEmail || maskEmail(currentRegisteredEmail) || 'your work email';
+  // 4. INLINE CHANGE EMAIL MODE
+  if (mode === 'CHANGE_EMAIL') {
+    return (
+      <AuthLayout>
+        <div className="flex flex-col items-center justify-center text-center space-y-4 py-2 animate-in fade-in duration-200">
+          <div className="w-14 h-14 rounded-xs bg-[#714b67]/20 border border-[#714b67]/30 flex items-center justify-center text-[#c79dbd] mb-0.5">
+            <Edit3 className="w-7 h-7" />
+          </div>
 
-  // Standard verification screen
+          <div className="space-y-1">
+            <h2 className="text-2xl font-bold tracking-tight text-white">Update Email Address</h2>
+            <p className="text-xs text-slate-400 max-w-sm mx-auto">
+              Did you mistype your email during signup? Enter your correct email below and we'll send a fresh code.
+            </p>
+          </div>
+
+          <ChangePendingEmailForm
+            currentMaskedEmail={displayedEmail}
+            isOpen={true}
+            onClose={() => setMode('CODE_ENTRY')}
+            onSuccess={handleEmailChangeSuccess}
+            onSessionExpired={() => navigate('/login')}
+          />
+
+          <div className="w-full pt-2 text-center">
+            <button
+              type="button"
+              onClick={() => setMode('CODE_ENTRY')}
+              className="text-xs text-slate-400 hover:text-white transition-colors"
+            >
+              &larr; Back to code entry
+            </button>
+          </div>
+        </div>
+      </AuthLayout>
+    );
+  }
+
+  // 5. STANDARD CODE_ENTRY MODE
   return (
     <AuthLayout>
       <div className="flex flex-col items-center justify-center text-center space-y-5 py-2 animate-in fade-in duration-200">
@@ -364,133 +450,131 @@ export const VerifyEmail: React.FC<VerifyEmailProps> = ({ initialChangeOpen = fa
           <Mail className="w-7 h-7" />
         </div>
 
-        <div className="space-y-1">
+        <div className="space-y-1.5">
           <h2 className="text-2xl font-bold tracking-tight text-white">Verify your email address</h2>
           <p className="text-xs text-slate-400 max-w-sm mx-auto">
-            We sent a 6-digit verification code to <br />
-            <span className="font-semibold text-slate-200">{displayedEmail}</span>
+            We sent a 6-digit verification code to
           </p>
+          <div className="inline-flex items-center justify-center gap-2 flex-wrap">
+            <span className="font-semibold text-slate-200 text-xs bg-white/5 px-2.5 py-1 rounded-xs border border-white/10">
+              {displayedEmail}
+            </span>
+            <button
+              type="button"
+              onClick={() => setMode('CHANGE_EMAIL')}
+              className="text-xs text-[#c79dbd] hover:text-white underline underline-offset-2 transition-colors cursor-pointer inline-flex items-center gap-1"
+            >
+              <Edit3 className="w-3 h-3" />
+              <span>Wrong email? Update address</span>
+            </button>
+          </div>
         </div>
 
-        {/* Change Email Form or 6-Digit Code Input Section */}
-        {changeEmailOpen ? (
-          <ChangePendingEmailForm
-            currentMaskedEmail={displayedEmail}
-            isOpen={changeEmailOpen}
-            onClose={() => setChangeEmailOpen(false)}
-            onSuccess={handleEmailChangeSuccess}
-            onSessionExpired={() => navigate('/login')}
+        {/* 6-Digit Code Input Section */}
+        <div className="w-full space-y-3 pt-1">
+          <AccessibleOtpInput
+            digits={codeDigits}
+            onChange={setCodeDigits}
+            onComplete={(code) => handleVerifyCode(code)}
+            disabled={isVerifyingCode}
+            groupAriaLabel="6-digit verification code"
+            ariaDescribedBy={attemptsRemaining !== null ? 'code-entry-attempts' : undefined}
           />
-        ) : (
-          <>
-            {/* 6-Digit Code Input Section */}
-            <div className="w-full space-y-3 pt-1">
-              <div className="flex items-center justify-center gap-2" onPaste={handleDigitPaste}>
-                {codeDigits.map((digit, idx) => (
-                  <input
-                    key={idx}
-                    ref={(el) => {
-                      digitInputRefs.current[idx] = el;
-                    }}
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={1}
-                    value={digit}
-                    onChange={(e) => handleDigitChange(idx, e.target.value)}
-                    onKeyDown={(e) => handleDigitKeyDown(idx, e)}
-                    className="w-11 h-12 text-center text-xl font-bold bg-[#140e12] border border-white/10 rounded-xs text-white focus:outline-none focus:border-[#c79dbd] focus:ring-1 focus:ring-[#c79dbd] transition-all"
-                  />
-                ))}
+
+          {attemptsRemaining !== null && attemptsRemaining > 0 && (
+            <p id="code-entry-attempts" role="alert" className="text-xs text-amber-400 font-medium">
+              {attemptsRemaining} attempt{attemptsRemaining === 1 ? '' : 's'} remaining before code is locked.
+            </p>
+          )}
+
+          <Button
+            onClick={() => handleVerifyCode()}
+            disabled={isVerifyingCode || codeDigits.join('').length !== 6}
+            aria-busy={isVerifyingCode}
+            className="w-full h-11 bg-[#714b67] hover:bg-[#86597a] text-white rounded-xs text-xs font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isVerifyingCode ? <Spinner size="sm" className="mr-2" /> : <ShieldCheck className="w-4 h-4 mr-1.5" aria-hidden="true" />}
+            Verify Code
+          </Button>
+        </div>
+
+        {/* Quick Email Client Deep-Links */}
+        <div className="w-full grid grid-cols-2 gap-2 pt-1">
+          <a
+            href="https://mail.google.com"
+            target="_blank"
+            rel="noreferrer"
+            className="h-9 rounded-xs bg-[#160f14] hover:bg-[#22151f] border border-white/10 text-white text-xs font-medium flex items-center justify-center gap-1.5 transition-colors"
+          >
+            <span>Open Gmail</span>
+            <ExternalLink className="w-3 h-3 text-slate-400" />
+          </a>
+
+          <a
+            href="https://outlook.live.com"
+            target="_blank"
+            rel="noreferrer"
+            className="h-9 rounded-xs bg-[#160f14] hover:bg-[#22151f] border border-white/10 text-white text-xs font-medium flex items-center justify-center gap-1.5 transition-colors"
+          >
+            <span>Open Outlook</span>
+            <ExternalLink className="w-3 h-3 text-slate-400" />
+          </a>
+        </div>
+
+        {/* Actions: Resend Code & Update Email Address */}
+        <div className="w-full space-y-3">
+          <div className="flex items-center justify-between text-xs text-slate-400 px-1">
+            <button
+              type="button"
+              onClick={handleResend}
+              disabled={isResending || cooldown > 0}
+              className="hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <RefreshCw className={`w-3 h-3 ${isResending ? 'animate-spin' : ''}`} />
+              <span>{cooldown > 0 ? `Resend code in ${cooldown}s` : 'Resend code'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setMode('CHANGE_EMAIL')}
+              className="hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer text-[#c79dbd]"
+            >
+              <Edit3 className="w-3.5 h-3.5" />
+              <span>Update email address</span>
+            </button>
+          </div>
+
+          {/* Didn't receive code? Expandable Help Section */}
+          <div className="w-full pt-1">
+            <button
+              type="button"
+              onClick={() => setShowHelp((prev) => !prev)}
+              aria-expanded={showHelp}
+              className="w-full py-2.5 px-3 rounded-xs bg-[#140e12]/60 hover:bg-[#140e12] border border-white/5 flex items-center justify-between text-xs text-slate-300 hover:text-white transition-colors cursor-pointer"
+            >
+              <span className="flex items-center gap-1.5">
+                <HelpCircle className="w-3.5 h-3.5 text-[#c79dbd]" aria-hidden="true" />
+                Didn't receive the verification code?
+              </span>
+              {showHelp ? <ChevronUp className="w-3.5 h-3.5" aria-hidden="true" /> : <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" />}
+            </button>
+
+            {showHelp && (
+              <div className="mt-2 p-3 rounded-xs bg-[#100b0f] border border-white/5 text-left text-xs text-slate-300 space-y-1.5 animate-in fade-in duration-150">
+                <p>• <strong>Check your Spam or Junk folder</strong> — verification emails sometimes get filtered.</p>
+                <p>• <strong>Wait a minute or two</strong> — email deliveries can experience brief network delays.</p>
+                <p>• <strong>Double-check your email</strong> — if you entered the wrong address, use the <strong>Wrong email? Update address</strong> link above.</p>
+                <p>• <strong>Check corporate firewalls</strong> — some corporate filters hold external automated messages.</p>
               </div>
+            )}
+          </div>
 
-              <Button
-                onClick={handleVerifyCode}
-                disabled={isVerifyingCode || codeDigits.join('').length !== 6}
-                className="w-full h-11 bg-[#714b67] hover:bg-[#86597a] text-white rounded-xs text-xs font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isVerifyingCode ? <Spinner size="sm" className="mr-2" /> : <ShieldCheck className="w-4 h-4 mr-1.5" />}
-                Verify Code
-              </Button>
-            </div>
-
-            {/* Quick Email Client Deep-Links */}
-            <div className="w-full grid grid-cols-2 gap-2 pt-1">
-              <a
-                href="https://mail.google.com"
-                target="_blank"
-                rel="noreferrer"
-                className="h-9 rounded-xs bg-[#160f14] hover:bg-[#22151f] border border-white/10 text-white text-xs font-medium flex items-center justify-center gap-1.5 transition-colors"
-              >
-                <span>Open Gmail</span>
-                <ExternalLink className="w-3 h-3 text-slate-400" />
-              </a>
-
-              <a
-                href="https://outlook.live.com"
-                target="_blank"
-                rel="noreferrer"
-                className="h-9 rounded-xs bg-[#160f14] hover:bg-[#22151f] border border-white/10 text-white text-xs font-medium flex items-center justify-center gap-1.5 transition-colors"
-              >
-                <span>Open Outlook</span>
-                <ExternalLink className="w-3 h-3 text-slate-400" />
-              </a>
-            </div>
-
-            {/* Actions: Resend Code & Change Email Address */}
-            <div className="w-full space-y-3">
-              <div className="flex items-center justify-between text-xs text-slate-400 px-1">
-                <button
-                  type="button"
-                  onClick={handleResend}
-                  disabled={isResending || cooldown > 0}
-                  className="hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <RefreshCw className={`w-3 h-3 ${isResending ? 'animate-spin' : ''}`} />
-                  <span>{cooldown > 0 ? `Resend code in ${cooldown}s` : 'Resend code'}</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setChangeEmailOpen(true)}
-                  className="hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer text-[#c79dbd]"
-                >
-                  <Edit3 className="w-3.5 h-3.5" />
-                  <span>Change email address</span>
-                </button>
-              </div>
-
-              {/* Didn't receive code? Expandable Help Section */}
-              <div className="w-full pt-1">
-                <button
-                  type="button"
-                  onClick={() => setShowHelp((prev) => !prev)}
-                  className="w-full py-2 px-3 rounded-xs bg-[#140e12]/60 hover:bg-[#140e12] border border-white/5 flex items-center justify-between text-xs text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
-                >
-                  <span className="flex items-center gap-1.5">
-                    <HelpCircle className="w-3.5 h-3.5 text-[#c79dbd]" />
-                    Didn't receive the verification code?
-                  </span>
-                  {showHelp ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                </button>
-
-                {showHelp && (
-                  <div className="mt-2 p-3 rounded-xs bg-[#100b0f] border border-white/5 text-left text-xs text-slate-400 space-y-1.5 animate-in fade-in duration-150">
-                    <p>• <strong>Check your Spam or Junk folder</strong> — verification emails sometimes get filtered.</p>
-                    <p>• <strong>Wait a minute or two</strong> — email deliveries can experience brief network delays.</p>
-                    <p>• <strong>Double-check your email</strong> — if you entered the wrong address, use the <strong>Change email address</strong> button above.</p>
-                    <p>• <strong>Check corporate firewalls</strong> — some corporate filters hold external automated messages.</p>
-                  </div>
-                )}
-              </div>
-
-              <div className="pt-2">
-                <Link to="/login" className="text-xs text-slate-500 hover:text-slate-300 transition-colors">
-                  &larr; Return to sign in
-                </Link>
-              </div>
-            </div>
-          </>
-        )}
+          <div className="pt-2">
+            <Link to="/login" className="text-xs text-slate-400 hover:text-white transition-colors py-1 inline-block focus:outline-hidden focus:underline">
+              &larr; Return to sign in
+            </Link>
+          </div>
+        </div>
       </div>
     </AuthLayout>
   );

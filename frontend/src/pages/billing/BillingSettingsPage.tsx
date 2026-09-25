@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { useAuthStore } from "@/stores/useAuthStore";
+import { usePlanConfig } from "@/hooks/usePlanConfig";
 import { api } from "@/lib/api";
 import {
   CreditCard,
@@ -23,6 +24,7 @@ import {
   AlertCircle,
   ArrowDownCircle,
   XCircle,
+  Pause,
 } from "lucide-react";
 import { UpgradeModal } from "@/components/billing/UpgradeModal";
 import { DowngradeConflictModal } from "@/components/billing/DowngradeConflictModal";
@@ -33,6 +35,54 @@ import type { WorkspaceItem, UserWorkspaceEntry } from "@/stores/useWorkspaceSto
 function normalizeWs(w: WorkspaceItem | UserWorkspaceEntry): WorkspaceItem {
   return "workspace" in w ? w.workspace : w;
 }
+
+const BillingCycleWidget: React.FC<{ subData: any; isTrial?: boolean }> = ({ subData, isTrial }) => {
+  const { getPlanPrice } = usePlanConfig();
+  if (isTrial || !subData) return null;
+
+  const currentPeriodStart = subData?.currentPeriodStart;
+  const currentPeriodEnd = subData?.currentPeriodEnd;
+  const planKey = subData?.planKey || subData?.activePlan || "standard";
+  const billingInterval = (subData?.billingInterval || "monthly") as "monthly" | "annual";
+
+  const startDate = currentPeriodStart
+    ? new Date(currentPeriodStart).toLocaleDateString("en-NG", { day: "numeric", month: "short", year: "numeric" })
+    : "—";
+  const endDate = currentPeriodEnd
+    ? new Date(currentPeriodEnd).toLocaleDateString("en-NG", { day: "numeric", month: "short", year: "numeric" })
+    : "—";
+
+  const daysRemaining = currentPeriodEnd ? Math.max(0, Math.ceil((currentPeriodEnd - Date.now()) / 86400000)) : 0;
+  const nextCharge = getPlanPrice(planKey, billingInterval) || (planKey === "premium" ? (billingInterval === "annual" ? 250000 : 25000) : (billingInterval === "annual" ? 75000 : 7500));
+
+  return (
+    <div className="p-4 rounded-xl bg-[#714b67]/10 border border-[#714b67]/20 space-y-3">
+      <div className="flex items-center justify-between">
+        <h4 className="text-xs font-bold text-[#c79dbd] flex items-center gap-1.5">
+          <Calendar className="w-3.5 h-3.5 text-[#FDB02F]" />
+          <span>Billing Cycle & Next Renewal</span>
+        </h4>
+        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#714b67]/20 text-[#c79dbd] border border-[#714b67]/30 uppercase tracking-wider">
+          {billingInterval}
+        </span>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+        <div className="flex justify-between sm:flex-col sm:justify-start gap-1 p-2.5 rounded-lg bg-black/30 border border-white/5">
+          <span className="text-slate-400 text-[11px]">Period Started</span>
+          <span className="text-white font-medium">{startDate}</span>
+        </div>
+        <div className="flex justify-between sm:flex-col sm:justify-start gap-1 p-2.5 rounded-lg bg-black/30 border border-white/5">
+          <span className="text-slate-400 text-[11px]">Renews On</span>
+          <span className="text-white font-medium">{endDate} ({daysRemaining}d left)</span>
+        </div>
+        <div className="flex justify-between sm:flex-col sm:justify-start gap-1 p-2.5 rounded-lg bg-black/30 border border-white/5">
+          <span className="text-slate-400 text-[11px]">Next Charge</span>
+          <span className="text-[#FDB02F] font-bold">₦{nextCharge.toLocaleString("en-NG")}</span>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export const BillingSettingsPage: React.FC = () => {
   const { orgId: routeOrgId } = useParams<{ orgId?: string }>();
@@ -193,6 +243,9 @@ export const BillingSettingsPage: React.FC = () => {
   const trialEndsAt = subData?.trialEndsAt || subData?.trialEnd;
   const currentPeriodEnd = subData?.currentPeriodEnd;
   const rawStatus = (subData?.status || (isTrial ? "trial" : "active")).toLowerCase();
+  const isPaused = rawStatus === "paused" || Boolean(subData?.isPaused);
+
+  const [isPausing, setIsPausing] = useState(false);
 
   const isDowngradeScheduled = subData?.downgradeStatus === "scheduled" || (Boolean(subData?.pendingPlan || subData?.pendingPlanKey) && !subData?.cancelAtPeriodEnd);
   const isCancellationScheduled = Boolean(subData?.cancelAtPeriodEnd);
@@ -215,6 +268,47 @@ export const BillingSettingsPage: React.FC = () => {
       });
       toast.success("Cancellation reverted! Your subscription will continue renewing automatically.");
       setSubData((prev: any) => ({ ...prev, cancelAtPeriodEnd: false, cancelledAt: undefined, cancelReason: undefined }));
+      await fetchBillingData();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to resume subscription.");
+    } finally {
+      setIsResuming(false);
+    }
+  };
+
+  const handlePauseSubscription = async () => {
+    if (!effectiveOrgId) return;
+    if (!window.confirm("Are you sure you want to pause your subscription? Your access and automated renewals will be paused until you resume.")) {
+      return;
+    }
+    setIsPausing(true);
+    try {
+      await api.post('/billing/subscription/pause', {
+        workspaceId: effectiveOrgId,
+        organizationId: effectiveOrgId,
+        reason: "Paused by customer from billing settings",
+        retainData: true,
+      });
+      toast.success("Subscription paused successfully. All your business records are safely retained.");
+      setSubData((prev: any) => ({ ...prev, status: "paused", isPaused: true, pausedAt: Date.now() }));
+      await fetchBillingData();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to pause subscription.");
+    } finally {
+      setIsPausing(false);
+    }
+  };
+
+  const handleResumePausedSubscription = async () => {
+    if (!effectiveOrgId) return;
+    setIsResuming(true);
+    try {
+      await api.post('/billing/subscription/resume', {
+        workspaceId: effectiveOrgId,
+        organizationId: effectiveOrgId,
+      });
+      toast.success("Subscription resumed! Your plan features and services are fully active.");
+      setSubData((prev: any) => ({ ...prev, status: "active", isPaused: false }));
       await fetchBillingData();
     } catch (err: any) {
       toast.error(err.message || "Failed to resume subscription.");
@@ -282,7 +376,7 @@ export const BillingSettingsPage: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-2 self-start sm:self-center">
+        <div className="flex items-center gap-2 self-start sm:self-center flex-wrap">
           {isTrial ? (
             <button
               onClick={() => handleOpenUpgrade("upgrade_from_trial")}
@@ -292,29 +386,10 @@ export const BillingSettingsPage: React.FC = () => {
               <span>Upgrade Subscription</span>
             </button>
           ) : isPremium ? (
-            <div className="flex items-center gap-2">
-              {isDowngradeScheduled ? (
+            <div className="flex items-center gap-2 flex-wrap">
+              {isPaused ? (
                 <button
-                  onClick={handleCancelDowngrade}
-                  disabled={isCancellingDowngrade}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold shadow-lg shadow-purple-950/40 transition cursor-pointer shrink-0 disabled:opacity-50"
-                >
-                  <XCircle className="w-3.5 h-3.5" />
-                  <span>{isCancellingDowngrade ? "Cancelling..." : "Cancel Downgrade"}</span>
-                </button>
-              ) : (
-                <button
-                  onClick={() => setDowngradeModalOpen(true)}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-white/10 hover:border-purple-500/30 bg-black/40 hover:bg-purple-950/20 text-slate-300 hover:text-purple-300 text-xs font-medium transition cursor-pointer shrink-0"
-                >
-                  <ArrowDownCircle className="w-3.5 h-3.5 text-[#c79dbd]" />
-                  <span>Downgrade to Standard</span>
-                </button>
-              )}
-
-              {isCancellationScheduled ? (
-                <button
-                  onClick={handleResumeSubscription}
+                  onClick={handleResumePausedSubscription}
                   disabled={isResuming}
                   className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-lg shadow-emerald-950/40 transition cursor-pointer shrink-0 disabled:opacity-50"
                 >
@@ -322,29 +397,63 @@ export const BillingSettingsPage: React.FC = () => {
                   <span>{isResuming ? "Resuming..." : "Resume Subscription"}</span>
                 </button>
               ) : (
-                <button
-                  onClick={() => setCancellationModalOpen(true)}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-white/10 hover:border-rose-500/30 bg-black/40 hover:bg-rose-950/20 text-slate-300 hover:text-rose-300 text-xs font-medium transition cursor-pointer shrink-0"
-                >
-                  <Ban className="w-3.5 h-3.5 text-rose-400" />
-                  <span>Cancel Subscription</span>
-                </button>
+                <>
+                  {isDowngradeScheduled ? (
+                    <button
+                      onClick={handleCancelDowngrade}
+                      disabled={isCancellingDowngrade}
+                      className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold shadow-lg shadow-purple-950/40 transition cursor-pointer shrink-0 disabled:opacity-50"
+                    >
+                      <XCircle className="w-3.5 h-3.5" />
+                      <span>{isCancellingDowngrade ? "Cancelling..." : "Cancel Downgrade"}</span>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setDowngradeModalOpen(true)}
+                      className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-white/10 hover:border-purple-500/30 bg-black/40 hover:bg-purple-950/20 text-slate-300 hover:text-purple-300 text-xs font-medium transition cursor-pointer shrink-0"
+                    >
+                      <ArrowDownCircle className="w-3.5 h-3.5 text-[#c79dbd]" />
+                      <span>Downgrade to Standard</span>
+                    </button>
+                  )}
+
+                  <button
+                    onClick={handlePauseSubscription}
+                    disabled={isPausing}
+                    className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl border border-amber-500/20 hover:border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-xs font-medium transition cursor-pointer shrink-0 disabled:opacity-50"
+                    title="Pause subscription and automatic renewal"
+                  >
+                    <Pause className="w-3.5 h-3.5 text-amber-400" />
+                    <span>{isPausing ? "Pausing..." : "Pause"}</span>
+                  </button>
+
+                  {isCancellationScheduled ? (
+                    <button
+                      onClick={handleResumeSubscription}
+                      disabled={isResuming}
+                      className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-lg shadow-emerald-950/40 transition cursor-pointer shrink-0 disabled:opacity-50"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>{isResuming ? "Resuming..." : "Resume Subscription"}</span>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setCancellationModalOpen(true)}
+                      className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-white/10 hover:border-rose-500/30 bg-black/40 hover:bg-rose-950/20 text-slate-300 hover:text-rose-300 text-xs font-medium transition cursor-pointer shrink-0"
+                    >
+                      <Ban className="w-3.5 h-3.5 text-rose-400" />
+                      <span>Cancel</span>
+                    </button>
+                  )}
+                </>
               )}
             </div>
           ) : (
             /* Standard Plan */
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => handleOpenUpgrade("upgrade_to_premium")}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold shadow-lg shadow-purple-950/40 transition cursor-pointer shrink-0 active:scale-95"
-              >
-                <Sparkles className="w-4 h-4 text-amber-300" />
-                <span>Upgrade to Premium</span>
-              </button>
-
-              {isCancellationScheduled ? (
+            <div className="flex items-center gap-2 flex-wrap">
+              {isPaused ? (
                 <button
-                  onClick={handleResumeSubscription}
+                  onClick={handleResumePausedSubscription}
                   disabled={isResuming}
                   className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-lg shadow-emerald-950/40 transition cursor-pointer shrink-0 disabled:opacity-50"
                 >
@@ -352,18 +461,79 @@ export const BillingSettingsPage: React.FC = () => {
                   <span>{isResuming ? "Resuming..." : "Resume Subscription"}</span>
                 </button>
               ) : (
-                <button
-                  onClick={() => setCancellationModalOpen(true)}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-white/10 hover:border-rose-500/30 bg-black/40 hover:bg-rose-950/20 text-slate-300 hover:text-rose-300 text-xs font-medium transition cursor-pointer shrink-0"
-                >
-                  <Ban className="w-3.5 h-3.5 text-rose-400" />
-                  <span>Cancel Subscription</span>
-                </button>
+                <>
+                  <button
+                    onClick={() => handleOpenUpgrade("upgrade_to_premium")}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold shadow-lg shadow-purple-950/40 transition cursor-pointer shrink-0 active:scale-95"
+                  >
+                    <Sparkles className="w-4 h-4 text-amber-300" />
+                    <span>Upgrade to Premium</span>
+                  </button>
+
+                  <button
+                    onClick={handlePauseSubscription}
+                    disabled={isPausing}
+                    className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl border border-amber-500/20 hover:border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-xs font-medium transition cursor-pointer shrink-0 disabled:opacity-50"
+                    title="Pause subscription and automatic renewal"
+                  >
+                    <Pause className="w-3.5 h-3.5 text-amber-400" />
+                    <span>{isPausing ? "Pausing..." : "Pause"}</span>
+                  </button>
+
+                  {isCancellationScheduled ? (
+                    <button
+                      onClick={handleResumeSubscription}
+                      disabled={isResuming}
+                      className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-lg shadow-emerald-950/40 transition cursor-pointer shrink-0 disabled:opacity-50"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>{isResuming ? "Resuming..." : "Resume Subscription"}</span>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setCancellationModalOpen(true)}
+                      className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-white/10 hover:border-rose-500/30 bg-black/40 hover:bg-rose-950/20 text-slate-300 hover:text-rose-300 text-xs font-medium transition cursor-pointer shrink-0"
+                    >
+                      <Ban className="w-3.5 h-3.5 text-rose-400" />
+                      <span>Cancel</span>
+                    </button>
+                  )}
+                </>
               )}
             </div>
           )}
         </div>
       </div>
+
+      {/* Paused Subscription Banner */}
+      {isPaused && (
+        <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-lg shadow-amber-950/20">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0">
+              <Clock className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-white text-xs">Subscription Currently Paused</span>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold">
+                  PAUSED
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-300 mt-0.5">
+                Your subscription renewal and active services are paused. All your organization records, applications, and settings are safely retained.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={handleResumePausedSubscription}
+            disabled={isResuming}
+            className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shrink-0 cursor-pointer transition disabled:opacity-50 flex items-center gap-1.5"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>{isResuming ? "Resuming..." : "Resume Subscription"}</span>
+          </button>
+        </div>
+      )}
 
       {/* Pending Downgrade Banner */}
       {isDowngradeScheduled && (
@@ -486,6 +656,11 @@ export const BillingSettingsPage: React.FC = () => {
                 <Ban className="w-3 h-3" />
                 <span>DOWNGRADING AT PERIOD END</span>
               </span>
+            ) : isPaused ? (
+              <span className="px-3 py-1 rounded-full text-xs font-bold border bg-amber-500/10 text-amber-400 border-amber-500/20 flex items-center gap-1.5">
+                <Pause className="w-3 h-3" />
+                <span>PAUSED</span>
+              </span>
             ) : (
               <span className={`px-3 py-1 rounded-full text-xs font-bold border ${
                 isTrial
@@ -536,6 +711,9 @@ export const BillingSettingsPage: React.FC = () => {
             </p>
           </div>
         </div>
+
+        {/* Billing Cycle Widget */}
+        <BillingCycleWidget subData={subData} isTrial={isTrial} />
 
         {/* Features Summary */}
         <div className="pt-2 border-t border-white/5">

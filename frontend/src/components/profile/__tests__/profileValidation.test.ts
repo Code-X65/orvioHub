@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { personalProfileSchema } from '../PersonalProfileForm';
 
 describe('Personal Profile Frontend Validation Suite', () => {
-  test('1. Valid payload with required first and last name passes schema validation', () => {
+  test('1. Valid payload with required first name, last name, and phone passes schema validation', () => {
     const validData = {
       firstName: 'Chinedu',
       lastName: 'Okafor',
+      phone: '+2348012345678',
       country: 'NG' as const,
       timezone: 'Africa/Lagos' as const,
     };
@@ -19,6 +20,7 @@ describe('Personal Profile Frontend Validation Suite', () => {
     const data = {
       firstName: '',
       lastName: 'Okafor',
+      phone: '+2348012345678',
       country: 'NG' as const,
       timezone: 'Africa/Lagos' as const,
     };
@@ -34,6 +36,7 @@ describe('Personal Profile Frontend Validation Suite', () => {
     const data = {
       firstName: 'Chinedu',
       lastName: '',
+      phone: '+2348012345678',
       country: 'NG' as const,
       timezone: 'Africa/Lagos' as const,
     };
@@ -45,7 +48,36 @@ describe('Personal Profile Frontend Validation Suite', () => {
     }
   });
 
-  test('4. Display name, job title, department, and phone are optional', () => {
+  test('4. Empty or missing phone fails validation', () => {
+    const data = {
+      firstName: 'Chinedu',
+      lastName: 'Okafor',
+      phone: '',
+      country: 'NG' as const,
+      timezone: 'Africa/Lagos' as const,
+    };
+
+    const parsed = personalProfileSchema.safeParse(data);
+    assert.equal(parsed.success, false);
+    if (!parsed.success) {
+      assert.equal(parsed.error.errors[0].message, 'Phone number is required');
+    }
+  });
+
+  test('5. Invalid Nigerian phone fails validation', () => {
+    const data = {
+      firstName: 'Chinedu',
+      lastName: 'Okafor',
+      phone: '12345',
+      country: 'NG' as const,
+      timezone: 'Africa/Lagos' as const,
+    };
+
+    const parsed = personalProfileSchema.safeParse(data);
+    assert.equal(parsed.success, false);
+  });
+
+  test('6. Display name, job title, and department are optional', () => {
     const withOptional = {
       firstName: 'Chinedu',
       lastName: 'Okafor',
@@ -67,10 +99,11 @@ describe('Personal Profile Frontend Validation Suite', () => {
     }
   });
 
-  test('5. Non-Nigerian country is rejected by client-side schema', () => {
+  test('7. Non-Nigerian country is rejected by client-side schema', () => {
     const nonNigeria = {
       firstName: 'Chinedu',
       lastName: 'Okafor',
+      phone: '+2348012345678',
       country: 'US',
       timezone: 'Africa/Lagos',
     };
@@ -79,10 +112,11 @@ describe('Personal Profile Frontend Validation Suite', () => {
     assert.equal(parsed.success, false);
   });
 
-  test('6. Non-Lagos timezone is rejected by client-side schema', () => {
+  test('8. Non-Lagos timezone is rejected by client-side schema', () => {
     const nonLagos = {
       firstName: 'Chinedu',
       lastName: 'Okafor',
+      phone: '+2348012345678',
       country: 'NG',
       timezone: 'America/New_York',
     };
@@ -91,10 +125,11 @@ describe('Personal Profile Frontend Validation Suite', () => {
     assert.equal(parsed.success, false);
   });
 
-  test('7. Nickname and Bio/About are deferred and stripped from personalProfileSchema', () => {
+  test('9. Nickname and Bio/About are deferred and stripped from personalProfileSchema', () => {
     const withDeferred = {
       firstName: 'Chinedu',
       lastName: 'Okafor',
+      phone: '+2348012345678',
       preferredName: 'JD',
       nickname: 'JD',
       bio: 'About me text',

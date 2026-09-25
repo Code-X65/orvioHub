@@ -3,6 +3,16 @@ import { Id } from "./_generated/dataModel.js";
 import { v } from "convex/values";
 import { resolveOrganization } from "./applications.js";
 
+function normalizePhone(phone?: string | null): string | undefined {
+  if (!phone) return undefined;
+  const digits = phone.replace(/\D/g, "");
+  if (!digits) return undefined;
+  if (digits.startsWith("234") && digits.length === 13) return `+${digits}`;
+  if (digits.startsWith("0") && digits.length === 11) return `+234${digits.slice(1)}`;
+  if (digits.length === 10) return `+234${digits}`;
+  return phone.startsWith("+") ? phone : `+${digits}`;
+}
+
 function buildFormattedAddress(args: {
   blockNumber?: string;
   street?: string;
@@ -49,7 +59,6 @@ export const createBranch = mutation({
     phone: v.optional(v.string()),
     phoneNormalized: v.optional(v.string()),
     email: v.optional(v.string()),
-    managerId: v.optional(v.id("users")),
     callerUserId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
@@ -264,10 +273,10 @@ export const createBranch = mutation({
       address: computedFormattedAddress,
       formattedAddress: computedFormattedAddress,
       phone: args.phone,
-      phoneNormalized: args.phoneNormalized,
+      phoneNormalized: args.phoneNormalized || normalizePhone(args.phone),
       phoneVerified: false,
+      phoneStatus: args.phone ? "pending" : "unverified",
       email: args.email,
-      managerId: args.managerId,
       status: "active",
       createdAt: now,
       updatedAt: now,
@@ -638,6 +647,9 @@ export const autoCreateMainBranch = mutation({
     const branchName = args.name?.trim() || "Main Branch";
     const fullAddress = args.address || org.address || "";
     const phone = args.phone || org.phone || "";
+    const isOrgPhoneVerified = Boolean(org.phoneVerifiedAt || org.phoneStatus === "verified");
+    const phoneVerified = Boolean(phone && phone === org.phone && isOrgPhoneVerified);
+    const phoneStatus = phoneVerified ? "verified" : (phone ? "pending" : "unverified");
 
     const branchId = await ctx.db.insert("branches", {
       organizationId: resolvedOrgId,
@@ -652,6 +664,10 @@ export const autoCreateMainBranch = mutation({
       address: fullAddress,
       formattedAddress: fullAddress,
       phone,
+      phoneNormalized: normalizePhone(phone),
+      phoneVerified,
+      phoneVerifiedAt: phoneVerified ? (org.phoneVerifiedAt || now) : undefined,
+      phoneStatus,
       status: "active",
       createdAt: now,
       updatedAt: now,
@@ -758,39 +774,7 @@ export const getAccessibleBranches = query({
       return a.name.localeCompare(b.name);
     };
 
-    if (isOwnerOrAdmin) {
-      return activeBranches.sort(sortFn);
-    }
-
-    // Staff member: resolve branch access from product memberships
-    let productMemberships: any[] = [];
-    if (resolvedWsId) {
-      productMemberships = await ctx.db
-        .query("productMemberships")
-        .withIndex("by_workspace_user", (q) =>
-          q.eq("workspaceId", resolvedWsId!).eq("userId", args.userId)
-        )
-        .collect();
-    }
-
-    const targetProductMemberships = args.productKey
-      ? productMemberships.filter((pm) => pm.productKey === args.productKey && pm.status.toLowerCase() === "active")
-      : productMemberships.filter((pm) => pm.status.toLowerCase() === "active");
-
-    const allowedBranchIds = new Set<string>();
-    for (const pm of targetProductMemberships) {
-      if (pm.branchIds && Array.isArray(pm.branchIds)) {
-        for (const bid of pm.branchIds) {
-          allowedBranchIds.add(bid);
-        }
-      }
-    }
-
-    if (allowedBranchIds.size === 0) {
-      return [];
-    }
-
-    return activeBranches.filter((b) => allowedBranchIds.has(b._id)).sort(sortFn);
+    return activeBranches.sort(sortFn);
   },
 });
 
@@ -834,7 +818,6 @@ export const updateBranch = mutation({
     phone: v.optional(v.string()),
     phoneNormalized: v.optional(v.string()),
     email: v.optional(v.string()),
-    managerId: v.optional(v.id("users")),
     status: v.optional(v.string()),
     callerUserId: v.optional(v.id("users")),
   },
@@ -899,13 +882,13 @@ export const updateBranch = mutation({
       if (args.phone !== branch.phone) {
         patch.phoneVerified = false;
         patch.phoneVerifiedAt = undefined;
+        patch.phoneStatus = 'unverified';
         patch.verificationCode = undefined;
         patch.codeExpiresAt = undefined;
       }
     }
 
     if (args.email !== undefined) patch.email = args.email;
-    if (args.managerId !== undefined) patch.managerId = args.managerId;
     if (args.status !== undefined) patch.status = args.status;
 
     // Compute formatted address
@@ -1354,6 +1337,27 @@ export const deactivateBranch = mutation({
   },
 });
 
+export function getDefaultBranchPermissions(role: string | undefined): string[] {
+  switch ((role || "").toLowerCase()) {
+    case "owner":
+    case "admin":
+    case "inventory_owner":
+      return ["*"];
+    case "inventory_manager":
+    case "manager":
+    case "branch_manager":
+      return ["branch.view", "branch.update", "branch.set_primary", "branch.suspend", "branch.restore", "branch.archive"];
+    case "member":
+    case "viewer":
+    case "sales_attendant":
+    case "cashier":
+    case "stock_manager":
+      return ["branch.view"];
+    default:
+      return [];
+  }
+}
+
 async function assertBranchAccess(
   ctx: any,
   branch: any,
@@ -1363,6 +1367,9 @@ async function assertBranchAccess(
 ) {
   if (!branch) {
     throw new Error("BRANCH_NOT_FOUND");
+  }
+  if (!callerUserId) {
+    throw new Error("AUTHENTICATION_REQUIRED");
   }
 
   // Cross-tenant verification
@@ -1386,150 +1393,92 @@ async function assertBranchAccess(
     }
 
     if (!matches && (branchWsStr || branchOrgStr)) {
-      // Allow access if caller is owner or if branch matches active tenant
-      let isOwner = false;
-      if (callerUserId) {
-        if (branch.organizationId) {
-          try {
-            const org = await ctx.db.get(branch.organizationId);
-            if (org && String(org.ownerId) === String(callerUserId)) isOwner = true;
-          } catch {}
-        }
-        if (branch.workspaceId && !isOwner) {
-          try {
-            const ws = await ctx.db.get(branch.workspaceId);
-            if (ws && String(ws.ownerId) === String(callerUserId)) isOwner = true;
-          } catch {}
-        }
-      }
-      if (!isOwner) {
-        throw new Error("BRANCH_NOT_FOUND");
-      }
+      throw new Error("BRANCH_NOT_FOUND");
     }
   }
 
-  // If callerUserId is provided, verify workspace membership and permissions
-  if (callerUserId) {
-    const userDoc = ctx.db.normalizeId("users", callerUserId)
-      ? await ctx.db.get(ctx.db.normalizeId("users", callerUserId)!)
-      : null;
+  const userId = ctx.db.normalizeId("users", callerUserId);
+  const userDoc = userId ? await ctx.db.get(userId) : null;
+  if (!userDoc || userDoc.status === "suspended" || userDoc.status === "deleted") {
+    throw new Error("USER_SUSPENDED_OR_DELETED");
+  }
 
-    if (userDoc && (userDoc.status === "suspended" || userDoc.status === "deleted")) {
-      throw new Error("USER_SUSPENDED_OR_DELETED");
-    }
+  let isMember = false;
+  let isOwnerOrAdmin = false;
+  let membershipRole = "";
 
-    let isMember = false;
-    let isOwnerOrAdmin = false;
-    let permissions: string[] = [];
-
-    // Check direct owner status
-    if (branch.organizationId) {
-      try {
-        const org = await ctx.db.get(branch.organizationId);
-        if (org && String(org.ownerId) === String(callerUserId)) {
-          isMember = true;
-          isOwnerOrAdmin = true;
-        }
-      } catch {}
-    }
-    if (branch.workspaceId && !isOwnerOrAdmin) {
-      try {
-        const ws = await ctx.db.get(branch.workspaceId);
-        if (ws && String(ws.ownerId) === String(callerUserId)) {
-          isMember = true;
-          isOwnerOrAdmin = true;
-        }
-      } catch {}
-    }
-
-    // Check workspace membership
-    if (branch.workspaceId && !isMember) {
-      const wsMembership = await ctx.db
-        .query("workspaceMemberships")
-        .withIndex("by_workspace_and_user", (q: any) =>
-          q.eq("workspaceId", branch.workspaceId).eq("userId", callerUserId as any)
-        )
-        .first();
-
-      if (wsMembership && (wsMembership.status === "active" || wsMembership.status === "ACTIVE")) {
-        isMember = true;
-        const role = (wsMembership.role || "member").toLowerCase();
-        if (role === "owner" || role === "admin") {
-          isOwnerOrAdmin = true;
-        }
-      }
-    }
-
-    // Check organization membership
-    if (branch.organizationId && !isMember) {
-      const orgMembership = await ctx.db
-        .query("organizationMemberships")
-        .withIndex("by_org_and_user", (q: any) =>
-          q.eq("organizationId", branch.organizationId).eq("userId", callerUserId as any)
-        )
-        .first();
-
-      if (orgMembership && (orgMembership.status === "active" || orgMembership.status === "ACTIVE")) {
-        isMember = true;
-        const role = (orgMembership.role || "member").toLowerCase();
-        if (role === "owner" || role === "admin") {
-          isOwnerOrAdmin = true;
-        }
-      }
-    }
-
-    if (!isMember) {
-      // Check branchMemberships
-      const bMembership = await ctx.db
-        .query("branchMemberships")
-        .filter((q: any) => q.eq(q.field("branchId"), String(branch._id)).eq(q.field("userId"), String(callerUserId)))
-        .first();
-      if (bMembership && (bMembership.status === "active" || bMembership.status === "ACTIVE")) {
-        isMember = true;
-        if (bMembership.role === "inventory_owner" || bMembership.role === "inventory_manager") {
-          isOwnerOrAdmin = true;
-        }
-      }
-    }
-
-    if (!isMember) {
-      // Default to allowed for active branches if caller exists
+  if (branch.workspaceId) {
+    const workspace = await ctx.db.get(branch.workspaceId);
+    if (workspace && String(workspace.ownerId) === String(callerUserId)) {
       isMember = true;
+      isOwnerOrAdmin = true;
+      membershipRole = "owner";
     }
 
-    // Check application product membership / permissions if not owner/admin
-    if (!isOwnerOrAdmin && requiredPermission) {
-      if (branch.workspaceId) {
-        const prodMem = await ctx.db
-          .query("productMemberships")
-          .withIndex("by_workspace_user_product", (q: any) =>
-            q.eq("workspaceId", branch.workspaceId).eq("userId", callerUserId as any).eq("productKey", "inventory")
-          )
-          .first();
-
-        if (prodMem) {
-          if (prodMem.status && prodMem.status !== "active") {
-            throw new Error("BRANCH_PERMISSION_REQUIRED");
-          }
-          permissions = prodMem.permissions || [];
-          if (prodMem.branchIds && prodMem.branchIds.length > 0) {
-            if (!prodMem.branchIds.includes(String(branch._id))) {
-              throw new Error("BRANCH_PERMISSION_REQUIRED");
-            }
-          }
-        }
-      }
-
-      const hasPerm =
-        permissions.includes("*") ||
-        permissions.includes(requiredPermission) ||
-        (requiredPermission === "branch.update" && (permissions.includes("workspace.manage_settings") || permissions.includes("inventory.manage_settings"))) ||
-        isOwnerOrAdmin;
-
-      if (!hasPerm && permissions.length > 0) {
-        throw new Error("BRANCH_PERMISSION_REQUIRED");
-      }
+    const workspaceMembership = await ctx.db
+      .query("workspaceMemberships")
+      .withIndex("by_workspace_user", (q: any) =>
+        q.eq("workspaceId", branch.workspaceId).eq("userId", userId)
+      )
+      .first();
+    if (workspaceMembership && String(workspaceMembership.status).toLowerCase() === "active") {
+      isMember = true;
+      membershipRole = String(workspaceMembership.role || workspaceMembership.defaultRole || "member").toLowerCase();
+      isOwnerOrAdmin ||= membershipRole === "owner" || membershipRole === "admin";
     }
+  }
+
+  if (branch.organizationId) {
+    const organization = await ctx.db.get(branch.organizationId);
+    if (organization && String(organization.ownerId) === String(callerUserId)) {
+      isMember = true;
+      isOwnerOrAdmin = true;
+      membershipRole = "owner";
+    }
+
+    const organizationMembership = await ctx.db
+      .query("organizationMemberships")
+      .withIndex("by_org_and_user", (q: any) =>
+        q.eq("organizationId", branch.organizationId).eq("userId", userId)
+      )
+      .first();
+    if (organizationMembership && String(organizationMembership.status).toLowerCase() === "active") {
+      isMember = true;
+      membershipRole ||= String(organizationMembership.role || "member").toLowerCase();
+      const role = String(organizationMembership.role || "member").toLowerCase();
+      isOwnerOrAdmin ||= role === "owner" || role === "admin";
+    }
+  }
+
+  if (!isMember) throw new Error("ORGANIZATION_ACCESS_DENIED");
+  if (isOwnerOrAdmin) return;
+
+  let permissions = getDefaultBranchPermissions(membershipRole);
+  let branchIds: string[] | undefined;
+  if (branch.workspaceId) {
+    const productMembership = await ctx.db
+      .query("productMemberships")
+      .withIndex("by_workspace_product_user", (q: any) =>
+        q.eq("workspaceId", branch.workspaceId).eq("productKey", branch.productKey || "inventory").eq("userId", userId)
+      )
+      .first();
+
+    if (productMembership) {
+      if (String(productMembership.status).toLowerCase() !== "active") {
+        throw new Error("PRODUCT_ACCESS_DENIED");
+      }
+      permissions = productMembership.permissions?.length
+        ? productMembership.permissions
+        : getDefaultBranchPermissions(productMembership.role || membershipRole);
+      branchIds = productMembership.branchIds?.map((id: any) => String(id));
+    }
+  }
+
+  if (branchIds && branchIds.length > 0 && !branchIds.includes(String(branch._id))) {
+    throw new Error("BRANCH_ACCESS_DENIED");
+  }
+  if (!requiredPermission || (!permissions.includes("*") && !permissions.includes(requiredPermission))) {
+    throw new Error("BRANCH_PERMISSION_DENIED");
   }
 }
 
@@ -1576,6 +1525,22 @@ export const getBranchSettings = query({
       sunday: { open: "10:00", close: "16:00", closed: true },
     };
 
+    // If branch-specific settings don't exist yet, check applicationSettings for inheritance
+    let inheritedReceipt: any = null;
+    let inheritedStock: any = null;
+    if (!settings && (branch.workspaceId || branch.organizationId)) {
+      const appSettingsDoc = await ctx.db
+        .query("applicationSettings")
+        .withIndex("by_workspace_product", (q) =>
+          q.eq("workspaceId", (branch.workspaceId || branch.organizationId) as any).eq("productKey", "inventory")
+        )
+        .first();
+      if (appSettingsDoc?.settings) {
+        inheritedReceipt = appSettingsDoc.settings.receiptSettings;
+        inheritedStock = appSettingsDoc.settings.stockRules;
+      }
+    }
+
     return {
       branchId: branch._id,
       workspaceId: branch.workspaceId,
@@ -1590,7 +1555,6 @@ export const getBranchSettings = query({
       // Contact
       phone: branch.phone || "",
       email: branch.email || "",
-      managerId: branch.managerId,
       // Address
       country: branch.country || "Nigeria",
       state: branch.state || "",
@@ -1605,9 +1569,26 @@ export const getBranchSettings = query({
       formattedAddress: branch.formattedAddress || branch.address || "",
       // Operational settings
       openingHours: settings?.openingHours || defaultHours,
-      receiptFooter: settings?.receiptFooter || "",
-      negativeStockAllowed: settings?.negativeStockAllowed ?? false,
-      lowStockThreshold: settings?.lowStockThreshold ?? 10,
+      // POS & Receipts (Per-Location)
+      receiptFooter: settings?.receiptFooter ?? inheritedReceipt?.footerMessage ?? "",
+      paperWidth: settings?.paperWidth ?? inheritedReceipt?.paperWidth ?? "80mm",
+      tin: settings?.tin ?? inheritedReceipt?.tin ?? "",
+      vatRate: settings?.vatRate ?? inheritedReceipt?.vatRate ?? 7.5,
+      enableVat: settings?.enableVat ?? inheritedReceipt?.enableVat ?? false,
+      showCashier: settings?.showCashier ?? inheritedReceipt?.showCashier ?? true,
+      showCustomer: settings?.showCustomer ?? inheritedReceipt?.showCustomer ?? true,
+      showBarcode: settings?.showBarcode ?? inheritedReceipt?.showBarcode ?? true,
+      headerText: settings?.headerText ?? inheritedReceipt?.headerText ?? "Welcome to our store",
+      footerMessage: settings?.footerMessage ?? inheritedReceipt?.footerMessage ?? "Thank you for your patronage! Please keep this receipt.",
+      returnPolicy: settings?.returnPolicy ?? inheritedReceipt?.returnPolicy ?? "Goods in original condition may be returned within 7 days.",
+      receiptPrefix: settings?.receiptPrefix ?? inheritedReceipt?.receiptPrefix ?? "INV-",
+      tagline: settings?.tagline ?? inheritedReceipt?.tagline ?? "Quality goods & exceptional service",
+      // Inventory Rules (Per-Location)
+      negativeStockAllowed: settings?.negativeStockAllowed ?? inheritedStock?.negativeStockAllowed ?? false,
+      lowStockThreshold: settings?.lowStockThreshold ?? inheritedStock?.lowStockThreshold ?? 10,
+      stockAdjustmentApprovalRequired: settings?.stockAdjustmentApprovalRequired ?? inheritedStock?.stockAdjustmentApprovalRequired ?? false,
+      discrepancyApprovalThreshold: settings?.discrepancyApprovalThreshold ?? 0,
+      enforceStockCountApproval: settings?.enforceStockCountApproval ?? false,
       createdAt: branch.createdAt,
       updatedAt: branch.updatedAt,
     };
@@ -1621,9 +1602,26 @@ export const updateBranchSettings = mutation({
   args: {
     branchId: v.union(v.id("branches"), v.string()),
     openingHours: v.optional(v.any()),
+    // POS & Receipts (Per-Location)
     receiptFooter: v.optional(v.string()),
+    paperWidth: v.optional(v.string()),
+    tin: v.optional(v.string()),
+    vatRate: v.optional(v.number()),
+    enableVat: v.optional(v.boolean()),
+    showCashier: v.optional(v.boolean()),
+    showCustomer: v.optional(v.boolean()),
+    showBarcode: v.optional(v.boolean()),
+    headerText: v.optional(v.string()),
+    footerMessage: v.optional(v.string()),
+    returnPolicy: v.optional(v.string()),
+    receiptPrefix: v.optional(v.string()),
+    tagline: v.optional(v.string()),
+    // Inventory Rules (Per-Location)
     negativeStockAllowed: v.optional(v.boolean()),
     lowStockThreshold: v.optional(v.number()),
+    stockAdjustmentApprovalRequired: v.optional(v.boolean()),
+    discrepancyApprovalThreshold: v.optional(v.number()),
+    enforceStockCountApproval: v.optional(v.boolean()),
     callerUserId: v.optional(v.union(v.id("users"), v.string())),
     workspaceId: v.optional(v.union(v.id("workspaces"), v.id("organizations"), v.string())),
   },
@@ -1662,8 +1660,23 @@ export const updateBranchSettings = mutation({
       workspaceId: branch.workspaceId || (branch.organizationId as any),
       openingHours: args.openingHours !== undefined ? args.openingHours : existing?.openingHours,
       receiptFooter: args.receiptFooter !== undefined ? args.receiptFooter : existing?.receiptFooter,
+      paperWidth: args.paperWidth !== undefined ? args.paperWidth : existing?.paperWidth,
+      tin: args.tin !== undefined ? args.tin : existing?.tin,
+      vatRate: args.vatRate !== undefined ? args.vatRate : existing?.vatRate,
+      enableVat: args.enableVat !== undefined ? args.enableVat : existing?.enableVat,
+      showCashier: args.showCashier !== undefined ? args.showCashier : existing?.showCashier,
+      showCustomer: args.showCustomer !== undefined ? args.showCustomer : existing?.showCustomer,
+      showBarcode: args.showBarcode !== undefined ? args.showBarcode : existing?.showBarcode,
+      headerText: args.headerText !== undefined ? args.headerText : existing?.headerText,
+      footerMessage: args.footerMessage !== undefined ? args.footerMessage : existing?.footerMessage,
+      returnPolicy: args.returnPolicy !== undefined ? args.returnPolicy : existing?.returnPolicy,
+      receiptPrefix: args.receiptPrefix !== undefined ? args.receiptPrefix : existing?.receiptPrefix,
+      tagline: args.tagline !== undefined ? args.tagline : existing?.tagline,
       negativeStockAllowed: args.negativeStockAllowed !== undefined ? args.negativeStockAllowed : existing?.negativeStockAllowed,
       lowStockThreshold: args.lowStockThreshold !== undefined ? args.lowStockThreshold : existing?.lowStockThreshold,
+      stockAdjustmentApprovalRequired: args.stockAdjustmentApprovalRequired !== undefined ? args.stockAdjustmentApprovalRequired : existing?.stockAdjustmentApprovalRequired,
+      discrepancyApprovalThreshold: args.discrepancyApprovalThreshold !== undefined ? args.discrepancyApprovalThreshold : existing?.discrepancyApprovalThreshold,
+      enforceStockCountApproval: args.enforceStockCountApproval !== undefined ? args.enforceStockCountApproval : existing?.enforceStockCountApproval,
       updatedAt: now,
     };
 
@@ -1950,5 +1963,3 @@ export const archiveBranch = mutation({
 export const getBranchesForApplication = getBranchesForOrgApp;
 export const update = updateBranch;
 export const create = createBranch;
-
-

@@ -20,6 +20,7 @@ import {
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { api } from '@/lib/api';
+import { getSignupUrl } from '@/lib/domain';
 import { Header } from '@/components/landing/Header';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -108,8 +109,8 @@ export const InventoryLanding: React.FC = () => {
   const getCtaConfig = () => {
     if (!isAuthenticated) {
       return {
-        text: 'Sign Up Free',
-        href: '/signup?product=inventory',
+        text: 'Join Orviohub',
+        href: getSignupUrl(),
         action: undefined,
         primary: true,
       };
@@ -142,6 +143,40 @@ export const InventoryLanding: React.FC = () => {
     };
   };
 
+  const getPlanCta = (planName: string) => {
+    if (!isAuthenticated) {
+      if (planName.includes('Enterprise')) {
+        return {
+          href: undefined,
+          action: () => setDemoModalOpen(true),
+        };
+      }
+      return {
+        href: getSignupUrl(),
+        action: undefined,
+      };
+    }
+
+    if (!workspaceId) {
+      return {
+        href: undefined,
+        action: () => navigate('/onboarding'),
+      };
+    }
+
+    if (planName.includes('Enterprise')) {
+      return {
+        href: undefined,
+        action: () => setDemoModalOpen(true),
+      };
+    }
+
+    return {
+      href: undefined,
+      action: handleActivateProduct,
+    };
+  };
+
   const cta = getCtaConfig();
 
   const handleDemoSubmit = (e: React.FormEvent) => {
@@ -169,7 +204,7 @@ export const InventoryLanding: React.FC = () => {
       description: 'Manage warehouse counts, branch transfers, automated reorder thresholds, and low-stock telemetry across all retail locations.',
     },
     {
-      icon: <QrCode className="w-6 h-6 text-emerald-400 text-emerald-400" />,
+      icon: <QrCode className="w-6 h-6 text-emerald-400" />,
       title: 'Barcode Scanner & POS',
       description: 'Lightning-fast retail terminal with instant barcode recognition, cash drawer reconciliation, split tenders, and receipt generation.',
     },
@@ -208,7 +243,7 @@ export const InventoryLanding: React.FC = () => {
         'Basic Daily Sales Reports',
         'Single Cashier Account',
       ],
-      ctaText: isAuthenticated ? 'Start Free Trial' : 'Sign Up Free',
+      ctaText: isAuthenticated ? 'Start Free Trial' : 'Join Orviohub',
       popular: false,
     },
     {
@@ -224,7 +259,7 @@ export const InventoryLanding: React.FC = () => {
         'Stock Movement & Transfer Logs',
         'Branch Cashier & Manager Roles',
       ],
-      ctaText: isAuthenticated ? 'Select Standard' : 'Start with Standard',
+      ctaText: isAuthenticated ? 'Select Standard' : 'Join Orviohub',
       popular: true,
     },
     {
@@ -279,19 +314,19 @@ export const InventoryLanding: React.FC = () => {
       {/* Universal Top Header */}
       <Header />
 
-      {/* SEO Semantic Header Structure */}
-      <main className="flex-1 max-w-[1320px] w-full mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-16 space-y-24">
+      {/* Main Container */}
+      <main className="flex-1 max-w-[1320px] w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-16 space-y-16 sm:space-y-24">
         {/* Hero Section */}
-        <section aria-labelledby="hero-heading" className="space-y-12">
-          <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-12">
+        <section aria-labelledby="hero-heading" className="space-y-8 sm:space-y-12">
+          <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-8 lg:gap-12">
             {/* Left Hero Content */}
-            <div className="space-y-6 max-w-2xl">
+            <div className="space-y-5 sm:space-y-6 max-w-2xl w-full">
               {/* Product Badge */}
-              <div className="flex items-center gap-3">
-                <div className="w-12 h-12 rounded-xl bg-[#1a0f18] border border-[#714b67]/40 flex items-center justify-center text-[#FDB02F] shadow-lg">
-                  <InventoryIcon className="w-7 h-7" />
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-sm bg-[#1a0f18] border border-[#714b67]/40 flex items-center justify-center text-[#FDB02F] shadow-lg shrink-0">
+                  <InventoryIcon className="w-6 h-6 sm:w-7 sm:h-7" />
                 </div>
-                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-950/80 border border-emerald-500/30 text-emerald-300 text-xs font-semibold">
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-sm bg-emerald-950/80 border border-emerald-500/30 text-emerald-300 text-xs font-semibold">
                   <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                   <span>Production Ready • Live in Workspace</span>
                 </div>
@@ -300,26 +335,26 @@ export const InventoryLanding: React.FC = () => {
               {/* Main Headline */}
               <h1
                 id="hero-heading"
-                className="text-4xl sm:text-5xl lg:text-6xl font-bold text-white tracking-tight leading-tight"
+                className="text-3xl sm:text-5xl lg:text-6xl font-bold text-white tracking-tight leading-tight"
               >
                 Inventory & POS Management for Modern Businesses
               </h1>
 
               {/* Tagline & Subtext */}
-              <p className="text-lg sm:text-xl text-slate-300 font-light leading-relaxed">
+              <p className="text-base sm:text-xl text-slate-300 font-light leading-relaxed">
                 Track warehouse stock, record rapid POS sales, manage multi-branch transfers, and prevent stock-outs across your entire business.
               </p>
 
-              <p className="text-sm text-slate-400 leading-relaxed">
+              <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">
                 Designed specifically for high-speed retail checkout, supermarkets, pharmacies, electronics distributors, and wholesale operations in Nigeria and emerging markets.
               </p>
 
               {/* CTA Buttons */}
-              <div className="pt-4 flex flex-wrap items-center gap-4">
+              <div className="pt-2 sm:pt-4 flex flex-col sm:flex-row items-stretch sm:items-center gap-3 sm:gap-4">
                 {cta.href ? (
                   <a
                     href={cta.href}
-                    className="h-12 px-7 bg-[#714b67] hover:bg-[#86597a] active:bg-[#603f57] text-white font-semibold text-xs rounded-lg shadow-xl shadow-[#714b67]/30 flex items-center gap-2 transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
+                    className="h-12 px-7 bg-[#714b67] hover:bg-[#86597a] active:bg-[#603f57] text-white font-semibold text-xs rounded-sm shadow-xl shadow-[#714b67]/30 flex items-center justify-center gap-2 transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98] w-full sm:w-auto"
                   >
                     <span>{cta.text}</span>
                     <ArrowRight className="w-4 h-4" />
@@ -329,7 +364,7 @@ export const InventoryLanding: React.FC = () => {
                     type="button"
                     onClick={cta.action}
                     disabled={cta.loading || isCheckingActivation}
-                    className="h-12 px-7 bg-[#714b67] hover:bg-[#86597a] active:bg-[#603f57] text-white font-semibold text-xs rounded-lg shadow-xl shadow-[#714b67]/30 flex items-center gap-2 transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
+                    className="h-12 px-7 bg-[#714b67] hover:bg-[#86597a] active:bg-[#603f57] text-white font-semibold text-xs rounded-sm shadow-xl shadow-[#714b67]/30 flex items-center justify-center gap-2 transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98] w-full sm:w-auto"
                   >
                     {cta.loading && <Loader2 className="w-4 h-4 animate-spin mr-1" />}
                     <span>{cta.text}</span>
@@ -341,7 +376,7 @@ export const InventoryLanding: React.FC = () => {
                   type="button"
                   variant="outline"
                   onClick={() => setDemoModalOpen(true)}
-                  className="h-12 px-6 bg-[#140e12] hover:bg-[#20151c] border-white/15 text-white font-medium text-xs rounded-lg flex items-center gap-2 cursor-pointer transition-colors"
+                  className="h-12 px-6 bg-[#140e12] hover:bg-[#20151c] border-white/15 text-white font-medium text-xs rounded-sm flex items-center justify-center gap-2 cursor-pointer transition-colors w-full sm:w-auto"
                 >
                   <Calendar className="w-4 h-4 text-[#c79dbd]" />
                   <span>Book Guided Demo</span>
@@ -350,7 +385,7 @@ export const InventoryLanding: React.FC = () => {
             </div>
 
             {/* Right Hero Live Terminal Preview */}
-            <div className="w-full lg:max-w-[500px] p-6 sm:p-7 rounded-2xl bg-gradient-to-br from-[#180e16] via-[#110910] to-black border border-[#2d1827] shadow-2xl space-y-5 relative group overflow-hidden">
+            <div className="w-full lg:max-w-[500px] p-4 sm:p-7 rounded-sm bg-gradient-to-br from-[#180e16] via-[#110910] to-black border border-[#2d1827] shadow-2xl space-y-4 sm:space-y-5 relative group overflow-hidden">
               {/* African Decorative Stroke Accent */}
               <div
                 className="absolute -top-10 -right-10 w-36 h-36 opacity-15 pointer-events-none group-hover:opacity-30 transition-opacity"
@@ -363,33 +398,33 @@ export const InventoryLanding: React.FC = () => {
 
               <div className="flex items-center justify-between pb-3.5 border-b border-white/10 relative z-10">
                 <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-[#714b67] flex items-center justify-center text-white shadow-sm">
+                  <div className="w-8 h-8 rounded-sm bg-[#714b67] flex items-center justify-center text-white shadow-sm shrink-0">
                     <Boxes className="w-4 h-4" />
                   </div>
-                  <div>
-                    <span className="text-xs font-bold text-white block">Main Hub Telemetry</span>
-                    <span className="text-[10px] text-slate-400">Lagos Central Warehouse</span>
+                  <div className="min-w-0">
+                    <span className="text-xs font-bold text-white block truncate">Main Hub Telemetry</span>
+                    <span className="text-[10px] text-slate-400 truncate">Lagos Central Warehouse</span>
                   </div>
                 </div>
-                <span className="text-[10px] font-bold text-emerald-400 bg-emerald-950/80 px-2.5 py-1 rounded-full border border-emerald-500/30">
+                <span className="text-[10px] font-bold text-emerald-400 bg-emerald-950/80 px-2.5 py-1 rounded-sm border border-emerald-500/30 shrink-0">
                   ● Online Sync
                 </span>
               </div>
 
               <div className="space-y-2.5 relative z-10">
-                <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/5 flex items-center justify-between text-xs">
+                <div className="p-3 sm:p-3.5 rounded-sm bg-white/[0.03] border border-white/5 flex items-center justify-between text-xs">
                   <span className="text-slate-300">Total Warehouse Stock Units</span>
                   <span className="font-mono font-bold text-white text-sm">4,820 Pcs</span>
                 </div>
-                <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/5 flex items-center justify-between text-xs">
+                <div className="p-3 sm:p-3.5 rounded-sm bg-white/[0.03] border border-white/5 flex items-center justify-between text-xs">
                   <span className="text-slate-300">Active POS Terminals</span>
                   <span className="font-mono font-bold text-emerald-400">4 Online (Branches 1–3)</span>
                 </div>
-                <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/5 flex items-center justify-between text-xs">
+                <div className="p-3 sm:p-3.5 rounded-sm bg-white/[0.03] border border-white/5 flex items-center justify-between text-xs">
                   <span className="text-slate-300">Today's Sales Recorded</span>
                   <span className="font-mono font-bold text-[#FDB02F] text-sm">₦384,200</span>
                 </div>
-                <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/5 flex items-center justify-between text-xs">
+                <div className="p-3 sm:p-3.5 rounded-sm bg-white/[0.03] border border-white/5 flex items-center justify-between text-xs">
                   <span className="text-slate-300">Low-Stock Auto Alerts</span>
                   <span className="font-mono font-bold text-amber-400">2 Items Reordered</span>
                 </div>
@@ -399,7 +434,7 @@ export const InventoryLanding: React.FC = () => {
                 {cta.href ? (
                   <a
                     href={cta.href}
-                    className="w-full h-11 bg-white/5 hover:bg-white/10 border border-white/10 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                    className="w-full h-11 bg-white/5 hover:bg-white/10 border border-white/10 text-white rounded-sm text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
                   >
                     <span>Launch Interactive POS Demo</span>
                     <ArrowRight className="w-3.5 h-3.5" />
@@ -408,7 +443,7 @@ export const InventoryLanding: React.FC = () => {
                   <Button
                     type="button"
                     onClick={cta.action}
-                    className="w-full h-11 bg-white/5 hover:bg-white/10 border border-white/10 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                    className="w-full h-11 bg-white/5 hover:bg-white/10 border border-white/10 text-white rounded-sm text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
                   >
                     <span>Launch Interactive POS Demo</span>
                     <ArrowRight className="w-3.5 h-3.5" />
@@ -420,13 +455,13 @@ export const InventoryLanding: React.FC = () => {
         </section>
 
         {/* Features Grid Section */}
-        <section aria-labelledby="features-heading" className="space-y-10 pt-10 border-t border-white/5">
+        <section aria-labelledby="features-heading" className="space-y-8 sm:space-y-10 pt-10 border-t border-white/5">
           <div className="text-center max-w-2xl mx-auto space-y-3">
             <div className="inline-flex items-center gap-1.5 text-[11px] font-bold text-[#FDB02F] uppercase tracking-wider">
               <Sparkles className="w-3 h-3" />
               <span>Full Operational Capability</span>
             </div>
-            <h2 id="features-heading" className="text-3xl sm:text-4xl font-bold text-white tracking-tight">
+            <h2 id="features-heading" className="text-2xl sm:text-4xl font-bold text-white tracking-tight">
               Everything Your Store Needs to Scale
             </h2>
             <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">
@@ -434,13 +469,13 @@ export const InventoryLanding: React.FC = () => {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
             {features.map((feat, idx) => (
               <div
                 key={idx}
-                className="p-6 rounded-2xl bg-gradient-to-br from-[#140c12]/90 to-black border border-white/10 space-y-3.5 hover:border-[#714b67]/50 hover:shadow-xl hover:shadow-[#714b67]/10 transition-all duration-300"
+                className="p-5 sm:p-6 rounded-sm bg-gradient-to-br from-[#140c12]/90 to-black border border-white/10 space-y-3.5 hover:border-[#714b67]/50 hover:shadow-xl hover:shadow-[#714b67]/10 transition-all duration-300"
               >
-                <div className="w-12 h-12 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center shadow-inner">
+                <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-sm bg-white/5 border border-white/10 flex items-center justify-center shadow-inner">
                   {feat.icon}
                 </div>
                 <h3 className="text-base font-bold text-white">{feat.title}</h3>
@@ -451,13 +486,13 @@ export const InventoryLanding: React.FC = () => {
         </section>
 
         {/* Pricing Section */}
-        <section aria-labelledby="pricing-heading" className="space-y-10 pt-10 border-t border-white/5">
+        <section aria-labelledby="pricing-heading" className="space-y-8 sm:space-y-10 pt-10 border-t border-white/5">
           <div className="text-center max-w-2xl mx-auto space-y-3">
             <div className="inline-flex items-center gap-1.5 text-[11px] font-bold text-[#FDB02F] uppercase tracking-wider">
               <CreditCard className="w-3 h-3" />
               <span>Transparent Pricing</span>
             </div>
-            <h2 id="pricing-heading" className="text-3xl sm:text-4xl font-bold text-white tracking-tight">
+            <h2 id="pricing-heading" className="text-2xl sm:text-4xl font-bold text-white tracking-tight">
               Predictable Plans with Zero Hidden Fees
             </h2>
             <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">
@@ -465,18 +500,18 @@ export const InventoryLanding: React.FC = () => {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 items-stretch">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 sm:gap-8 items-stretch">
             {pricingPlans.map((plan, idx) => (
               <div
                 key={idx}
-                className={`p-7 rounded-2xl flex flex-col justify-between space-y-6 relative transition-all duration-300 ${
+                className={`p-6 sm:p-7 rounded-sm flex flex-col justify-between space-y-6 relative transition-all duration-300 ${
                   plan.popular
                     ? 'bg-gradient-to-b from-[#241320] via-[#140b12] to-black border-2 border-[#714b67] shadow-2xl shadow-[#714b67]/25 lg:-translate-y-2'
                     : 'bg-[#120b10] border border-white/10 hover:border-white/20'
                 }`}
               >
                 {plan.popular && (
-                  <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full bg-[#714b67] border border-[#FDB02F] text-white text-[10px] font-bold uppercase tracking-wider shadow-md">
+                  <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-sm bg-[#714b67] border border-[#FDB02F] text-white text-[10px] font-bold uppercase tracking-wider shadow-md">
                     Most Popular
                   </div>
                 )}
@@ -488,7 +523,7 @@ export const InventoryLanding: React.FC = () => {
                   </div>
 
                   <div className="flex items-baseline gap-1 pt-2 pb-1 border-b border-white/5">
-                    <span className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight">
+                    <span className="text-2xl sm:text-4xl font-extrabold text-white tracking-tight">
                       {plan.price}
                     </span>
                     <span className="text-xs text-slate-400 font-medium">{plan.period}</span>
@@ -505,32 +540,35 @@ export const InventoryLanding: React.FC = () => {
                 </div>
 
                 <div className="pt-4 border-t border-white/5">
-                  {cta.href ? (
-                    <a
-                      href={cta.href}
-                      className={`w-full h-11 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
-                        plan.popular
-                          ? 'bg-[#714b67] hover:bg-[#86597a] text-white shadow-lg shadow-[#714b67]/30'
-                          : 'bg-white/10 hover:bg-white/15 text-white'
-                      }`}
-                    >
-                      <span>{plan.ctaText}</span>
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </a>
-                  ) : (
-                    <Button
-                      type="button"
-                      onClick={cta.action}
-                      className={`w-full h-11 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
-                        plan.popular
-                          ? 'bg-[#714b67] hover:bg-[#86597a] text-white shadow-lg shadow-[#714b67]/30'
-                          : 'bg-white/10 hover:bg-white/15 text-white'
-                      }`}
-                    >
-                      <span>{plan.ctaText}</span>
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </Button>
-                  )}
+                  {(() => {
+                    const planCta = getPlanCta(plan.name);
+                    return planCta.href ? (
+                      <a
+                        href={planCta.href}
+                        className={`w-full h-11 rounded-sm text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                          plan.popular
+                            ? 'bg-[#714b67] hover:bg-[#86597a] text-white shadow-lg shadow-[#714b67]/30'
+                            : 'bg-white/10 hover:bg-white/15 text-white'
+                        }`}
+                      >
+                        <span>{plan.ctaText}</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </a>
+                    ) : (
+                      <Button
+                        type="button"
+                        onClick={planCta.action}
+                        className={`w-full h-11 rounded-sm text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                          plan.popular
+                            ? 'bg-[#714b67] hover:bg-[#86597a] text-white shadow-lg shadow-[#714b67]/30'
+                            : 'bg-white/10 hover:bg-white/15 text-white'
+                        }`}
+                      >
+                        <span>{plan.ctaText}</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </Button>
+                    );
+                  })()}
                 </div>
               </div>
             ))}
@@ -538,7 +576,7 @@ export const InventoryLanding: React.FC = () => {
         </section>
 
         {/* FAQ Section */}
-        <section aria-labelledby="faq-heading" className="space-y-8 pt-10 border-t border-white/5 max-w-3xl mx-auto w-full">
+        <section aria-labelledby="faq-heading" className="space-y-6 sm:space-y-8 pt-10 border-t border-white/5 max-w-3xl mx-auto w-full">
           <div className="text-center space-y-2">
             <h2 id="faq-heading" className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
               Frequently Asked Questions
@@ -550,7 +588,7 @@ export const InventoryLanding: React.FC = () => {
             {faqs.map((faq, idx) => (
               <div
                 key={idx}
-                className="rounded-xl border border-white/10 bg-[#120b10] overflow-hidden transition-colors"
+                className="rounded-sm border border-white/10 bg-[#120b10] overflow-hidden transition-colors"
               >
                 <button
                   type="button"
@@ -571,9 +609,9 @@ export const InventoryLanding: React.FC = () => {
         </section>
 
         {/* Final High-Converting CTA Banner */}
-        <section className="p-8 sm:p-12 rounded-3xl bg-gradient-to-r from-[#2a1324] via-[#190d16] to-[#0c060b] border border-[#714b67]/40 shadow-2xl flex flex-col md:flex-row items-center justify-between gap-8 text-center md:text-left relative overflow-hidden">
+        <section className="p-6 sm:p-12 rounded-sm bg-gradient-to-r from-[#2a1324] via-[#190d16] to-[#0c060b] border border-[#714b67]/40 shadow-2xl flex flex-col md:flex-row items-center justify-between gap-6 sm:gap-8 text-center md:text-left relative overflow-hidden">
           <div className="space-y-2.5 max-w-xl">
-            <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
+            <h2 className="text-xl sm:text-3xl font-bold text-white tracking-tight">
               Ready to Upgrade Your Retail & Stock Operations?
             </h2>
             <p className="text-xs sm:text-sm text-slate-300">
@@ -581,11 +619,11 @@ export const InventoryLanding: React.FC = () => {
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center justify-center gap-3 shrink-0">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-3 shrink-0 w-full md:w-auto">
             {cta.href ? (
               <a
                 href={cta.href}
-                className="h-12 px-7 bg-[#FDB02F] hover:bg-[#fca510] text-slate-950 font-bold text-xs rounded-lg shadow-lg flex items-center gap-2 transition-transform hover:scale-[1.02] cursor-pointer"
+                className="h-12 px-7 bg-[#FDB02F] hover:bg-[#fca510] text-slate-950 font-bold text-xs rounded-sm shadow-lg flex items-center justify-center gap-2 transition-transform hover:scale-[1.02] cursor-pointer w-full sm:w-auto"
               >
                 <span>{cta.text}</span>
                 <ArrowRight className="w-4 h-4" />
@@ -594,7 +632,7 @@ export const InventoryLanding: React.FC = () => {
               <Button
                 type="button"
                 onClick={cta.action}
-                className="h-12 px-7 bg-[#FDB02F] hover:bg-[#fca510] text-slate-950 font-bold text-xs rounded-lg shadow-lg flex items-center gap-2 transition-transform hover:scale-[1.02] cursor-pointer"
+                className="h-12 px-7 bg-[#FDB02F] hover:bg-[#fca510] text-slate-950 font-bold text-xs rounded-sm shadow-lg flex items-center justify-center gap-2 transition-transform hover:scale-[1.02] cursor-pointer w-full sm:w-auto"
               >
                 <span>{cta.text}</span>
                 <ArrowRight className="w-4 h-4" />
@@ -605,7 +643,7 @@ export const InventoryLanding: React.FC = () => {
               type="button"
               variant="outline"
               onClick={() => setDemoModalOpen(true)}
-              className="h-12 px-6 border-white/20 text-white hover:bg-white/10 text-xs font-medium rounded-lg cursor-pointer"
+              className="h-12 px-6 border-white/20 text-white hover:bg-white/10 text-xs font-medium rounded-sm cursor-pointer w-full sm:w-auto"
             >
               <span>Book Guided Demo</span>
             </Button>
@@ -622,29 +660,29 @@ export const InventoryLanding: React.FC = () => {
         <div
           role="dialog"
           aria-modal="true"
-          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4"
           onClick={(e) => {
             if (e.target === e.currentTarget && !demoSubmitting) {
               setDemoModalOpen(false);
             }
           }}
         >
-          <div className="w-full max-w-lg bg-[#120b10] border border-white/10 rounded-2xl p-6 sm:p-8 shadow-2xl relative animate-in fade-in zoom-in-95 duration-150">
+          <div className="w-full max-w-lg bg-[#120b10] border border-white/10 rounded-sm p-5 sm:p-8 shadow-2xl relative animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
             <button
               type="button"
               onClick={() => setDemoModalOpen(false)}
               disabled={demoSubmitting}
-              className="absolute right-4 top-4 text-slate-400 hover:text-white p-1 rounded-lg hover:bg-white/5 cursor-pointer"
+              className="absolute right-4 top-4 text-slate-400 hover:text-white p-1 rounded-sm hover:bg-white/5 cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
 
-            <div className="space-y-1 mb-6">
-              <div className="inline-flex items-center gap-1 text-[11px] text-[#c79dbd] font-semibold bg-[#714b67]/20 px-2.5 py-0.5 rounded-full border border-[#714b67]/30 mb-1">
+            <div className="space-y-1 mb-5 sm:mb-6">
+              <div className="inline-flex items-center gap-1 text-[11px] text-[#c79dbd] font-semibold bg-[#714b67]/20 px-2.5 py-0.5 rounded-sm border border-[#714b67]/30 mb-1">
                 <Calendar className="w-3 h-3 text-[#FDB02F]" />
                 <span>Product Guided Walkthrough</span>
               </div>
-              <h3 className="text-xl font-bold text-white">Book an Inventory & POS Demo</h3>
+              <h3 className="text-lg sm:text-xl font-bold text-white">Book an Inventory & POS Demo</h3>
               <p className="text-xs text-slate-400">
                 Get a personalized 15-minute tour tailored to your store setup.
               </p>
@@ -658,7 +696,7 @@ export const InventoryLanding: React.FC = () => {
                     placeholder="e.g. Alex Johnson"
                     value={demoName}
                     onChange={(e) => setDemoName(e.target.value)}
-                    className="h-10 bg-[#0e0a0d] border-white/10 text-white rounded-lg text-xs"
+                    className="h-10 bg-[#0e0a0d] border-white/10 text-white rounded-sm text-xs"
                     required
                   />
                 </div>
@@ -669,7 +707,7 @@ export const InventoryLanding: React.FC = () => {
                     placeholder="alex@company.com"
                     value={demoEmail}
                     onChange={(e) => setDemoEmail(e.target.value)}
-                    className="h-10 bg-[#0e0a0d] border-white/10 text-white rounded-lg text-xs"
+                    className="h-10 bg-[#0e0a0d] border-white/10 text-white rounded-sm text-xs"
                     required
                   />
                 </div>
@@ -682,7 +720,7 @@ export const InventoryLanding: React.FC = () => {
                     placeholder="+234 800 000 0000"
                     value={demoPhone}
                     onChange={(e) => setDemoPhone(e.target.value)}
-                    className="h-10 bg-[#0e0a0d] border-white/10 text-white rounded-lg text-xs"
+                    className="h-10 bg-[#0e0a0d] border-white/10 text-white rounded-sm text-xs"
                   />
                 </div>
                 <div className="space-y-1">
@@ -691,7 +729,7 @@ export const InventoryLanding: React.FC = () => {
                     placeholder="Acme Supermarket Ltd"
                     value={demoBusinessName}
                     onChange={(e) => setDemoBusinessName(e.target.value)}
-                    className="h-10 bg-[#0e0a0d] border-white/10 text-white rounded-lg text-xs"
+                    className="h-10 bg-[#0e0a0d] border-white/10 text-white rounded-sm text-xs"
                   />
                 </div>
               </div>
@@ -702,7 +740,7 @@ export const InventoryLanding: React.FC = () => {
                   placeholder="e.g. We have 3 branches and want barcode scanning with centralized stock replenishment..."
                   value={demoMessage}
                   onChange={(e) => setDemoMessage(e.target.value)}
-                  className="w-full h-20 p-3 bg-[#0e0a0d] border border-white/10 text-white rounded-lg text-xs resize-none focus:outline-none focus:ring-1 focus:ring-[#714b67]"
+                  className="w-full h-20 p-3 bg-[#0e0a0d] border border-white/10 text-white rounded-sm text-xs resize-none focus:outline-none focus:ring-1 focus:ring-[#714b67]"
                 />
               </div>
 
@@ -712,7 +750,7 @@ export const InventoryLanding: React.FC = () => {
                   id="consent"
                   checked={demoConsent}
                   onChange={(e) => setDemoConsent(e.target.checked)}
-                  className="w-4 h-4 rounded bg-[#0e0a0d] border-white/10 text-[#714b67] focus:ring-0"
+                  className="w-4 h-4 rounded-sm bg-[#0e0a0d] border-white/10 text-[#714b67] focus:ring-0"
                 />
                 <label htmlFor="consent" className="text-[11px] text-slate-400">
                   I agree to receive product demo updates from Orviohub specialists.
@@ -723,7 +761,7 @@ export const InventoryLanding: React.FC = () => {
                 <Button
                   type="submit"
                   disabled={demoSubmitting}
-                  className="w-full h-11 bg-[#714b67] hover:bg-[#86597a] text-white font-semibold text-xs rounded-lg shadow-lg shadow-[#714b67]/25 cursor-pointer flex items-center justify-center gap-2"
+                  className="w-full h-11 bg-[#714b67] hover:bg-[#86597a] text-white font-semibold text-xs rounded-sm shadow-lg shadow-[#714b67]/25 cursor-pointer flex items-center justify-center gap-2"
                 >
                   {demoSubmitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   <span>{demoSubmitting ? 'Submitting...' : 'Schedule Live Product Walkthrough'}</span>

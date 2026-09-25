@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { smsService } from '../src/services/sms.js';
+import { smsService } from '../src/services/smsService.js';
 import { env } from '../src/config/env.js';
 
 describe('Brevo Email and Termii SMS Configuration Suite', () => {

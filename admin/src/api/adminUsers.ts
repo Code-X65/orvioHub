@@ -197,4 +197,28 @@ export const adminUsersApi = {
       reason,
     });
   },
+
+  // 15. Organization Quota Overrides
+  async grantOrganizationLimitOverride(
+    userId: string,
+    overrideLimit: number,
+    reason: string,
+    grantedBy: string,
+    expiresAt?: number
+  ) {
+    return await convex.mutation(anyApi.organizations.grantOrganizationLimitOverride, {
+      userId: userId as any,
+      overrideLimit,
+      reason,
+      grantedBy,
+      expiresAt,
+    });
+  },
+
+  async removeOrganizationLimitOverride(userId: string, removedBy: string) {
+    return await convex.mutation(anyApi.organizations.removeOrganizationLimitOverride, {
+      userId: userId as any,
+      removedBy,
+    });
+  },
 };

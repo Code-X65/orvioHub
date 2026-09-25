@@ -1,8 +1,9 @@
 import React, { useEffect, useRef } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
-import { useAuthStore } from '../../stores/useAuthStore';
+import { useAuthStore, bootstrapAuth } from '../../stores/useAuthStore';
 import { getLoginUrl, getHomeUrl, isAllowedReturnTo } from '@orviohub/shared';
 import { useHost } from '../../host/useHost';
+import { crossSubdomainNavigate } from '@/lib/crossSubdomainNavigate';
 
 interface AuthGuardProps {
   children: React.ReactNode;
@@ -11,12 +12,41 @@ interface AuthGuardProps {
   requiredApp?: string;
 }
 
+const RedirectTransition: React.FC<{ targetUrl: string; label?: string }> = ({ targetUrl, label }) => {
+  const [showTimeoutFallback, setShowTimeoutFallback] = React.useState(false);
+
+  React.useEffect(() => {
+    const timer = setTimeout(() => {
+      setShowTimeoutFallback(true);
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-black text-slate-100 flex flex-col items-center justify-center p-6 space-y-4">
+      <div className="w-7 h-7 border-2 border-[#714b67] border-t-transparent rounded-full animate-spin" />
+      <p className="text-xs text-slate-400 animate-pulse">{label || 'Redirecting...'}</p>
+      {showTimeoutFallback && (
+        <div className="flex flex-col items-center space-y-2 pt-2 animate-in fade-in duration-300">
+          <p className="text-xs text-slate-500">Taking longer than expected?</p>
+          <a
+            href={targetUrl}
+            className="px-3 py-1.5 bg-[#714b67] hover:bg-[#835677] text-white text-xs rounded transition-colors"
+          >
+            Click here to proceed
+          </a>
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const AuthGuard: React.FC<AuthGuardProps> = ({
   children,
   requireAuth = true,
   requireGuest = false,
 }) => {
-  const { isInitialized, isAuthenticated, user, onboardingStatus, refreshSession } = useAuthStore();
+  const { isInitialized, isAuthenticated, user, onboardingStatus } = useAuthStore();
   const location = useLocation();
   const host = useHost();
   const initializingRef = useRef(false);
@@ -24,22 +54,23 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({
   useEffect(() => {
     if (!isInitialized && !initializingRef.current) {
       initializingRef.current = true;
-      refreshSession();
+      bootstrapAuth();
     }
-  }, [isInitialized, refreshSession]);
+  }, [isInitialized]);
+
+  // If route is guest-only and there are no stored user credentials, render immediately to avoid layout flash
+  const hasPossibleCredentials = typeof window !== 'undefined' && Boolean(
+    localStorage.getItem('orvio_user')
+  );
 
   if (!isInitialized) {
+    if (requireGuest && !hasPossibleCredentials) {
+      return <>{children}</>;
+    }
+
     return (
-      <div className="min-h-screen bg-black text-slate-100 flex flex-col justify-between animate-pulse">
-        <div className="h-20 border-b border-white/5 bg-black/90 px-6 sm:px-12 flex items-center justify-between">
-          <div className="w-24 h-7 rounded-xs bg-white/10" />
-          <div className="w-20 h-8 rounded-xs bg-white/10" />
-        </div>
-        <div className="flex-1 max-w-5xl w-full mx-auto px-6 py-12 space-y-6">
-          <div className="w-1/3 h-8 rounded-xs bg-white/10" />
-          <div className="w-1/2 h-4 rounded-xs bg-white/5" />
-          <div className="h-64 rounded-sm bg-[#120b10] border border-white/5" />
-        </div>
+      <div className="min-h-screen bg-black text-slate-100 flex flex-col items-center justify-center">
+        <div className="w-7 h-7 border-2 border-[#714b67] border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -50,7 +81,7 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({
     if (host.application !== 'accounts' && host.application !== 'marketing') {
       const returnUrl = typeof window !== 'undefined' ? window.location.href : '';
       const loginUrl = getLoginUrl(returnUrl, host.environment);
-      window.location.href = loginUrl;
+      crossSubdomainNavigate(loginUrl);
       return null;
     }
 
@@ -76,25 +107,19 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({
     }
 
     const returnTo = urlParams.get('redirect') || urlParams.get('returnTo') || urlParams.get('return_to');
-    const token = localStorage.getItem('orvio_auth_token');
-    const refreshToken = localStorage.getItem('orvio_refresh_token');
 
     if (returnTo && isAllowedReturnTo(returnTo, host.environment)) {
-      try {
-        const targetUrl = new URL(returnTo, window.location.origin);
-        if (token) targetUrl.searchParams.set('auth_token', token);
-        if (refreshToken) targetUrl.searchParams.set('refresh_token', refreshToken);
-        window.location.href = targetUrl.toString();
-        return null;
-      } catch {
-        window.location.href = returnTo;
-        return null;
-      }
+      window.location.replace(returnTo);
+      return <RedirectTransition targetUrl={returnTo} label="Taking you to your destination..." />;
     }
 
     if (host.application === 'accounts') {
-      window.location.href = getHomeUrl(host.environment);
-      return null;
+      if (user?.personalOnboardingCompleted === false) {
+        return <Navigate to="/onboard/personal" replace />;
+      }
+      const homeUrl = getHomeUrl(host.environment);
+      window.location.replace(homeUrl);
+      return <RedirectTransition targetUrl={homeUrl} label="Opening your workspace..." />;
     }
 
     return <Navigate to="/" replace />;
@@ -117,7 +142,7 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({
         if (host.application !== 'accounts') {
           const returnUrl = typeof window !== 'undefined' ? window.location.href : '';
           const verifyUrl = `${getLoginUrl(returnUrl, host.environment).replace(/\/login(\?|$)/, '/verify-email$1')}`;
-          window.location.href = verifyUrl;
+          crossSubdomainNavigate(verifyUrl);
           return null;
         }
         return <Navigate to="/verify-email" replace />;
@@ -144,10 +169,10 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({
       !isInviteRoute &&
       !isAuthUtilityRoute
     ) {
-      if (host.application === 'home' || host.application === 'launcher') {
+      if (host.application === 'home' || host.application === 'launcher' || host.application === 'accounts') {
         return <Navigate to="/onboard/personal" replace />;
       }
-      window.location.href = `${getHomeUrl(host.environment)}/onboard/personal`;
+      crossSubdomainNavigate(`${getHomeUrl(host.environment)}/onboard/personal`);
       return null;
     }
 

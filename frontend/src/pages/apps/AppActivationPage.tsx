@@ -6,10 +6,6 @@ import { Spinner } from '@/components/ui/spinner';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import {
-  Boxes,
-  ShoppingCart,
-  Calendar,
-  Dumbbell,
   CheckCircle2,
   Lock,
   Sparkles,
@@ -17,10 +13,19 @@ import {
   Crown,
   AlertCircle,
   Clock,
+  Bell,
   Zap,
+  HelpCircle,
+  Boxes,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getHomeUrl, getCrossSubdomainUrl } from '@/lib/domain';
+import { getAppMeta } from '@/lib/appRegistry';
+import { getAppRedirectConfig } from '@/lib/appRedirectRegistry';
+import {
+  getRecommendationsForCategory,
+  getContextualTipForApp,
+} from '@/lib/appRecommendations';
 
 interface OrgApp {
   applicationId: string;
@@ -36,39 +41,10 @@ interface OrgApp {
 interface OrgInfo {
   id: string;
   name: string;
+  category?: string;
+  industry?: string;
+  businessType?: string;
   planKey: string;
-}
-
-// Application catalogue — maps key → display metadata
-const APP_META: Record<string, { icon: React.ReactNode; description: string; badge?: string }> = {
-  inventory: {
-    icon: <Boxes className="w-7 h-7 text-indigo-400" />,
-    description: 'Full inventory management: stock tracking, purchases, sales POS, and reports.',
-    badge: 'Flagship',
-  },
-  pos: {
-    icon: <ShoppingCart className="w-7 h-7 text-emerald-400" />,
-    description: 'Point-of-sale terminal with receipts, cash management, and shift reports.',
-  },
-  booking: {
-    icon: <Calendar className="w-7 h-7 text-sky-400" />,
-    description: 'Appointment and reservation management with automated reminders.',
-    badge: 'Coming Soon',
-  },
-  gym: {
-    icon: <Dumbbell className="w-7 h-7 text-orange-400" />,
-    description: 'Membership management, class scheduling, and trainer assignment.',
-    badge: 'Coming Soon',
-  },
-};
-
-function getAppMeta(key: string) {
-  return (
-    APP_META[key] || {
-      icon: <Zap className="w-7 h-7 text-purple-400" />,
-      description: `${key.charAt(0).toUpperCase() + key.slice(1)} management module.`,
-    }
-  );
 }
 
 function statusBadge(app: OrgApp) {
@@ -120,13 +96,16 @@ export const AppActivationPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [activating, setActivating] = useState<string | null>(null);
 
+  const [platformApps, setPlatformApps] = useState<any[]>([]);
+
   const loadData = useCallback(async () => {
     if (!orgId) return;
     setLoading(true);
     try {
-      // Load org info + subscription
-      const [orgRes, appsRes] = await Promise.all([
+      // Load org info + subscription + platform applications registry
+      const [orgRes, platformAppsRes, appsRes] = await Promise.all([
         api.get<any>(`/organizations/${orgId}`).catch(() => null),
+        api.get<any>('/platform/applications').catch(() => null),
         api.get<any>(`/organizations/${orgId}/applications`).catch(() => ({ data: [] })),
       ]);
 
@@ -137,16 +116,61 @@ export const AppActivationPage: React.FC = () => {
       setOrg({
         id: orgId,
         name: orgData?.name || 'Your Organization',
+        category: orgData?.category || orgData?.industry || orgData?.businessType || 'Provision Store',
+        industry: orgData?.industry,
+        businessType: orgData?.businessType,
         planKey,
       });
 
-      const rawApps: OrgApp[] = Array.isArray(appsRes)
+      const registryApps: any[] =
+        platformAppsRes?.data?.applications ||
+        platformAppsRes?.applications ||
+        platformAppsRes?.data ||
+        [
+          { key: 'inventory', name: 'Inventory', status: 'active', isCore: true, planRequirements: ['free_trial', 'standard', 'premium', 'enterprise'], badge: 'Flagship' },
+          { key: 'pos', name: 'POS Terminal', status: 'coming_soon', isCore: false, planRequirements: ['standard', 'premium', 'enterprise'] },
+          { key: 'booking', name: 'Booking & Appointments', status: 'coming_soon', isCore: false, planRequirements: ['standard', 'premium', 'enterprise'], badge: 'Coming Soon' },
+          { key: 'gym', name: 'Gym Management', status: 'coming_soon', isCore: false, planRequirements: ['standard', 'premium', 'enterprise'], badge: 'Coming Soon' },
+          { key: 'taskmanagement', name: 'Task Management', status: 'coming_soon', isCore: false, planRequirements: ['standard', 'premium', 'enterprise'], badge: 'Coming Soon' },
+        ];
+
+      setPlatformApps(registryApps);
+
+      const rawActivatedApps: any[] = Array.isArray(appsRes)
         ? appsRes
         : Array.isArray(appsRes?.data)
         ? appsRes.data
         : [];
 
-      setApps(rawApps);
+      const activatedMap = new Map<string, any>();
+      rawActivatedApps.forEach((a) => {
+        const k = (a.key || a.applicationKey || a.productKey || '').toLowerCase();
+        if (k) activatedMap.set(k, a);
+      });
+
+      const mergedApps: OrgApp[] = registryApps.map((reg) => {
+        const found = activatedMap.get(reg.key.toLowerCase());
+        const isActivated = Boolean(
+          found?.isActivated ||
+          found?.enabled ||
+          found?.status === 'active' ||
+          found?.status === 'trial' ||
+          found?.status === 'trialing'
+        );
+
+        return {
+          applicationId: found?.applicationId || found?._id || reg.key,
+          key: reg.key,
+          name: reg.name,
+          isActivated,
+          status: found?.status || (isActivated ? 'active' : (reg.status === 'coming_soon' ? 'inactive' : 'inactive')),
+          planId: found?.planId,
+          trialEndsAt: found?.trialEndsAt,
+          activatedAt: found?.activatedAt,
+        };
+      });
+
+      setApps(mergedApps);
     } catch (err) {
       toast.error('Failed to load application data.');
     } finally {
@@ -173,8 +197,11 @@ export const AppActivationPage: React.FC = () => {
       return;
     }
 
+    const regApp = platformApps.find((p) => p.key.toLowerCase() === app.key.toLowerCase());
+    const meta = getAppMeta(app.key);
+
     // Coming soon apps
-    if (APP_META[app.key]?.badge === 'Coming Soon') {
+    if (meta.availability === 'coming_soon' || regApp?.status === 'coming_soon') {
       toast.info(`${app.name} is coming soon! Stay tuned.`);
       return;
     }
@@ -186,8 +213,19 @@ export const AppActivationPage: React.FC = () => {
       return;
     }
 
-    if (isFreeTrialPlan && app.key !== 'inventory') {
-      toast.error('This application is not available on Free Trial. Upgrade to Standard.');
+    const allowedPlans = (regApp?.planRequirements || meta.planRequirements || []).map((p: string) => p.toLowerCase());
+    const currentPlan = (org.planKey || 'free_trial').toLowerCase();
+    const normalizedPlan = currentPlan === 'free' ? 'free_trial' : currentPlan;
+
+    if (
+      allowedPlans.length > 0 &&
+      !allowedPlans.includes(currentPlan) &&
+      !allowedPlans.includes(normalizedPlan)
+    ) {
+      const planNames = regApp?.planRequirements || meta.planRequirements || ['Standard'];
+      toast.error(
+        `Requires ${planNames.join(' or ')} plan. Upgrade to activate.`
+      );
       return;
     }
 
@@ -201,12 +239,13 @@ export const AppActivationPage: React.FC = () => {
       toast.success(`${app.name} activated successfully!`);
       await loadData();
 
-      // Navigate to app onboarding (e.g. inventory) or branch setup
+      // Navigate to app onboarding or branch setup using registry-driven redirect
       setTimeout(() => {
-        if (app.key === 'inventory') {
-          window.location.href = getCrossSubdomainUrl('inventory', `/onboard/app?org=${org.id}`);
+        const config = getAppRedirectConfig(app.key);
+        if (config.type === 'external') {
+          window.location.href = config.getTarget(org.id);
         } else {
-          navigate(`/orgs/${org.id}/apps/${app.key}/branches`);
+          navigate(config.getTarget(org.id));
         }
       }, 500);
     } catch (err: any) {
@@ -303,6 +342,116 @@ export const AppActivationPage: React.FC = () => {
           </div>
         )}
 
+        {/* Recommended for You Section */}
+        {(() => {
+          const recommendationProfile = getRecommendationsForCategory(
+            org?.category || org?.industry || org?.businessType
+          );
+          if (!recommendationProfile) return null;
+
+          return (
+            <div className="p-5 sm:p-6 rounded-2xl border border-indigo-500/20 bg-gradient-to-r from-indigo-950/30 via-[#714b67]/10 to-transparent space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-white/5 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-xl bg-indigo-500/20 border border-indigo-500/30 text-indigo-300">
+                    <Sparkles className="w-4 h-4 text-[#FDB02F]" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h2 className="text-sm font-bold text-white tracking-tight">
+                        Recommended for You
+                      </h2>
+                      <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/25">
+                        {recommendationProfile.categoryName}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {recommendationProfile.description}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {recommendationProfile.recommendations.map((rec) => {
+                  const targetApp = apps.find((a) => a.key.toLowerCase() === rec.appKey.toLowerCase());
+                  const meta = getAppMeta(rec.appKey);
+                  const isActive = targetApp?.isActivated && targetApp.status !== 'inactive';
+
+                  return (
+                    <div
+                      key={rec.appKey}
+                      className={cn(
+                        "p-3.5 rounded-xl border transition-all flex flex-col justify-between relative group",
+                        isActive
+                          ? "border-indigo-500/30 bg-indigo-500/10"
+                          : "border-white/10 bg-black/40 hover:border-indigo-500/30 hover:bg-white/[0.04]"
+                      )}
+                    >
+                      <div>
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <div className="flex items-center gap-2">
+                            <div className="p-1.5 rounded-lg bg-white/5 text-indigo-300">
+                              {meta.icon}
+                            </div>
+                            <div>
+                              <span className="text-xs font-bold text-white">
+                                {targetApp?.name || rec.appKey}
+                              </span>
+                              {rec.tag && (
+                                <span className="ml-1.5 px-1.5 py-0.5 text-[8px] font-semibold rounded bg-white/5 text-slate-300 border border-white/10">
+                                  {rec.tag}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {isActive ? (
+                            <span className="px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                              Active
+                            </span>
+                          ) : (
+                            <div className="relative group/tooltip">
+                              <span className="inline-flex items-center gap-1 text-[10px] text-indigo-300 hover:text-indigo-200 cursor-help">
+                                <HelpCircle className="w-3 h-3" />
+                                <span className="hidden sm:inline">Why this?</span>
+                              </span>
+                              <div className="absolute right-0 top-full mt-1.5 w-64 p-2.5 rounded-xl bg-slate-900 border border-slate-700 text-[11px] text-slate-300 shadow-2xl opacity-0 group-hover/tooltip:opacity-100 transition-opacity pointer-events-none z-30">
+                                <div className="font-semibold text-white mb-1 flex items-center gap-1.5">
+                                  <Sparkles className="w-3 h-3 text-[#FDB02F]" />
+                                  Why we recommend this:
+                                </div>
+                                <p className="leading-relaxed text-slate-300">
+                                  {rec.reason}
+                                </p>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        <p className="text-[11px] text-slate-400 line-clamp-2 leading-relaxed mb-3">
+                          {rec.reason}
+                        </p>
+                      </div>
+
+                      {!isActive && targetApp && (
+                        <button
+                          type="button"
+                          onClick={() => handleActivate(targetApp)}
+                          className="w-full py-1 px-2.5 rounded-lg text-[11px] font-semibold bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 hover:text-white border border-indigo-500/30 hover:border-transparent transition-all flex items-center justify-center gap-1 cursor-pointer"
+                        >
+                          <span>Activate</span>
+                          <ArrowRight className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
+
         {/* Apps grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {apps.length === 0 ? (
@@ -313,96 +462,165 @@ export const AppActivationPage: React.FC = () => {
           ) : (
             apps.map((app) => {
               const meta = getAppMeta(app.key);
-              const isComingSoon = meta.badge === 'Coming Soon';
+              const regApp = platformApps.find((p) => p.key.toLowerCase() === app.key.toLowerCase());
+              const isComingSoon = meta.availability === 'coming_soon' || regApp?.status === 'coming_soon';
               const isAlreadyActive = app.isActivated && app.status !== 'inactive';
-              const isLockedByPlan = atLimit && !isAlreadyActive && !isComingSoon;
+
+              const allowedPlans = (regApp?.planRequirements || meta.planRequirements || []).map((p: string) => p.toLowerCase());
+              const currentPlan = (org?.planKey || 'free_trial').toLowerCase();
+              const normalizedPlan = currentPlan === 'free' ? 'free_trial' : currentPlan;
+              const meetsPlanRequirements = allowedPlans.length === 0 || allowedPlans.includes(normalizedPlan);
+              const isAtFreeTrialAppLimit = atLimit && !isAlreadyActive;
+              const isLockedByPlan = !isAlreadyActive && !isComingSoon && (!meetsPlanRequirements || isAtFreeTrialAppLimit);
+              const isAvailableOnPlan = !isAlreadyActive && !isComingSoon && !isLockedByPlan;
               const isActivatingThis = activating === app.key;
+
+              const recommendationProfile = getRecommendationsForCategory(
+                org?.category || org?.industry || org?.businessType
+              );
+              const recForThisApp = recommendationProfile?.recommendations.find(
+                (r) => r.appKey.toLowerCase() === app.key.toLowerCase()
+              );
+              const activeAppKeys = apps
+                .filter((a) => a.isActivated && a.status !== 'inactive')
+                .map((a) => a.key.toLowerCase());
+              const contextualTip = getContextualTipForApp(app.key, activeAppKeys);
 
               return (
                 <div
                   key={app.key}
                   className={cn(
-                    'relative p-5 rounded-2xl border transition-all duration-200',
+                    'relative p-5 rounded-2xl border transition-all duration-200 flex flex-col justify-between',
                     isAlreadyActive
                       ? 'border-indigo-500/30 bg-indigo-500/5 shadow-[0_0_24px_rgba(99,102,241,0.07)]'
                       : isComingSoon
-                      ? 'border-white/5 bg-white/[0.02] opacity-60'
+                      ? 'border-white/5 bg-white/[0.02] opacity-75'
                       : isLockedByPlan
-                      ? 'border-white/5 bg-white/[0.02] opacity-70'
-                      : 'border-white/10 bg-white/[0.03] hover:border-indigo-500/30 hover:bg-indigo-500/5 cursor-pointer'
+                      ? 'border-amber-500/20 bg-amber-500/[0.02]'
+                      : 'border-emerald-500/30 bg-emerald-500/[0.03] hover:border-emerald-500/50 hover:bg-emerald-500/[0.06]'
                   )}
                 >
-                  {/* App header */}
-                  <div className="flex items-start justify-between gap-3 mb-3">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2.5 rounded-xl bg-white/5">{meta.icon}</div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <h3 className="text-sm font-bold text-white">
-                            {app.name}
-                          </h3>
-                          {meta.badge && meta.badge !== 'Coming Soon' && (
-                            <span className="px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                              {meta.badge}
-                            </span>
-                          )}
-                          {isComingSoon && (
-                            <span className="px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-slate-500/20 text-slate-400 border border-slate-500/30">
-                              Coming Soon
-                            </span>
-                          )}
+                  <div>
+                    {/* App header */}
+                    <div className="flex items-start justify-between gap-3 mb-3">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2.5 rounded-xl bg-white/5">{meta.icon}</div>
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h3 className="text-sm font-bold text-white">
+                              {app.name}
+                            </h3>
+                            {meta.badge && (
+                              <span className="px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                                {meta.badge}
+                              </span>
+                            )}
+                            {isComingSoon && (
+                              <span className="px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-slate-800 text-slate-400 border border-slate-700 flex items-center gap-1">
+                                <Clock className="w-2.5 h-2.5" /> Coming Soon
+                              </span>
+                            )}
+                            {isAvailableOnPlan && (
+                              <span className="px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
+                                <Sparkles className="w-2.5 h-2.5" /> Available on your plan
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-1">{statusBadge(app)}</div>
                         </div>
-                        <div className="mt-1">{statusBadge(app)}</div>
                       </div>
+                      {isLockedByPlan && (
+                        <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[10px] font-semibold shrink-0">
+                          <Lock className="w-3 h-3 text-amber-400" />
+                          <span>Requires Standard+</span>
+                        </div>
+                      )}
+                      {isAlreadyActive && (
+                        <CheckCircle2 className="w-4 h-4 text-indigo-400 flex-shrink-0 mt-1" />
+                      )}
                     </div>
-                    {isLockedByPlan && (
-                      <Lock className="w-4 h-4 text-slate-600 flex-shrink-0 mt-1" />
+
+                    {/* Description */}
+                    <p className="text-xs text-slate-400 leading-relaxed mb-3">
+                      {meta.description}
+                    </p>
+
+                    {/* Contextual Recommendation Rationale or Pairing Tip */}
+                    {recForThisApp && !isAlreadyActive && (
+                      <div className="mb-3 p-2 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-[11px] text-indigo-300 flex items-start gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-[#FDB02F] shrink-0 mt-0.5" />
+                        <div className="flex-1">
+                          <span className="font-semibold text-white">Why recommended: </span>
+                          <span className="text-slate-300">{recForThisApp.reason}</span>
+                        </div>
+                      </div>
                     )}
-                    {isAlreadyActive && (
-                      <CheckCircle2 className="w-4 h-4 text-indigo-400 flex-shrink-0 mt-1" />
+                    {!recForThisApp && contextualTip && !isAlreadyActive && (
+                      <div className="mb-3 p-2 rounded-lg bg-white/[0.03] border border-white/10 text-[11px] text-slate-300 flex items-start gap-1.5">
+                        <HelpCircle className="w-3.5 h-3.5 text-indigo-400 shrink-0 mt-0.5" />
+                        <div className="flex-1">
+                          <span className="font-semibold text-white">Smart suggestion: </span>
+                          <span className="text-slate-300">{contextualTip}</span>
+                        </div>
+                      </div>
                     )}
                   </div>
 
-                  {/* Description */}
-                  <p className="text-xs text-slate-400 leading-relaxed mb-4">
-                    {meta.description}
-                  </p>
-
-                  {/* Action button */}
-                  {!isComingSoon && (
-                    <Button
-                      size="sm"
-                      variant={isAlreadyActive ? 'outline' : 'default'}
-                      onClick={() => handleActivate(app)}
-                      disabled={isActivatingThis || isLockedByPlan || isComingSoon}
-                      className={cn(
-                        'w-full text-xs h-8 gap-1.5 transition-all',
-                        isAlreadyActive
-                          ? 'border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/10'
-                          : isLockedByPlan
-                          ? 'opacity-40 cursor-not-allowed'
-                          : 'bg-indigo-600 hover:bg-indigo-500 text-white border-0'
-                      )}
-                    >
-                      {isActivatingThis ? (
-                        <>
-                          <Spinner size="sm" /> Activating…
-                        </>
-                      ) : isAlreadyActive ? (
-                        <>
-                          Manage Branches <ArrowRight className="w-3 h-3" />
-                        </>
-                      ) : isLockedByPlan ? (
-                        <>
-                          <Crown className="w-3 h-3" /> Upgrade Required
-                        </>
-                      ) : (
-                        <>
-                          <Zap className="w-3 h-3" /> Activate
-                        </>
-                      )}
-                    </Button>
-                  )}
+                  {/* Action button with distinct state styling */}
+                  <div className="pt-2">
+                    {isComingSoon ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          toast.success(
+                            `You're on the waitlist for ${app.name}! We'll notify you as soon as it launches.`
+                          )
+                        }
+                        className="w-full text-xs h-8 gap-1.5 border-white/10 text-slate-300 hover:text-white hover:bg-white/5 cursor-pointer"
+                      >
+                        <Bell className="w-3 h-3 text-slate-400" /> Notify Me / Join Waitlist
+                      </Button>
+                    ) : isAlreadyActive ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleActivate(app)}
+                        className="w-full text-xs h-8 gap-1.5 border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/10 cursor-pointer"
+                      >
+                        Manage Branches <ArrowRight className="w-3 h-3" />
+                      </Button>
+                    ) : isLockedByPlan ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          toast.info('Redirecting to subscription upgrade...');
+                          navigate('/billing');
+                        }}
+                        className="w-full text-xs h-8 gap-1.5 border-amber-500/30 text-amber-300 hover:bg-amber-500/10 cursor-pointer"
+                      >
+                        <Lock className="w-3 h-3 text-amber-400" /> Upgrade Required
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        onClick={() => handleActivate(app)}
+                        disabled={isActivatingThis}
+                        className="w-full text-xs h-8 gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-medium border-0 cursor-pointer transition-all shadow-sm"
+                      >
+                        {isActivatingThis ? (
+                          <>
+                            <Spinner size="sm" /> Activating…
+                          </>
+                        ) : (
+                          <>
+                            <Zap className="w-3 h-3" /> Activate Application
+                          </>
+                        )}
+                      </Button>
+                    )}
+                  </div>
                 </div>
               );
             })

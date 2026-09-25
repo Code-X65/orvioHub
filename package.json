@@ -11,6 +11,15 @@
     "lint": "pnpm -r lint",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "check:registry": "pnpm --filter @orviohub/shared exec tsx ../scripts/check-registry-sync.ts",
     "test": "pnpm -r test"
+  },
+  "lighthouse": {
+    "performance": {
+      "largest-contentful-paint": 2500,
+      "first-input-delay": 100,
+      "cumulative-layout-shift": 0.1,
+      "total-blocking-time": 200
+    }
   }
 }

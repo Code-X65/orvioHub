@@ -10,7 +10,12 @@ export interface VerifiedSocialProfile {
   email: string;
   emailVerified: boolean;
   name: string;
+  firstName?: string;
+  lastName?: string;
   picture?: string;
+  locale?: string;
+  timezone?: string;
+  updatedAt?: number;
 }
 
 export interface OAuthFlowRecord {
@@ -306,7 +311,11 @@ export class OAuthService {
         email: `${prefix}@example.com`,
         emailVerified: true,
         name: `${prefix.charAt(0).toUpperCase() + prefix.slice(1)} (Google)`,
+        firstName: prefix.charAt(0).toUpperCase() + prefix.slice(1),
+        lastName: 'GoogleUser',
         picture: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80',
+        locale: 'en-US',
+        timezone: 'UTC',
       };
     }
 
@@ -344,7 +353,10 @@ export class OAuthService {
           email: payload.email.toLowerCase(),
           emailVerified: payload.email_verified === true,
           name: payload.name || payload.email.split('@')[0],
+          firstName: payload.given_name,
+          lastName: payload.family_name,
           picture: payload.picture,
+          locale: payload.locale,
         };
       } catch (error: any) {
         if (typeof error.code === 'string' && error.code.startsWith('OAUTH_')) throw error;
@@ -353,6 +365,77 @@ export class OAuthService {
         err.originalError = error.message;
         throw err;
       }
+    }
+
+    const err: any = new Error('Google OAuth credentials not configured on server.');
+    err.code = ERROR_CODES.OAUTH_NOT_CONFIGURED;
+    throw err;
+  }
+
+  public async verifyGoogleIdToken(idToken: string): Promise<VerifiedSocialProfile> {
+    if (!idToken) {
+      const err: any = new Error('Google ID token is missing.');
+      err.code = ERROR_CODES.OAUTH_IDENTITY_INVALID;
+      throw err;
+    }
+
+    // Mock handler for testing / local development sandbox
+    if (idToken.startsWith('mock_google_id_token_') || idToken.startsWith('mock_google_code_')) {
+      const parts = idToken.replace('mock_google_id_token_', '').replace('mock_google_code_', '').split('_');
+      const prefix = parts[0] || 'google.onetap';
+      return {
+        provider: 'google',
+        providerUserId: `google_uid_${prefix}`,
+        email: `${prefix}@example.com`,
+        emailVerified: true,
+        name: `${prefix.charAt(0).toUpperCase() + prefix.slice(1)} (Google One Tap)`,
+        picture: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80',
+      };
+    }
+
+    if (this.googleClient && env.GOOGLE_CLIENT_ID) {
+      try {
+        const ticket = await this.googleClient.verifyIdToken({
+          idToken,
+          audience: env.GOOGLE_CLIENT_ID,
+        });
+
+        const payload = ticket.getPayload();
+        if (!payload || !payload.sub || !payload.email) {
+          const err: any = new Error('Google ID token is missing required claims.');
+          err.code = ERROR_CODES.OAUTH_IDENTITY_INVALID;
+          throw err;
+        }
+
+        return {
+          provider: 'google',
+          providerUserId: payload.sub,
+          email: payload.email.toLowerCase(),
+          emailVerified: payload.email_verified === true,
+          name: payload.name || payload.email.split('@')[0],
+          firstName: payload.given_name,
+          lastName: payload.family_name,
+          picture: payload.picture,
+          locale: payload.locale,
+        };
+      } catch (error: any) {
+        if (typeof error.code === 'string' && error.code.startsWith('OAUTH_')) throw error;
+        const err: any = new Error('Failed to verify Google One Tap ID token.');
+        err.code = ERROR_CODES.OAUTH_PROVIDER_ERROR;
+        err.originalError = error.message;
+        throw err;
+      }
+    }
+
+    // If development environment and no live Google ID configured, allow safe local testing
+    if (env.NODE_ENV !== 'production') {
+      return {
+        provider: 'google',
+        providerUserId: `google_uid_dev_${Date.now()}`,
+        email: 'dev.tester@example.com',
+        emailVerified: true,
+        name: 'Dev Tester (Google)',
+      };
     }
 
     const err: any = new Error('Google OAuth credentials not configured on server.');
@@ -380,8 +463,14 @@ export class OAuthService {
       response_type: 'code',
     };
 
-    if (typeof paramsOrState === 'object' && paramsOrState.nonce) {
-      queryParams.nonce = paramsOrState.nonce;
+    if (typeof paramsOrState === 'object') {
+      if (paramsOrState.nonce) {
+        queryParams.nonce = paramsOrState.nonce;
+      }
+      if (paramsOrState.pkceChallenge) {
+        queryParams.code_challenge = paramsOrState.pkceChallenge;
+        queryParams.code_challenge_method = 'S256';
+      }
     }
 
     const params = new URLSearchParams(queryParams);
@@ -405,6 +494,10 @@ export class OAuthService {
         email: `${prefix}@example.com`,
         emailVerified: true,
         name: `${prefix.charAt(0).toUpperCase() + prefix.slice(1)} (Facebook)`,
+        firstName: prefix.charAt(0).toUpperCase() + prefix.slice(1),
+        lastName: 'FacebookUser',
+        locale: 'en-US',
+        timezone: 'UTC',
       };
     }
 
@@ -441,7 +534,7 @@ export class OAuthService {
         const userUrl =
           `https://graph.facebook.com/v19.0/me?` +
           new URLSearchParams({
-            fields: 'id,name,email,picture',
+            fields: 'id,name,first_name,last_name,email,picture,locale,timezone,updated_time',
             access_token: tokenData.access_token,
           }).toString();
 
@@ -464,7 +557,12 @@ export class OAuthService {
           email,
           emailVerified: Boolean(userData.email),
           name: userData.name || 'Facebook User',
+          firstName: userData.first_name,
+          lastName: userData.last_name,
           picture: userData.picture?.data?.url,
+          locale: userData.locale,
+          timezone: typeof userData.timezone === 'number' ? `UTC${userData.timezone >= 0 ? '+' : ''}${userData.timezone}` : undefined,
+          updatedAt: userData.updated_time ? new Date(userData.updated_time).getTime() : undefined,
         };
       } catch (error: any) {
         if (typeof error.code === 'string' && error.code.startsWith('OAUTH_')) throw error;

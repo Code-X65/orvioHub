@@ -308,19 +308,78 @@ export class OrganizationRepository extends BaseRepository {
     return created;
   }
 
-  public async generateShareableInviteLink(organizationId: string, userId: string, role: Role = 'MEMBER') {
+  public async generateShareableInviteLink(
+    organizationId: string,
+    userId: string,
+    role: Role = 'MEMBER',
+    expiresInDays: number = INVITATION_EXPIRY_DAYS
+  ) {
+    try {
+      await this.revokeShareableInviteLinks(organizationId, userId);
+    } catch {}
+
     const token = crypto.randomBytes(32).toString('hex');
-    const expiresAt = Date.now() + INVITATION_EXPIRY_DAYS * 86_400_000;
-    const email = `invite-${Date.now()}@team.orvio.link`;
+    const expiresAt = expiresInDays > 0 ? Date.now() + expiresInDays * 86_400_000 : Date.now() + 3650 * 86_400_000;
+    const createdAt = Date.now();
+    const email = `invite-${createdAt}@team.orvio.link`;
     await this.mutate('invitations:createInvitations', {
       organizationId,
       userId,
       invitations: [{ email, role, token, expiresAt }],
     });
     return {
+      id: token,
       inviteUrl: buildInviteUrl(token),
       token,
+      role,
       expiresAt,
+      createdAt,
+      usageCount: 0,
+      status: 'active' as const,
+    };
+  }
+
+  public async revokeShareableInviteLinks(organizationId: string, userId: string) {
+    const invites: any = await this.getOrganizationInvitations(organizationId, userId).catch(() => []);
+    if (!invites || !Array.isArray(invites)) return;
+    const activeShareLinks = invites.filter((inv: any) =>
+      inv.email && inv.email.endsWith('@team.orvio.link') && (inv.status === 'PENDING' || !inv.status)
+    );
+    for (const inv of activeShareLinks) {
+      await this.cancelInvitation(inv.id, userId).catch(() => {});
+    }
+  }
+
+  public async getActiveShareableInviteLink(organizationId: string, userId: string) {
+    const invites: any = await this.getOrganizationInvitations(organizationId, userId).catch(() => []);
+    if (!invites || !Array.isArray(invites)) return null;
+    const shareLinks = invites.filter((inv: any) =>
+      inv.email && inv.email.endsWith('@team.orvio.link')
+    );
+    if (shareLinks.length === 0) return null;
+    shareLinks.sort((a: any, b: any) => (b.createdAt || 0) - (a.createdAt || 0));
+    const latest = shareLinks[0];
+
+    const acceptedCount = invites.filter((inv: any) =>
+      inv.email && inv.email.endsWith('@team.orvio.link') && inv.status === 'ACCEPTED'
+    ).length;
+
+    const isExpired = latest.expiresAt && latest.expiresAt < Date.now();
+    const isCancelled = latest.status === 'CANCELLED';
+
+    let status = 'active';
+    if (isCancelled) status = 'revoked';
+    else if (isExpired) status = 'expired';
+
+    return {
+      id: latest.id,
+      token: latest.token,
+      inviteUrl: buildInviteUrl(latest.token || latest.id),
+      role: latest.role || 'MEMBER',
+      createdAt: latest.createdAt || Date.now(),
+      expiresAt: latest.expiresAt,
+      usageCount: acceptedCount,
+      status,
     };
   }
 

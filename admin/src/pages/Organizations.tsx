@@ -15,12 +15,14 @@ import {
 } from "lucide-react";
 import { useAuth } from "../hooks/useAuth";
 import { adminOrganizationsApi } from "../api/adminOrganizations";
+import { adminBillingApi } from "../api/adminBilling";
 import SearchBar from "../components/SearchBar";
 import StatusBadge from "../components/StatusBadge";
 import Pagination from "../components/Pagination";
 import ConfirmDialog from "../components/ConfirmDialog";
 import SuspendModal from "../components/SuspendModal";
 import DeleteModal from "../components/DeleteModal";
+import { CheckSquare, Square, Download } from "lucide-react";
 
 export const Organizations: React.FC = () => {
   const { sessionToken } = useAuth();
@@ -33,8 +35,11 @@ export const Organizations: React.FC = () => {
   const [planFilter, setPlanFilter] = useState("all");
   const [branchFilter, setBranchFilter] = useState("all");
   const [onboardingFilter, setOnboardingFilter] = useState("all");
+  const [dunningFilter, setDunningFilter] = useState("all");
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [bulkActionLoading, setBulkActionLoading] = useState(false);
 
   // Modals for structured suspension and deletion
   const [suspendModalOrg, setSuspendModalOrg] = useState<any>(null);
@@ -61,7 +66,7 @@ export const Organizations: React.FC = () => {
       const res: any = await adminOrganizationsApi.listOrganizations({
         sessionToken,
         search,
-        statusFilter,
+        statusFilter: dunningFilter !== "all" ? dunningFilter : statusFilter,
         planFilter,
         branchFilter,
         onboardingFilter,
@@ -80,7 +85,74 @@ export const Organizations: React.FC = () => {
 
   useEffect(() => {
     loadWorkspaces();
-  }, [sessionToken, page, search, statusFilter, planFilter, branchFilter, onboardingFilter]);
+  }, [sessionToken, page, search, statusFilter, planFilter, branchFilter, onboardingFilter, dunningFilter]);
+
+  const handleToggleSelectAll = () => {
+    if (workspaces.length === 0) return;
+    const currentIds = workspaces.map((w) => w.id);
+    const allSelected = currentIds.every((id) => selectedIds.includes(id));
+    if (allSelected) {
+      setSelectedIds((prev) => prev.filter((id) => !currentIds.includes(id)));
+    } else {
+      setSelectedIds((prev) => Array.from(new Set([...prev, ...currentIds])));
+    }
+  };
+
+  const handleToggleSelect = (id: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleBulkAction = async (action: string, planKey?: string, days?: number) => {
+    if (selectedIds.length === 0) return;
+    const confirmMsg = `Are you sure you want to perform "${action}" on ${selectedIds.length} selected organizations?`;
+    if (!confirm(confirmMsg)) return;
+
+    setBulkActionLoading(true);
+    try {
+      const res = await adminBillingApi.bulkUpdate(sessionToken || undefined, {
+        organizationIds: selectedIds,
+        action,
+        planKey,
+        days,
+      });
+      alert(res.message || "Bulk action executed successfully.");
+      setSelectedIds([]);
+      await loadWorkspaces();
+    } catch (err: any) {
+      alert(err.message || "Bulk operation failed.");
+    } finally {
+      setBulkActionLoading(false);
+    }
+  };
+
+  const handleBulkExportCSV = () => {
+    if (selectedIds.length === 0) return;
+    const selectedOrgs = workspaces.filter((w) => selectedIds.includes(w.id));
+    const headers = ["ID", "Name", "Slug", "Owner Name", "Owner Email", "Plan", "Status", "Branches"];
+    const rows = selectedOrgs.map((w) => [
+      w.id,
+      w.name,
+      w.slug,
+      w.ownerName,
+      w.ownerEmail,
+      w.subscription?.planKey || "free_trial",
+      w.subscription?.status || w.status,
+      w.branchCount || 1,
+    ]);
+
+    const csvContent =
+      "data:text/csv;charset=utf-8," +
+      [headers.join(","), ...rows.map((e) => e.join(","))].join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `organizations_export_${new Date().toISOString().split("T")[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   const handleSuspend = (ws: any) => {
     setSuspendModalOrg(ws);
@@ -154,8 +226,10 @@ export const Organizations: React.FC = () => {
     });
   };
 
+  const allPageSelected = workspaces.length > 0 && workspaces.every((w) => selectedIds.includes(w.id));
+
   return (
-    <div className="space-y-6 max-w-7xl mx-auto">
+    <div className="space-y-6 max-w-7xl mx-auto relative pb-16">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
@@ -164,13 +238,13 @@ export const Organizations: React.FC = () => {
             <h1 className="text-xl font-bold text-white tracking-tight">Organizations & Workspaces</h1>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Manage provisioned organizations, view tenant topology, and govern workspace products.
+            Manage provisioned organizations, view tenant topology, and govern workspace subscriptions.
           </p>
         </div>
 
         <button
           onClick={loadWorkspaces}
-          className="self-start sm:self-auto px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-semibold border border-slate-800 transition flex items-center gap-2"
+          className="self-start sm:self-auto px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-semibold border border-slate-800 transition flex items-center gap-2 cursor-pointer"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
           <span>Refresh</span>
@@ -178,7 +252,7 @@ export const Organizations: React.FC = () => {
       </div>
 
       {/* Filters & Search */}
-      <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
+      <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between shadow-xl">
         <div className="flex-1 max-w-md">
           <SearchBar
             value={search}
@@ -191,6 +265,23 @@ export const Organizations: React.FC = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
+          {/* Dunning Risk Filter */}
+          <select
+            value={dunningFilter}
+            onChange={(e) => {
+              setDunningFilter(e.target.value);
+              setPage(1);
+            }}
+            className="px-3 py-2 rounded-xl bg-slate-950/90 border border-slate-800 text-xs text-amber-300 outline-none focus:border-brand-500 font-medium"
+          >
+            <option value="all">Billing & Dunning: All</option>
+            <option value="past_due">Past Due (Any Dunning)</option>
+            <option value="dunning_day_1">Dunning Stage 1 (Day 1)</option>
+            <option value="dunning_day_3">Dunning Stage 2 (Day 3)</option>
+            <option value="dunning_day_5">Dunning Stage 3 (Day 5)</option>
+            <option value="dunning_day_7">Dunning Stage 4 (Day 7)</option>
+          </select>
+
           <select
             value={statusFilter}
             onChange={(e) => {
@@ -215,6 +306,7 @@ export const Organizations: React.FC = () => {
             <option value="all">All Plans</option>
             <option value="free_trial">Free Trial</option>
             <option value="standard">Standard</option>
+            <option value="premium">Premium</option>
           </select>
 
           <select
@@ -252,7 +344,20 @@ export const Organizations: React.FC = () => {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="border-b border-slate-800 bg-slate-950/60 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                <th className="py-3.5 px-5">Organization</th>
+                <th className="py-3.5 px-3 w-10 text-center">
+                  <button
+                    onClick={handleToggleSelectAll}
+                    className="text-slate-400 hover:text-white transition cursor-pointer"
+                    title={allPageSelected ? "Deselect page" : "Select all on page"}
+                  >
+                    {allPageSelected ? (
+                      <CheckSquare className="w-4 h-4 text-brand-400" />
+                    ) : (
+                      <Square className="w-4 h-4" />
+                    )}
+                  </button>
+                </th>
+                <th className="py-3.5 px-4">Organization</th>
                 <th className="py-3.5 px-4">Owner</th>
                 <th className="py-3.5 px-4">Plan & Status</th>
                 <th className="py-3.5 px-4">Branches</th>
@@ -265,162 +370,182 @@ export const Organizations: React.FC = () => {
             <tbody className="divide-y divide-slate-800/80 text-xs text-slate-300">
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="py-16 text-center text-slate-500">
+                  <td colSpan={9} className="py-16 text-center text-slate-500">
                     <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-brand-400" />
                     Loading organizations...
                   </td>
                 </tr>
               ) : workspaces.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-16 text-center text-slate-500">
+                  <td colSpan={9} className="py-16 text-center text-slate-500">
                     No organizations found.
                   </td>
                 </tr>
               ) : (
-                workspaces.map((ws) => (
-                  <tr key={ws.id} className="hover:bg-slate-800/40 transition">
-                    <td className="py-4 px-5">
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center font-bold text-indigo-300 text-xs">
-                          {ws.name?.charAt(0)?.toUpperCase() || "O"}
-                        </div>
-                        <div>
-                          <Link
-                            to={`/organizations/${ws.id}`}
-                            className="font-bold text-white hover:text-brand-400 transition flex items-center gap-1.5"
-                          >
-                            <span>{ws.name}</span>
-                            <ExternalLink className="w-3 h-3 text-slate-500 opacity-60 hover:opacity-100" />
-                          </Link>
-                          <p className="text-[11px] text-slate-400 font-mono">/{ws.slug}</p>
-                        </div>
-                      </div>
-                    </td>
-
-                    <td className="py-4 px-4">
-                      <div>
-                        <p className="font-semibold text-slate-200">{ws.ownerName}</p>
-                        <p className="text-[11px] text-slate-400">{ws.ownerEmail}</p>
-                      </div>
-                    </td>
-
-                    <td className="py-4 px-4">
-                      <div className="space-y-1">
-                        <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase border ${
-                          (ws.subscription?.planKey || "").toLowerCase() === "standard"
-                            ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/20"
-                            : (ws.subscription?.planKey || "").toLowerCase() === "premium"
-                            ? "bg-purple-500/10 text-purple-300 border-purple-500/20"
-                            : "bg-indigo-500/10 text-indigo-300 border-indigo-500/20"
-                        }`}>
-                          {(() => {
-                            const key = (ws.subscription?.planKey || "free_trial").toLowerCase();
-                            if (key === "free_trial" || key === "trial") return "Free Trial";
-                            if (key === "standard") return "Standard";
-                            if (key === "premium") return "Premium";
-                            return key.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
-                          })()}
-                        </span>
-                        <div className="flex items-center gap-1 text-[10px] text-slate-400">
-                          <StatusBadge status={ws.subscription?.status || ws.status} size="sm" />
-                        </div>
-                      </div>
-                    </td>
-
-                    <td className="py-4 px-4">
-                      <span className="inline-flex items-center gap-1.5 text-xs text-slate-300 font-semibold bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
-                        <Store className="w-3 h-3 text-brand-400" />
-                        {ws.branchCount || 0} {ws.branchCount === 1 ? "branch" : "branches"}
-                      </span>
-                    </td>
-
-                    <td className="py-4 px-4">
-                      <div className="flex flex-wrap gap-1">
-                        {ws.enabledProducts?.length === 0 ? (
-                          <span className="text-[11px] text-slate-500">None</span>
-                        ) : (
-                          ws.enabledProducts?.map((p: string) => (
-                            <span
-                              key={p}
-                              className="px-2 py-0.5 rounded bg-brand-500/10 text-brand-300 text-[10px] font-bold border border-brand-500/20"
+                workspaces.map((ws) => {
+                  const isSelected = selectedIds.includes(ws.id);
+                  return (
+                    <tr
+                      key={ws.id}
+                      className={`hover:bg-slate-800/40 transition ${
+                        isSelected ? "bg-brand-600/10" : ""
+                      }`}
+                    >
+                      <td className="py-4 px-3 text-center">
+                        <button
+                          onClick={() => handleToggleSelect(ws.id)}
+                          className="text-slate-400 hover:text-white transition cursor-pointer"
+                        >
+                          {isSelected ? (
+                            <CheckSquare className="w-4 h-4 text-brand-400" />
+                          ) : (
+                            <Square className="w-4 h-4" />
+                          )}
+                        </button>
+                      </td>
+                      <td className="py-4 px-4">
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 rounded-xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center font-bold text-indigo-300 text-xs">
+                            {ws.name?.charAt(0)?.toUpperCase() || "O"}
+                          </div>
+                          <div>
+                            <Link
+                              to={`/organizations/${ws.id}`}
+                              className="font-bold text-white hover:text-brand-400 transition flex items-center gap-1.5"
                             >
-                              {p}
-                            </span>
-                          ))
-                        )}
-                      </div>
-                    </td>
+                              <span>{ws.name}</span>
+                              <ExternalLink className="w-3 h-3 text-slate-500 opacity-60 hover:opacity-100" />
+                            </Link>
+                            <p className="text-[11px] text-slate-400 font-mono">/{ws.slug}</p>
+                          </div>
+                        </div>
+                      </td>
 
-                    <td className="py-4 px-4">
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-1">
-                          {ws.onboardingFlags?.orgProfileCompleted ? (
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-medium">
-                              <CheckCircle className="w-2.5 h-2.5" /> Org Profile
-                            </span>
+                      <td className="py-4 px-4">
+                        <div>
+                          <p className="font-semibold text-slate-200">{ws.ownerName}</p>
+                          <p className="text-[11px] text-slate-400">{ws.ownerEmail}</p>
+                        </div>
+                      </td>
+
+                      <td className="py-4 px-4">
+                        <div className="space-y-1">
+                          <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase border ${
+                            (ws.subscription?.planKey || "").toLowerCase() === "standard"
+                              ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/20"
+                              : (ws.subscription?.planKey || "").toLowerCase() === "premium"
+                              ? "bg-purple-500/10 text-purple-300 border-purple-500/20"
+                              : "bg-indigo-500/10 text-indigo-300 border-indigo-500/20"
+                          }`}>
+                            {(() => {
+                              const key = (ws.subscription?.planKey || "free_trial").toLowerCase();
+                              if (key === "free_trial" || key === "trial") return "Free Trial";
+                              if (key === "standard") return "Standard";
+                              if (key === "premium") return "Premium";
+                              return key.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
+                            })()}
+                          </span>
+                          <div className="flex items-center gap-1 text-[10px] text-slate-400">
+                            <StatusBadge status={ws.subscription?.status || ws.status} size="sm" />
+                          </div>
+                        </div>
+                      </td>
+
+                      <td className="py-4 px-4">
+                        <span className="inline-flex items-center gap-1.5 text-xs text-slate-300 font-semibold bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
+                          <Store className="w-3 h-3 text-brand-400" />
+                          {ws.branchCount || 0} {ws.branchCount === 1 ? "branch" : "branches"}
+                        </span>
+                      </td>
+
+                      <td className="py-4 px-4">
+                        <div className="flex flex-wrap gap-1">
+                          {ws.enabledProducts?.length === 0 ? (
+                            <span className="text-[11px] text-slate-500">None</span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800/60 text-slate-400 border border-slate-700/40 text-[10px] font-medium">
-                              <Clock className="w-2.5 h-2.5" /> Org Profile
-                            </span>
+                            ws.enabledProducts?.map((p: string) => (
+                              <span
+                                key={p}
+                                className="px-2 py-0.5 rounded bg-brand-500/10 text-brand-300 text-[10px] font-bold border border-brand-500/20"
+                              >
+                                {p}
+                              </span>
+                            ))
                           )}
                         </div>
-                        <div className="flex items-center gap-1">
-                          {ws.onboardingFlags?.inventoryOnboardingCompleted ? (
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 text-[10px] font-medium">
-                              <CheckCircle className="w-2.5 h-2.5" /> Inventory App
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800/60 text-slate-400 border border-slate-700/40 text-[10px] font-medium">
-                              <Clock className="w-2.5 h-2.5" /> Inventory App
-                            </span>
-                          )}
+                      </td>
+
+                      <td className="py-4 px-4">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-1">
+                            {ws.onboardingFlags?.orgProfileCompleted ? (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-medium">
+                                <CheckCircle className="w-2.5 h-2.5" /> Org Profile
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800/60 text-slate-400 border border-slate-700/40 text-[10px] font-medium">
+                                <Clock className="w-2.5 h-2.5" /> Org Profile
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1">
+                            {ws.onboardingFlags?.inventoryOnboardingCompleted ? (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 text-[10px] font-medium">
+                                <CheckCircle className="w-2.5 h-2.5" /> Inventory App
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800/60 text-slate-400 border border-slate-700/40 text-[10px] font-medium">
+                                <Clock className="w-2.5 h-2.5" /> Inventory App
+                              </span>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    </td>
+                      </td>
 
-                    <td className="py-4 px-4 text-[11px] text-slate-400">
-                      {ws.createdAt ? new Date(ws.createdAt).toLocaleDateString() : "—"}
-                    </td>
+                      <td className="py-4 px-4 text-[11px] text-slate-400">
+                        {ws.createdAt ? new Date(ws.createdAt).toLocaleDateString() : "—"}
+                      </td>
 
-                    <td className="py-4 px-5 text-right">
-                      <div className="flex items-center justify-end gap-1.5">
-                        <button
-                          title="Reset Onboarding flow"
-                          onClick={() => handleResetOnboarding(ws)}
-                          className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-indigo-400 hover:bg-indigo-500/10 hover:border-indigo-500/30 transition"
-                        >
-                          <RotateCcw className="w-3.5 h-3.5" />
-                        </button>
-
-                        {ws.status === "active" ? (
+                      <td className="py-4 px-5 text-right">
+                        <div className="flex items-center justify-end gap-1.5">
                           <button
-                            title="Suspend organization"
-                            onClick={() => handleSuspend(ws)}
-                            className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-rose-400 hover:bg-rose-500/10 hover:border-rose-500/30 transition"
+                            title="Reset Onboarding flow"
+                            onClick={() => handleResetOnboarding(ws)}
+                            className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-indigo-400 hover:bg-indigo-500/10 hover:border-indigo-500/30 transition cursor-pointer"
                           >
-                            <Ban className="w-3.5 h-3.5" />
+                            <RotateCcw className="w-3.5 h-3.5" />
                           </button>
-                        ) : (
-                          <button
-                            title="Activate organization"
-                            onClick={() => handleActivate(ws)}
-                            className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-500/30 transition"
-                          >
-                            <Shield className="w-3.5 h-3.5" />
-                          </button>
-                        )}
 
-                        <button
-                          title="Delete organization"
-                          onClick={() => handleDelete(ws)}
-                          className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 hover:border-rose-500/30 transition"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                          {ws.status === "active" ? (
+                            <button
+                              title="Suspend organization"
+                              onClick={() => handleSuspend(ws)}
+                              className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-rose-400 hover:bg-rose-500/10 hover:border-rose-500/30 transition cursor-pointer"
+                            >
+                              <Ban className="w-3.5 h-3.5" />
+                            </button>
+                          ) : (
+                            <button
+                              title="Activate organization"
+                              onClick={() => handleActivate(ws)}
+                              className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-500/30 transition cursor-pointer"
+                            >
+                              <Shield className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+
+                          <button
+                            title="Delete organization"
+                            onClick={() => handleDelete(ws)}
+                            className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 hover:border-rose-500/30 transition cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -434,6 +559,61 @@ export const Organizations: React.FC = () => {
           onPageChange={setPage}
         />
       </div>
+
+      {/* Floating Bulk Action Bar */}
+      {selectedIds.length > 0 && (
+        <div className="fixed bottom-6 inset-x-0 max-w-2xl mx-auto z-40 px-4 animate-in slide-in-from-bottom-5 duration-200">
+          <div className="p-3 rounded-2xl bg-slate-900/95 border border-brand-500/40 shadow-2xl backdrop-blur-md flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2 pl-2">
+              <span className="w-6 h-6 rounded-full bg-brand-600 text-white font-bold flex items-center justify-center text-[11px]">
+                {selectedIds.length}
+              </span>
+              <span className="font-semibold text-white">Selected</span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => handleBulkAction("upgrade", "standard")}
+                disabled={bulkActionLoading}
+                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition cursor-pointer disabled:opacity-50"
+              >
+                Upgrade Standard
+              </button>
+
+              <button
+                onClick={() => handleBulkAction("upgrade", "premium")}
+                disabled={bulkActionLoading}
+                className="px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-semibold transition cursor-pointer disabled:opacity-50"
+              >
+                Upgrade Premium
+              </button>
+
+              <button
+                onClick={() => handleBulkAction("extend_trial", undefined, 14)}
+                disabled={bulkActionLoading}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-brand-300 border border-slate-700 font-semibold transition cursor-pointer disabled:opacity-50"
+              >
+                +14d Trial
+              </button>
+
+              <button
+                onClick={handleBulkExportCSV}
+                className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition cursor-pointer"
+                title="Export selected as CSV"
+              >
+                <Download className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                onClick={() => setSelectedIds([])}
+                className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-white transition cursor-pointer"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Structured Suspend Organization Modal */}
       {suspendModalOrg && (

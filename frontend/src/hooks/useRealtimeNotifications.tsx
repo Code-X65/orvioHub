@@ -93,17 +93,16 @@ export function resolveTargetSubdomainUrl(actionUrl?: string): string {
 }
 
 export function useRealtimeNotifications() {
-  const { isAuthenticated, user } = useAuthStore();
-  const {
-    notifications,
-    unreadCount,
-    soundEnabled,
-    fetchNotifications,
-    fetchUnreadCount,
-    markAsRead,
-    acceptInvite,
-    declineInvite,
-  } = useNotificationStore();
+  const isAuthenticated = useAuthStore(s => s.isAuthenticated);
+  const userId = useAuthStore(s => s.user?.id);
+  const notifications = useNotificationStore(s => s.notifications);
+  const unreadCount = useNotificationStore(s => s.unreadCount);
+  const soundEnabled = useNotificationStore(s => s.soundEnabled);
+  const fetchNotifications = useNotificationStore(s => s.fetchNotifications);
+  const fetchUnreadCount = useNotificationStore(s => s.fetchUnreadCount);
+  const markAsRead = useNotificationStore(s => s.markAsRead);
+  const acceptInvite = useNotificationStore(s => s.acceptInvite);
+  const declineInvite = useNotificationStore(s => s.declineInvite);
 
   const location = useLocation();
   const navigate = useNavigate();
@@ -113,13 +112,25 @@ export function useRealtimeNotifications() {
 
   // 1. Report user active page to backend (for smart active-screen toast suppression)
   useEffect(() => {
-    if (!isAuthenticated || !user?.id) return;
+    if (!isAuthenticated || !userId) return;
+    const isAuthRoute =
+      location.pathname === '/login' ||
+      location.pathname === '/signup' ||
+      location.pathname === '/verify-email' ||
+      location.pathname.startsWith('/verify-email') ||
+      location.pathname === '/forgot-password' ||
+      location.pathname === '/reset-password' ||
+      location.pathname.startsWith('/auth/') ||
+      location.pathname.startsWith('/onboard') ||
+      location.pathname.startsWith('/onboarding');
+    if (isAuthRoute) return;
+
     const now = Date.now();
     if (now - lastActiveReportTime.current > 15000) {
       lastActiveReportTime.current = now;
       api.post('/notifications/activity', { page: location.pathname }).catch(() => {});
     }
-  }, [isAuthenticated, user?.id, location.pathname]);
+  }, [isAuthenticated, userId, location.pathname]);
 
   // 2. Setup BroadcastChannel for cross-tab coordination
   useEffect(() => {
@@ -265,44 +276,76 @@ export function useRealtimeNotifications() {
   useEffect(() => {
     if (!isAuthenticated) return;
 
-    let isMounted = true;
-    const fetchLatest = async () => {
-      if (!isMounted) return;
-      const prevList = notifications;
-      await fetchUnreadCount();
-      await fetchNotifications(25);
+    const isOnboarding = location.pathname.startsWith('/onboard') || location.pathname.startsWith('/onboarding');
+    if (isOnboarding) return;
 
-      const currentList = useNotificationStore.getState().notifications;
-      // Check for newly arrived unread notifications
-      for (const item of currentList) {
-        const id = item._id || item.id;
-        if (id && item.status === 'UNREAD' && !knownNotificationIds.current.has(id)) {
-          // If we had an initial list loaded, fire toast for newly arrived item
-          if (prevList.length > 0) {
-            handleNewNotification(item);
-          } else {
-            knownNotificationIds.current.add(id);
+    let isMounted = true;
+    let inFlightFetch = false;
+
+    const fetchLatest = async () => {
+      if (!isMounted || inFlightFetch) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+
+      inFlightFetch = true;
+      try {
+        const prevList = useNotificationStore.getState().notifications;
+        await fetchUnreadCount();
+        await fetchNotifications(25);
+
+        const currentList = useNotificationStore.getState().notifications;
+        // Check for newly arrived unread notifications
+        for (const item of currentList) {
+          const id = item._id || item.id;
+          if (id && item.status === 'UNREAD' && !knownNotificationIds.current.has(id)) {
+            if (prevList.length > 0) {
+              handleNewNotification(item);
+            } else {
+              knownNotificationIds.current.add(id);
+            }
           }
         }
+      } catch {
+        // Silently ignore background polling error
+      } finally {
+        inFlightFetch = false;
       }
     };
 
-    fetchLatest();
+    // Schedule initial load when browser main thread is idle
+    const idleHandle = typeof window !== 'undefined' && 'requestIdleCallback' in window
+      ? (window as any).requestIdleCallback(() => fetchLatest(), { timeout: 2500 })
+      : setTimeout(fetchLatest, 1000);
 
-    // Stream sync timer (10s active, 30s background)
-    const interval = setInterval(fetchLatest, 10000);
-
-    const onFocus = () => {
-      fetchLatest();
+    // Adaptive visibility-aware background polling (30s active / 60s background)
+    const getPollInterval = () => {
+      if (typeof document !== 'undefined' && (document.visibilityState === 'hidden' || (document as any).hidden)) {
+        return 60000; // 1 minute when tab is hidden
+      }
+      return 30000; // 30 seconds when active
     };
-    window.addEventListener('focus', onFocus);
+
+    let interval = setInterval(fetchLatest, getPollInterval());
+
+    const onVisibilityChange = () => {
+      clearInterval(interval);
+      if (document.visibilityState === 'visible') {
+        fetchLatest();
+      }
+      interval = setInterval(fetchLatest, getPollInterval());
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
 
     return () => {
       isMounted = false;
+      if (typeof window !== 'undefined' && 'cancelIdleCallback' in window && typeof idleHandle === 'number') {
+        (window as any).cancelIdleCallback(idleHandle);
+      } else {
+        clearTimeout(idleHandle);
+      }
       clearInterval(interval);
-      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [isAuthenticated, fetchNotifications, fetchUnreadCount, handleNewNotification]);
+  }, [isAuthenticated, location.pathname, fetchNotifications, fetchUnreadCount, handleNewNotification]);
 
   return {
     notifications,

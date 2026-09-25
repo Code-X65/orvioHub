@@ -13,6 +13,7 @@ import {
   Archive,
   Mail,
   Lock,
+  X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
@@ -198,30 +199,51 @@ export const WorkspaceSwitcher: React.FC<WorkspaceSwitcherProps> = ({
               <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
-                placeholder="Search organizations..."
+                placeholder="Search organizations by name or slug..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-[#080608] border border-white/10 rounded-xs pl-8 pr-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-[#714b67]"
+                className="w-full bg-[#080608] border border-white/10 rounded-xs pl-8 pr-7 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-[#714b67]"
                 autoFocus
               />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-0.5"
+                  title="Clear search"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
             </div>
           </div>
 
           {/* Categorized List of Workspaces */}
           <div className="max-h-64 overflow-y-auto p-1.5 space-y-3 divide-y divide-white/5">
             {filteredWorkspaces.length === 0 ? (
-              <div className="p-4 text-center text-xs text-slate-500">
-                No organizations found
+              <div className="p-6 text-center space-y-2">
+                <p className="text-xs text-slate-400">
+                  No organizations found {searchQuery ? `matching "${searchQuery}"` : ''}
+                </p>
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="text-[11px] text-[#e2b9d8] hover:underline cursor-pointer"
+                  >
+                    Clear search filter
+                  </button>
+                )}
               </div>
             ) : (
               <>
-                {/* Owned by you */}
+                {/* Your Organizations (Owned by you) */}
                 {ownedWorkspaces.length > 0 && (
                   <div className="space-y-1">
                     <div className="px-2 pt-1 flex items-center justify-between text-[10px] font-semibold tracking-wider text-slate-400 uppercase font-mono">
                       <span className="flex items-center gap-1.5">
                         <Building2 className="w-3 h-3 text-[#f0d8e8]" />
-                        Owned by you ({ownedWorkspaces.length})
+                        Your Organizations ({ownedWorkspaces.length})
                       </span>
                     </div>
                     {ownedWorkspaces.map((w) => renderWorkspaceItem(w, false))}

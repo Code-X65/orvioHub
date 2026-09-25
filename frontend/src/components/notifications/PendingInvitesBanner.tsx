@@ -36,15 +36,24 @@ export const PendingInvitesBanner: React.FC<PendingInvitesBannerProps> = ({
   const [invites, setInvites] = useState<PendingInvite[]>([]);
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [actionType, setActionType] = useState<'accept' | 'decline' | null>(null);
+  const requestInFlightRef = React.useRef<Promise<void> | null>(null);
 
   const fetchPendingInvites = useCallback(async () => {
     if (!isAuthenticated) return;
-    try {
-      const res = await api.get<{ invites: PendingInvite[] }>('/notifications/pending-invites');
-      setInvites(res?.invites || []);
-    } catch {
-      // ignore
-    }
+    if (requestInFlightRef.current) return requestInFlightRef.current;
+
+    const request = (async () => {
+      try {
+        const res = await api.get<{ invites: PendingInvite[] }>('/notifications/pending-invites');
+        setInvites(res?.invites || []);
+      } catch {
+        // The banner is supplementary; keep it hidden if it cannot refresh.
+      } finally {
+        requestInFlightRef.current = null;
+      }
+    })();
+    requestInFlightRef.current = request;
+    return request;
   }, [isAuthenticated]);
 
   useEffect(() => {

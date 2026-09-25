@@ -18,6 +18,7 @@ import { VerifyPhone } from "./pages/auth/VerifyPhone";
 import { AuthCallback } from "./pages/auth/AuthCallback";
 import { ConfirmEmailChange } from "./pages/auth/ConfirmEmailChange";
 import { AcceptInvite } from "./pages/auth/AcceptInvite";
+import { TwoFactorChallenge } from "./pages/auth/TwoFactorChallenge";
 
 // Profile & Account Settings
 import { PersonalProfile } from "./pages/profile/PersonalProfile";
@@ -42,8 +43,7 @@ import { PersonalOnboarding } from "./pages/onboarding/PersonalOnboarding";
 
 // Home Surface Hub (Organizations -> Applications -> Branches)
 import { HomePage } from "./surfaces/home/pages/HomePage";
-import { ApplicationsPage } from "./surfaces/home/pages/ApplicationsPage";
-import { BranchesPage } from "./surfaces/home/pages/BranchesPage";
+import { WorkplacePage } from "./surfaces/home/pages/WorkplacePage";
 
 // Inventory Flagship MVP
 import { InventoryLayout } from "./layouts/InventoryLayout";
@@ -54,17 +54,6 @@ import { WorkspaceSettingsPage } from "./pages/settings/WorkspaceSettingsPage";
 import { InventorySettingsPage } from "./pages/settings/InventorySettingsPage";
 import { BranchSettingsPage } from "./pages/settings/BranchSettingsPage";
 import { WorkspaceMembers } from "./pages/settings/WorkspaceMembers";
-import { BranchTeamManagement } from "./pages/inventory/BranchTeamManagement";
-import { ApplicationTeamListPage } from "./pages/team/ApplicationTeamListPage";
-import { AddTeamMemberPage } from "./pages/team/AddTeamMemberPage";
-import { BulkAddTeamMembersPage } from "./pages/team/BulkAddTeamMembersPage";
-import { TeamMemberDetailPage } from "./pages/team/TeamMemberDetailPage";
-import { TransferStaffWizardPage } from "./pages/team/TransferStaffWizardPage";
-import { BranchVisualOrgPage } from "./pages/team/BranchVisualOrgPage";
-import { TeamInvitationsPage } from "./pages/team/TeamInvitationsPage";
-import { TeamAuditLogPage } from "./pages/team/TeamAuditLogPage";
-import { PersonalTeamView } from "./pages/team/PersonalTeamView";
-import { TeamMigrationPage } from "./pages/team/TeamMigrationPage";
 import {
   ProductsCatalogPage,
   SalesPOSPage,
@@ -103,6 +92,8 @@ export function FallbackRoutes() {
           </AuthGuard>
         }
       />
+      <Route path="/login/2fa" element={<TwoFactorChallenge />} />
+      <Route path="/2fa-challenge" element={<TwoFactorChallenge />} />
       <Route
         path="/signup"
         element={
@@ -420,116 +411,6 @@ export function FallbackRoutes() {
         }
       />
       <Route
-        path="/inventory/team"
-        element={
-          <AuthGuard>
-            <InventoryLayout>
-              <ApplicationTeamListPage />
-            </InventoryLayout>
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/inventory/team/members"
-        element={
-          <AuthGuard>
-            <InventoryLayout>
-              <ApplicationTeamListPage />
-            </InventoryLayout>
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/inventory/team/members/add"
-        element={
-          <AuthGuard>
-            <InventoryLayout>
-              <AddTeamMemberPage />
-            </InventoryLayout>
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/inventory/team/members/bulk-add"
-        element={
-          <AuthGuard>
-            <InventoryLayout>
-              <BulkAddTeamMembersPage />
-            </InventoryLayout>
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/inventory/team/members/:userId"
-        element={
-          <AuthGuard>
-            <InventoryLayout>
-              <TeamMemberDetailPage />
-            </InventoryLayout>
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/inventory/team/members/:userId/transfer"
-        element={
-          <AuthGuard>
-            <InventoryLayout>
-              <TransferStaffWizardPage />
-            </InventoryLayout>
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/inventory/team/branches"
-        element={
-          <AuthGuard>
-            <InventoryLayout>
-              <BranchVisualOrgPage />
-            </InventoryLayout>
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/inventory/team/invitations"
-        element={
-          <AuthGuard>
-            <InventoryLayout>
-              <TeamInvitationsPage />
-            </InventoryLayout>
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/inventory/team/audit"
-        element={
-          <AuthGuard>
-            <InventoryLayout>
-              <TeamAuditLogPage />
-            </InventoryLayout>
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/inventory/my-team"
-        element={
-          <AuthGuard>
-            <InventoryLayout>
-              <PersonalTeamView />
-            </InventoryLayout>
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/settings/team-migration"
-        element={
-          <AuthGuard>
-            <InventoryLayout>
-              <TeamMigrationPage />
-            </InventoryLayout>
-          </AuthGuard>
-        }
-      />
-      <Route
         path="/inventory/settings/branch"
         element={
           <AuthGuard>
@@ -618,28 +499,24 @@ export function FallbackRoutes() {
         }
       />
       <Route
-        path="/apps"
+        path="/workplace"
         element={
           <AuthGuard>
-            <ApplicationsPage />
+            <WorkplacePage />
           </AuthGuard>
         }
+      />
+      <Route
+        path="/apps"
+        element={<Navigate to="/workplace" replace />}
       />
       <Route
         path="/applications"
-        element={
-          <AuthGuard>
-            <ApplicationsPage />
-          </AuthGuard>
-        }
+        element={<Navigate to="/workplace" replace />}
       />
       <Route
         path="/branches"
-        element={
-          <AuthGuard>
-            <BranchesPage />
-          </AuthGuard>
-        }
+        element={<Navigate to="/workplace" replace />}
       />
       <Route
         path="/settings"

@@ -1,6 +1,7 @@
 import { mutation, query } from "./_generated/server.js";
 import { v } from "convex/values";
 import { DEFAULT_PLANS } from "./plans.js";
+import { requireAdminPermission } from "./adminAuth.js";
 
 // Helper to authenticate admin
 async function verifyAdminSession(
@@ -8,27 +9,7 @@ async function verifyAdminSession(
   sessionToken?: string,
   requiredPermission?: string
 ) {
-  if (!sessionToken) throw new Error("Admin authentication required.");
-  const session = await ctx.db
-    .query("adminSessions")
-    .withIndex("by_token", (q: any) => q.eq("sessionToken", sessionToken))
-    .first();
-
-  if (!session || session.expiresAt < Date.now()) {
-    throw new Error("Invalid or expired session.");
-  }
-  const admin = await ctx.db.get(session.adminId);
-  if (!admin || !admin.isActive) {
-    throw new Error("Unauthorized admin account.");
-  }
-
-  // Permission check placeholder (all active platformAdmins have full superadmin permissions)
-  if (requiredPermission && admin.role !== "super_admin" && admin.role !== "superadmin") {
-    // If specific non-superadmin roles are introduced in the future:
-    throw new Error(`Forbidden: missing permission ${requiredPermission}`);
-  }
-
-  return { admin, session };
+  return requireAdminPermission(ctx, sessionToken, requiredPermission || "admin.users.view");
 }
 
 async function logAudit(
@@ -549,10 +530,9 @@ export const getUserProfile = query({
     const user = await ctx.db.get(args.userId);
     if (!user) throw new Error("User not found.");
 
-    const [userProfile, userPref, userPhones] = await Promise.all([
+    const [userProfile, userPref] = await Promise.all([
       ctx.db.query("userProfiles").withIndex("by_userId", (q) => q.eq("userId", args.userId)).first(),
       ctx.db.query("userPreferences").withIndex("by_userId", (q) => q.eq("userId", args.userId)).first(),
-      ctx.db.query("userPhones").withIndex("by_user", (q) => q.eq("userId", args.userId)).collect(),
     ]);
 
     return {
@@ -579,12 +559,7 @@ export const getUserProfile = query({
       phoneUsedForRecovery: !!user.phoneUsedForRecovery,
       phoneUsedForMfa: !!user.phoneUsedForMfa,
       phoneVisibility: user.phoneVisibility || "workspace",
-      additionalPhones: userPhones.map((p: any) => ({
-        phone: p.phone,
-        isVerified: p.isVerified,
-        isPrimary: p.isPrimary,
-        verifiedAt: p.verifiedAt,
-      })),
+      additionalPhones: [],
       country: user.country || "Nigeria",
       state: user.state,
       stateCode: user.stateCode,
@@ -1058,14 +1033,12 @@ export const getUserAccess = query({
       workspaces,
       userMemberships,
       productMembershipsList,
-      appBranchAccessList,
       branches,
       transfers,
     ] = await Promise.all([
       ctx.db.query("workspaces").collect(),
       ctx.db.query("workspaceMemberships").withIndex("by_user", (q: any) => q.eq("userId", args.userId)).collect(),
       ctx.db.query("productMemberships").collect(),
-      ctx.db.query("appBranchAccess").collect(),
       ctx.db.query("branches").collect(),
       ctx.db.query("organizationAuditLogs").withIndex("by_userId", (q: any) => q.eq("userId", args.userId)).collect(),
     ]);
@@ -1096,9 +1069,6 @@ export const getUserAccess = query({
           branches: branches
             .filter((b: any) => b.workspaceId === ws._id)
             .map((b: any) => {
-              const bMem = appBranchAccessList.find(
-                (bm: any) => bm.branchId === b._id && bm.userId === args.userId
-              );
               return {
                 branchId: b._id,
                 branchName: b.name,
@@ -1106,11 +1076,11 @@ export const getUserAccess = query({
                 isPrimary: !!b.isPrimary,
                 status: b.status || "active",
                 userRole: isOwner ? "Manager / Owner" : "Member",
-                userStatus: isOwner ? "active" : bMem?.status || "active",
+                userStatus: "active",
                 permissions: isOwner
                   ? ["view", "sell", "adjust_stock", "reports", "manage_staff", "settings"]
                   : ["view", "sell"],
-                assignedAt: bMem?.createdAt || ws.createdAt,
+                assignedAt: ws.createdAt,
               };
             }),
         },
@@ -2246,7 +2216,13 @@ export const overrideUserPhoneVerified = mutation({
     if (!user.phone) throw new Error("User has no phone number to mark verified.");
 
     const now = Date.now();
+    const phoneDigits = user.phone.replace(/\D/g, "");
+    const phoneNorm = phoneDigits.startsWith("234")
+      ? `+${phoneDigits}`
+      : (phoneDigits.startsWith("0") ? `+234${phoneDigits.slice(1)}` : `+234${phoneDigits}`);
+
     await ctx.db.patch(args.userId, {
+      phoneNormalized: user.phoneNormalized || phoneNorm,
       phoneVerifiedAt: now,
       phoneStatus: "verified",
       updatedAt: now,
@@ -2269,4 +2245,3 @@ export const overrideUserPhoneVerified = mutation({
     return { success: true, verifiedAt: now };
   },
 });
-

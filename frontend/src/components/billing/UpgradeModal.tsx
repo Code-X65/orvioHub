@@ -16,6 +16,7 @@ import {
 import { useHost } from "@/host/useHost";
 import { getApiUrl } from "@orviohub/shared";
 import { useAuthStore } from "@/stores/useAuthStore";
+import { usePlanConfig } from "@/hooks/usePlanConfig";
 import { openPaystackPopup } from "@/lib/payment";
 import { toast } from "sonner";
 
@@ -31,6 +32,56 @@ interface UpgradeModalProps {
 
 type PaymentGatewayTab = "paystack" | "transfer";
 type SelectedPlanTier = "standard" | "premium";
+
+export const PlanComparisonTable: React.FC<{
+  currentPlanKey: string;
+  targetPlanKey: string;
+}> = ({ currentPlanKey, targetPlanKey }) => {
+  const { planMap, getPlanLimits } = usePlanConfig();
+
+  const currentKey = (currentPlanKey || "free_trial").toLowerCase().replace(/^free$/, "free_trial");
+  const targetKey = targetPlanKey.toLowerCase();
+
+  const currentLimits = getPlanLimits(currentKey);
+  const targetLimits = getPlanLimits(targetKey);
+
+  const currentPlanName = planMap[currentKey]?.name || (currentKey === "standard" ? "Standard" : currentKey === "premium" ? "Premium" : "Free Trial");
+  const targetPlanName = planMap[targetKey]?.name || (targetKey === "premium" ? "Premium" : "Standard");
+
+  const currentMaxWorkspaces = currentKey === "premium" ? 10 : currentKey === "standard" ? 3 : 1;
+  const targetMaxWorkspaces = targetKey === "premium" ? 10 : 3;
+
+  const currentMaxApps = currentKey === "premium" ? 10 : currentKey === "standard" ? 3 : 1;
+  const targetMaxApps = targetKey === "premium" ? "Unlimited" : 3;
+
+  const features = [
+    { label: "Workspaces", current: currentMaxWorkspaces, target: targetMaxWorkspaces },
+    { label: "Applications", current: currentMaxApps, target: targetMaxApps },
+    { label: "Branches per App", current: currentLimits.branches || 1, target: targetLimits.branches || 3 },
+    { label: "Team Members", current: currentLimits.members || 2, target: targetLimits.members || 10 },
+    { label: "Products / SKUs", current: (currentLimits.products || 500).toLocaleString(), target: (targetLimits.products || 5000).toLocaleString() },
+    { label: "Monthly Transactions", current: (currentLimits.monthly_transactions || 300).toLocaleString(), target: (targetLimits.monthly_transactions || 5000).toLocaleString() },
+  ];
+
+  return (
+    <div className="border border-white/10 rounded-xl overflow-hidden bg-black/30 shadow-inner my-3">
+      <div className="grid grid-cols-3 bg-white/5 p-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+        <span>Resource Metric</span>
+        <span className="text-center text-slate-400">Current ({currentPlanName})</span>
+        <span className="text-center text-[#FDB02F] font-bold">{targetPlanName}</span>
+      </div>
+      <div className="divide-y divide-white/5">
+        {features.map((f) => (
+          <div key={f.label} className="grid grid-cols-3 p-2 text-xs">
+            <span className="text-slate-300 font-medium">{f.label}</span>
+            <span className="text-center text-slate-400">{f.current}</span>
+            <span className="text-center text-emerald-400 font-bold">{f.target}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 export function getUpgradeMessage(triggerReason?: string) {
   switch (triggerReason) {
@@ -551,6 +602,14 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
                   </div>
                 ))}
               </div>
+            </div>
+
+            {/* Plan Limit Comparison Table */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1 uppercase tracking-wide">
+                Plan Comparison & Quota Changes
+              </label>
+              <PlanComparisonTable currentPlanKey={normalizedPlan} targetPlanKey={selectedPlan} />
             </div>
 
             {/* Billing Interval Toggle */}

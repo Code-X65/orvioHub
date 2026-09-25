@@ -7,6 +7,8 @@ export const adminUserRoutes: FastifyPluginAsync = async (fastify) => {
     return (
       (request.headers['x-admin-session'] as string) ||
       (request.headers['x-admin-token'] as string) ||
+      (request as any).cookies?.['admin_session'] ||
+      (request as any).cookies?.['access_token'] ||
       request.headers['authorization']?.replace(/^Bearer\s+/i, '') ||
       ''
     );

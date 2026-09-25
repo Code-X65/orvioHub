@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import { api } from '@/lib/api';
 
 export interface OnboardingState {
@@ -170,12 +170,12 @@ export const useOnboardingStore = create<OnboardingState>()(
 }),
     {
       name: 'orvio_onboarding_state',
+      storage: createJSONStorage(() => sessionStorage),
       partialize: (state) => ({
         status: state.status,
         currentStep: state.currentStep,
         completedSteps: state.completedSteps,
         skippedSteps: state.skippedSteps,
-        formData: state.formData,
       }),
     }
   )

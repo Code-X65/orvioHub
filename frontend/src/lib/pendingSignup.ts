@@ -1,3 +1,5 @@
+import { api } from '@/lib/api';
+
 export interface PendingSignup {
   email: string;
   name?: string;
@@ -10,14 +12,15 @@ export interface PendingSignup {
 }
 
 const STORAGE_KEY = 'orvio_pending_signup';
+export const PENDING_SIGNUP_EXPIRY_MS = 7 * 86_400_000; // 7 days (was 24 hours)
 
 export function getPendingSignup(): PendingSignup | null {
   try {
     const raw = sessionStorage.getItem(STORAGE_KEY) || localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as PendingSignup;
-    // Expire pending recovery state after 24 hours
-    if (Date.now() - parsed.timestamp > 86_400_000) {
+    // Expire pending recovery state after 7 days
+    if (Date.now() - parsed.timestamp > PENDING_SIGNUP_EXPIRY_MS) {
       clearPendingSignup();
       return null;
     }
@@ -66,3 +69,16 @@ export function generateIdempotencyKey(): string {
   }
   return 'idemp_' + Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
 }
+
+export async function fetchServerIdempotencyKey(): Promise<string> {
+  try {
+    const res: any = await api.get('/auth/idempotency-key');
+    if (res?.idempotencyKey) {
+      return res.idempotencyKey;
+    }
+  } catch {
+    // Fallback to client-side crypto generation if network is unavailable
+  }
+  return generateIdempotencyKey();
+}
+

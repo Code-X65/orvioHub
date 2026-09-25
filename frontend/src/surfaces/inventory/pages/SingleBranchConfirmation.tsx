@@ -3,12 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { useBranchStore } from '@/stores/useBranchStore';
-import { useLocationStore } from '@/stores/useLocationStore';
-import { CatalogOnboardingModal } from '../components/CatalogOnboardingModal';
-import { CustomSelect, type SelectOption } from '@/components/ui/custom-select';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
 import { toast } from 'sonner';
 import {
@@ -20,10 +15,9 @@ import {
   Phone,
   Edit2,
   Building2,
-  Save,
-  Boxes,
-  Copy,
 } from 'lucide-react';
+import { BranchForm, type BranchFormData, cleanPhone } from '@/components/branch';
+import { useBranchLimit } from '@/hooks/useBranchLimit';
 
 export const SingleBranchConfirmation: React.FC = () => {
   const navigate = useNavigate();
@@ -32,61 +26,31 @@ export const SingleBranchConfirmation: React.FC = () => {
 
   const { currentWorkspace, workspaces, selectWorkspace } = useWorkspaceStore();
   const { loadBranches, updateBranch, setActiveBranch } = useBranchStore();
-  const { states, fetchStates } = useLocationStore();
 
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
-  const [isCatalogModalOpen, setIsCatalogModalOpen] = useState(false);
-  const [planKey, setPlanKey] = useState<'free_trial' | 'standard'>('free_trial');
+  const [planKey, setPlanKey] = useState<string>('free_trial');
 
   // Editable Branch Fields
   const [branchId, setBranchId] = useState<string>('');
   const [branchName, setBranchName] = useState<string>('Main Branch');
   const [branchCode, setBranchCode] = useState<string>('MAIN');
 
-  // Split Address Fields (Matching Organization Wizard)
+  // Address Fields
   const [street, setStreet] = useState<string>('');
   const [city, setCity] = useState<string>('');
   const [stateName, setStateName] = useState<string>('Lagos');
   const [country] = useState<string>('Nigeria');
-
-  // Phone input (digits without +234)
   const [phoneDigits, setPhoneDigits] = useState<string>('');
 
   const activeOrgId = orgParam || currentWorkspace?.id || localStorage.getItem('orvio_active_workspace_id') || workspaces[0]?.workspace?.id;
   const activeOrgName = currentWorkspace?.name || workspaces.find((w) => w.workspace.id === activeOrgId)?.workspace.name || 'Your Business';
 
-  useEffect(() => {
-    fetchStates();
-  }, [fetchStates]);
-
-  const stateOptions: SelectOption[] = states.length > 0
-    ? states.map((s) => ({ value: s.name, label: s.name }))
-    : [
-        { value: 'Lagos', label: 'Lagos' },
-        { value: 'Abuja (FCT)', label: 'Abuja (FCT)' },
-        { value: 'Rivers', label: 'Rivers' },
-        { value: 'Oyo', label: 'Oyo' },
-        { value: 'Kano', label: 'Kano' },
-        { value: 'Delta', label: 'Delta' },
-        { value: 'Ogun', label: 'Ogun' },
-        { value: 'Anambra', label: 'Anambra' },
-        { value: 'Kaduna', label: 'Kaduna' },
-        { value: 'Enugu', label: 'Enugu' },
-      ];
-
-  const cleanPhone = (val: string) => {
-    let raw = val.replace(/\s+/g, '');
-    if (raw.startsWith('+234')) {
-      raw = raw.slice(4);
-    } else if (raw.startsWith('234')) {
-      raw = raw.slice(3);
-    } else if (raw.startsWith('0')) {
-      raw = raw.slice(1);
-    }
-    return raw;
-  };
+  const { isFreeTrial, planName } = useBranchLimit({
+    planKey,
+    currentCount: 1,
+  });
 
   useEffect(() => {
     let mounted = true;
@@ -115,12 +79,7 @@ export const SingleBranchConfirmation: React.FC = () => {
               currentWorkspace?.planKey
             );
             if (mounted && rawPk) {
-              const subPlan = String(rawPk).toLowerCase();
-              if (subPlan === 'standard' || subPlan === 'premium') {
-                setPlanKey('standard');
-              } else {
-                setPlanKey('free_trial');
-              }
+              setPlanKey(String(rawPk).toLowerCase());
             }
           })
           .catch(() => {});
@@ -162,7 +121,7 @@ export const SingleBranchConfirmation: React.FC = () => {
             }
           }
         }
-      } catch (err: any) {
+      } catch {
         toast.error('Failed to initialize main branch.');
       } finally {
         if (mounted) setIsLoading(false);
@@ -175,63 +134,38 @@ export const SingleBranchConfirmation: React.FC = () => {
     };
   }, [activeOrgId, activeOrgName, currentWorkspace, selectWorkspace, loadBranches, setActiveBranch]);
 
-  const handlePrefillFromOrg = async () => {
-    try {
-      // 1. Check currentWorkspace
-      const ws = currentWorkspace as any;
-      const meta = ws?.metadata || {};
-      let orgStreet = ws?.street || meta.street || '';
-      let orgCity = ws?.city || meta.city || '';
-      let orgState = ws?.state || meta.state || '';
-      let orgPhone = ws?.phone || meta.phone || '';
-
-      // 2. Fallback to API get organization details
-      if (!orgStreet && !orgPhone && activeOrgId) {
-        const res = await api.get<any>(`/organizations/${activeOrgId}`).catch(() => null);
-        const orgData = res?.organization || res?.data?.organization || res;
-        if (orgData) {
-          orgStreet = orgData.street || orgData.address || '';
-          orgCity = orgData.city || '';
-          orgState = orgData.state || '';
-          orgPhone = orgData.phone || '';
-        }
-      }
-
-      if (orgStreet) setStreet(orgStreet);
-      if (orgCity) setCity(orgCity);
-      if (orgState) setStateName(orgState);
-      if (orgPhone) setPhoneDigits(cleanPhone(orgPhone));
-
-      toast.success('Pre-filled address and contact details from organization!');
-    } catch {
-      toast.info('Could not retrieve organization address details.');
-    }
-  };
-
-  const handleSaveEdit = async () => {
-    if (!branchName.trim()) {
-      toast.error('Branch name is required.');
-      return;
-    }
+  const handleSaveFormEdit = async (formData: BranchFormData) => {
+    setBranchName(formData.name);
+    if (formData.code) setBranchCode(formData.code);
+    if (formData.phoneDigits) setPhoneDigits(formData.phoneDigits);
+    if (formData.street) setStreet(formData.street);
+    if (formData.city) setCity(formData.city);
+    if (formData.state) setStateName(formData.state);
 
     setIsSaving(true);
     try {
-      const formattedPhone = phoneDigits.trim() ? `+234${cleanPhone(phoneDigits)}` : undefined;
-      const addressParts = [street.trim(), city.trim(), stateName.trim(), country].filter(Boolean);
-      const formattedAddress = addressParts.length > 0 ? addressParts.join(', ') : undefined;
-
       if (branchId) {
-        const updated = await updateBranch(branchId, {
-          name: branchName.trim(),
-          code: branchCode.trim() || undefined,
-          street: street.trim() || undefined,
-          city: city.trim() || undefined,
-          state: stateName.trim() || undefined,
-          country: 'Nigeria',
-          address: formattedAddress,
-          formattedAddress,
-          phone: formattedPhone,
-        });
+        const updated = await updateBranch(
+          branchId,
+          {
+            name: formData.name,
+            code: formData.code || undefined,
+            street: formData.street || undefined,
+            city: formData.city || undefined,
+            state: formData.state || undefined,
+            stateCode: formData.stateCode || undefined,
+            lga: formData.lga || undefined,
+            country: formData.country || 'Nigeria',
+            blockNumber: formData.blockNumber || undefined,
+            area: formData.area || undefined,
+            landmark: formData.landmark || undefined,
+            postalCode: formData.postalCode || undefined,
+            address: formData.address,
+            formattedAddress: formData.address,
+            phone: formData.phone,
+          },
+          activeOrgId
+        );
         if (updated) {
           setActiveBranch(updated);
         }
@@ -264,7 +198,7 @@ export const SingleBranchConfirmation: React.FC = () => {
           address: formattedAddress,
           formattedAddress,
           phone: formattedPhone,
-        }).catch(() => null);
+        }, activeOrgId).catch(() => null);
       }
 
       let targetBranchId = branchId;
@@ -275,15 +209,25 @@ export const SingleBranchConfirmation: React.FC = () => {
           setActiveBranch(target);
           targetBranchId = target.id || target._id || targetBranchId;
         }
+
+        // Initialize the inventory onboarding flow for this branch
+        await api
+          .post('/onboarding/inventory/start', {
+            workspaceId: activeOrgId,
+            initialStep: 'product_setup',
+          }, {
+            headers: { 'x-workspace-id': activeOrgId },
+          })
+          .catch(() => null);
       } else if (finalBranch) {
         setActiveBranch(finalBranch);
         targetBranchId = finalBranch.id || finalBranch._id || targetBranchId;
       }
 
-      toast.success(`Welcome to ${activeOrgName} Inventory!`);
-      navigate(`/dashboard?org=${activeOrgId}${targetBranchId ? `&branchId=${targetBranchId}` : ''}`);
+      toast.success(`Primary branch confirmed! Let's configure products and make your first sale.`);
+      navigate(`/onboard/inventory?org=${activeOrgId}${targetBranchId ? `&branchId=${targetBranchId}` : ''}`);
     } catch {
-      navigate(`/dashboard?org=${activeOrgId}${branchId ? `&branchId=${branchId}` : ''}`);
+      navigate(`/onboard/inventory?org=${activeOrgId}${branchId ? `&branchId=${branchId}` : ''}`);
     } finally {
       setIsSaving(false);
     }
@@ -295,14 +239,14 @@ export const SingleBranchConfirmation: React.FC = () => {
   if (isLoading) {
     return (
       <div className="min-h-screen bg-black text-slate-100 flex flex-col justify-between animate-pulse">
-        <div className="h-20 border-b border-white/5 bg-black/90 px-6 sm:px-12 flex items-center justify-between">
-          <div className="w-28 h-8 rounded-xs bg-white/10" />
-          <div className="w-20 h-8 rounded-xs bg-white/5" />
+        <div className="h-20 border-b border-white/5 bg-black/90 px-4 sm:px-12 flex items-center justify-between">
+          <div className="w-28 h-8 rounded-sm bg-white/10" />
+          <div className="w-20 h-8 rounded-sm bg-white/5" />
         </div>
-        <div className="flex-1 max-w-2xl w-full mx-auto px-6 py-12 space-y-6">
-          <div className="w-48 h-7 rounded-xs bg-white/10" />
-          <div className="w-80 h-4 rounded-xs bg-white/5" />
-          <div className="h-64 rounded-2xl bg-white/[0.02] border border-white/5" />
+        <div className="flex-1 max-w-2xl w-full mx-auto px-4 sm:px-6 py-12 space-y-6">
+          <div className="w-48 h-7 rounded-sm bg-white/10" />
+          <div className="w-80 h-4 rounded-sm bg-white/5" />
+          <div className="h-64 rounded-sm bg-white/[0.02] border border-white/5" />
         </div>
       </div>
     );
@@ -311,38 +255,41 @@ export const SingleBranchConfirmation: React.FC = () => {
   return (
     <div className="min-h-screen bg-black text-slate-100 flex flex-col justify-between selection:bg-[#714b67] selection:text-white">
       {/* Top Header */}
-      <header className="h-16 border-b border-white/10 px-6 flex items-center justify-between bg-[#0d090d]">
+      <header className="h-16 border-b border-white/10 px-4 sm:px-6 flex items-center justify-between bg-[#0d090d]">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-[#714b67] flex items-center justify-center text-white font-bold text-sm shadow-md">
-            <Store className="w-5 h-5" />
+          <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-sm bg-[#714b67] flex items-center justify-center text-white font-bold text-sm shadow-md shrink-0">
+            <Store className="w-4 h-4 sm:w-5 sm:h-5" />
           </div>
-          <div>
-            <div className="text-xs font-bold text-white flex items-center gap-1.5">
+          <div className="min-w-0">
+            <div className="text-xs font-bold text-white flex items-center gap-1.5 truncate">
               <span>{activeOrgName}</span>
               <span className="text-slate-500">•</span>
               <span className="text-[#c79dbd]">Branch Setup</span>
             </div>
-            <p className="text-[10px] text-slate-400">Primary Operational Location</p>
+            <p className="text-[10px] text-slate-400 truncate">Primary Operational Location</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] font-bold px-2.5 py-1 rounded-full bg-[#714b67]/20 border border-[#714b67]/30 text-[#c79dbd] flex items-center gap-1.5">
+        <div className="flex items-center gap-2 shrink-0 ml-2">
+          <span className="text-[11px] font-bold px-2.5 py-1 rounded-sm bg-[#714b67]/20 border border-[#714b67]/30 text-[#c79dbd] flex items-center gap-1.5">
             <Sparkles className="w-3.5 h-3.5 text-[#FDB02F]" />
-            <span>{planKey === 'standard' ? 'Standard Plan' : '30-Day Free Trial (1 Branch)'}</span>
+            <span className="hidden sm:inline">
+              {isFreeTrial ? '30-Day Free Trial (1 Branch)' : `${planName} Plan`}
+            </span>
+            <span className="sm:hidden">Trial</span>
           </span>
         </div>
       </header>
 
       {/* Main Confirmation Content */}
-      <main className="flex-1 max-w-xl w-full mx-auto px-4 sm:px-6 py-10 space-y-8 animate-in zoom-in-95 duration-300">
+      <main className="flex-1 max-w-xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-10 space-y-6 sm:space-y-8 animate-in zoom-in-95 duration-300">
         {/* Success Icon & Headings */}
         <div className="text-center space-y-3">
-          <div className="w-16 h-16 rounded-3xl bg-[#714b67]/25 border border-[#714b67]/50 flex items-center justify-center text-[#FDB02F] mx-auto shadow-xl shadow-[#714b67]/20">
-            <CheckCircle2 className="w-8 h-8" />
+          <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-sm bg-[#714b67]/25 border border-[#714b67]/50 flex items-center justify-center text-[#FDB02F] mx-auto shadow-xl shadow-[#714b67]/20">
+            <CheckCircle2 className="w-7 h-7 sm:w-8 sm:h-8" />
           </div>
           <div className="space-y-1.5">
-            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#714b67]/20 border border-[#714b67]/30 text-[#c79dbd] text-[11px] font-bold">
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-sm bg-[#714b67]/20 border border-[#714b67]/30 text-[#c79dbd] text-[11px] font-bold">
               <Sparkles className="w-3 h-3 text-[#FDB02F]" />
               <span>Ready for Operations</span>
             </div>
@@ -356,22 +303,22 @@ export const SingleBranchConfirmation: React.FC = () => {
         </div>
 
         {/* Branch Details Card */}
-        <div className="p-6 rounded-2xl bg-[#120b10] border border-[#714b67]/30 shadow-xl space-y-5">
-          <div className="flex items-center justify-between pb-3 border-b border-white/10">
+        <div className="p-4 sm:p-6 rounded-sm bg-[#120b10] border border-[#714b67]/30 shadow-xl space-y-4 sm:space-y-5">
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-white/10">
             <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-[#714b67]/25 flex items-center justify-center text-white">
+              <div className="w-8 h-8 rounded-sm bg-[#714b67]/25 flex items-center justify-center text-white shrink-0">
                 <Store className="w-4 h-4" />
               </div>
-              <div>
+              <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <h3 className="text-sm font-bold text-white">{branchName}</h3>
+                  <h3 className="text-sm font-bold text-white truncate">{branchName}</h3>
                   {branchCode && (
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/10 text-slate-300">
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-sm bg-white/10 text-slate-300">
                       {branchCode}
                     </span>
                   )}
                 </div>
-                <span className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wider">
+                <span className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wider block truncate">
                   Primary Operational Location
                 </span>
               </div>
@@ -383,144 +330,38 @@ export const SingleBranchConfirmation: React.FC = () => {
                 variant="outline"
                 size="sm"
                 onClick={() => setIsEditing(true)}
-                className="h-8 border-white/10 bg-white/5 hover:bg-white/10 text-slate-300 text-xs gap-1.5 cursor-pointer"
+                className="h-8 rounded-sm border-white/10 bg-white/5 hover:bg-white/10 text-slate-300 text-xs gap-1.5 cursor-pointer"
               >
                 <Edit2 className="w-3 h-3 text-[#c79dbd]" />
-                <span>Edit Details</span>
+                <span>Edit</span>
               </Button>
             )}
           </div>
 
           {isEditing ? (
-            <div className="space-y-4 animate-in fade-in duration-200">
-              {/* Quick-fill Button */}
-              <div className="flex items-center justify-between p-2.5 rounded-xl bg-white/[0.03] border border-white/10 text-xs">
-                <span className="text-slate-300 font-medium">Use parent organization details?</span>
-                <button
-                  type="button"
-                  onClick={handlePrefillFromOrg}
-                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#714b67]/30 hover:bg-[#714b67]/50 border border-[#714b67]/40 text-[#d4a8c9] text-xs font-semibold transition cursor-pointer"
-                >
-                  <Copy className="w-3 h-3" />
-                  <span>Use Organization Address & Phone</span>
-                </button>
-              </div>
-
-              {/* Branch Name & Code */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="sm:col-span-2 space-y-1.5">
-                  <Label className="text-xs text-slate-300 font-semibold">
-                    Branch Name <span className="text-rose-400">*</span>
-                  </Label>
-                  <Input
-                    value={branchName}
-                    onChange={(e) => setBranchName(e.target.value)}
-                    placeholder="e.g. Main Store or Lagos Island Warehouse"
-                    className="bg-black/60 border-white/15 text-xs text-white"
-                    required
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-slate-300 font-semibold">Branch Code</Label>
-                  <Input
-                    value={branchCode}
-                    onChange={(e) => setBranchCode(e.target.value.toUpperCase())}
-                    placeholder="MAIN"
-                    maxLength={6}
-                    className="bg-black/60 border-white/15 text-xs text-white font-mono uppercase"
-                  />
-                </div>
-              </div>
-
-              {/* Contact Phone (Standardized +234) */}
-              <div className="space-y-1.5">
-                <Label className="text-xs text-slate-300 font-semibold">Branch Contact Phone</Label>
-                <div className="relative flex items-center h-10 bg-[#0e0a0d] border border-white/15 rounded-md text-xs transition-all focus-within:ring-1 focus-within:ring-[#714b67] focus-within:border-[#714b67]">
-                  <div className="flex items-center gap-1.5 pl-3 pr-2.5 h-full border-r border-white/10 text-slate-300 select-none shrink-0 bg-white/[0.02]">
-                    <Phone className="w-3.5 h-3.5 text-slate-500" />
-                    <span className="text-xs font-medium text-slate-200">+234</span>
-                  </div>
-                  <input
-                    type="tel"
-                    placeholder="801 234 5678"
-                    value={phoneDigits}
-                    onChange={(e) => setPhoneDigits(e.target.value)}
-                    className="w-full h-full bg-transparent px-3 text-white placeholder:text-slate-600 text-xs focus:outline-none"
-                  />
-                </div>
-              </div>
-
-              {/* Structured Address (Split like Organization Wizard) */}
-              <div className="space-y-3 pt-2 border-t border-white/10">
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-300">
-                  <MapPin className="w-3.5 h-3.5 text-[#FDB02F]" />
-                  <span>Physical Address Details</span>
-                </div>
-
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-slate-300 font-medium">Street / Area Address</Label>
-                  <Input
-                    placeholder="e.g. 14 Marina Road, Victoria Island"
-                    value={street}
-                    onChange={(e) => setStreet(e.target.value)}
-                    className="bg-black/60 border-white/15 text-xs text-white"
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-slate-300 font-medium">City / Town</Label>
-                    <Input
-                      placeholder="e.g. Ikeja"
-                      value={city}
-                      onChange={(e) => setCity(e.target.value)}
-                      className="bg-black/60 border-white/15 text-xs text-white"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-slate-300 font-medium">State</Label>
-                    <CustomSelect
-                      value={stateName}
-                      onChange={setStateName}
-                      options={stateOptions}
-                      placeholder="Select State"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-slate-300 font-medium">Country</Label>
-                    <Input
-                      value={country}
-                      disabled
-                      className="bg-white/5 border-white/10 text-slate-400 cursor-not-allowed text-xs"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Action Buttons */}
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-white/10">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setIsEditing(false)}
-                  className="text-xs text-slate-400 hover:text-white"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={handleSaveEdit}
-                  disabled={isSaving}
-                  className="bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold gap-1.5 cursor-pointer"
-                >
-                  {isSaving ? <Spinner className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
-                  <span>Save Changes</span>
-                </Button>
-              </div>
+            <div className="pt-2 animate-in fade-in duration-200">
+              <BranchForm
+                mode="edit"
+                initialValues={{
+                  name: branchName,
+                  code: branchCode,
+                  phoneDigits,
+                  street,
+                  city,
+                  state: stateName,
+                  country,
+                }}
+                organizationId={activeOrgId}
+                showCode={true}
+                showOrgPrefill={true}
+                variant="plain"
+                theme="plum"
+                isSubmitting={isSaving}
+                submitLabel="Save Changes"
+                submittingLabel="Saving..."
+                onCancel={() => setIsEditing(false)}
+                onSubmit={handleSaveFormEdit}
+              />
             </div>
           ) : (
             <div className="space-y-3 text-xs">
@@ -541,42 +382,27 @@ export const SingleBranchConfirmation: React.FC = () => {
         </div>
 
         {/* Action Buttons */}
-        <div className="pt-2 space-y-2">
+        <div className="pt-2">
           <Button
             type="button"
-            onClick={() => setIsCatalogModalOpen(true)}
-            className="w-full py-3.5 rounded-xl bg-[#714b67] hover:bg-[#86597a] text-white text-xs sm:text-sm font-bold shadow-xl shadow-[#714b67]/30 transition-all hover:scale-[1.01] flex items-center justify-center gap-2 cursor-pointer"
-          >
-            <Boxes className="w-4 h-4 text-[#FDB02F]" />
-            <span>Set Up Product Catalog</span>
-            <ArrowRight className="w-4 h-4" />
-          </Button>
-
-          <Button
-            type="button"
-            variant="ghost"
             onClick={handleContinue}
-            className="w-full py-2.5 text-xs text-slate-400 hover:text-white cursor-pointer"
+            disabled={isSaving}
+            className="w-full py-4 rounded-sm bg-[#714b67] hover:bg-[#86597a] text-white text-sm font-bold shadow-xl shadow-[#714b67]/30 transition-all hover:scale-[1.01] flex items-center justify-center gap-2 cursor-pointer"
           >
-            <span>Skip to Inventory Dashboard</span>
+            {isSaving ? (
+              <>
+                <Spinner className="w-4 h-4" />
+                <span>Preparing Your Dashboard...</span>
+              </>
+            ) : (
+              <>
+                <span>Go to Inventory Dashboard</span>
+                <ArrowRight className="w-4 h-4 text-[#FDB02F]" />
+              </>
+            )}
           </Button>
         </div>
       </main>
-
-      {/* Catalog Onboarding Modal (1-Click Sample vs CSV Upload) */}
-      <CatalogOnboardingModal
-        isOpen={isCatalogModalOpen}
-        orgId={activeOrgId}
-        orgName={activeOrgName}
-        onComplete={() => {
-          setIsCatalogModalOpen(false);
-          handleContinue();
-        }}
-        onSkip={() => {
-          setIsCatalogModalOpen(false);
-          handleContinue();
-        }}
-      />
     </div>
   );
 };

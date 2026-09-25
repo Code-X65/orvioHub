@@ -59,27 +59,30 @@ h1, h2, h3, h4, h5, h6 {
   letter-spacing: normal;
 }
 
-/* Glassmorphism & Light Theme Styling */
+/* Glassmorphism & Light Theme Styling (Hardware Accelerated) */
 .orvio-glass-card {
-  background: rgba(255, 255, 255, 0.88);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   border: 1px solid rgba(226, 232, 240, 0.9);
   box-shadow: 0 20px 50px -15px rgba(0, 102, 255, 0.08), 0 0 1px 1px rgba(255, 255, 255, 0.8) inset;
+  transform: translateZ(0);
 }
 
 .orvio-dashboard-card {
   background: #FFFFFF;
   border: 1px solid rgba(226, 232, 240, 0.9);
   box-shadow: 0 25px 60px -20px rgba(15, 23, 42, 0.12), 0 0 0 1px rgba(0, 102, 255, 0.05);
+  transform: translateZ(0);
 }
 
 .orvio-floating-panel {
-  background: rgba(255, 255, 255, 0.94);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(219, 234, 254, 0.9);
   box-shadow: 0 30px 60px -15px rgba(0, 102, 255, 0.18), 0 10px 25px -5px rgba(15, 23, 42, 0.1);
+  transform: translateZ(0);
 }
 
 .orvio-blue-gradient {
@@ -146,18 +149,22 @@ h1, h2, h3, h4, h5, h6 {
 
 .animate-float-slow {
   animation: float-slow 7s ease-in-out infinite;
+  will-change: transform;
 }
 
 .animate-float-reverse {
   animation: float-reverse 8s ease-in-out infinite;
+  will-change: transform;
 }
 
 .animate-pulse-subtle {
   animation: pulse-subtle 3s ease-in-out infinite;
+  will-change: transform, opacity;
 }
 
 .animate-pulse-glow {
   animation: pulse-glow 4s ease-in-out infinite;
+  will-change: opacity, filter;
 }
 
 .animate-dash-move {

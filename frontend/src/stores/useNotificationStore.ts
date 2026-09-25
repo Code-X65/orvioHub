@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { api } from '@/lib/api';
 import { toast } from 'sonner';
+import { getErrorMessage } from '@/lib/errorMapper';
 
 export type NotificationCategory = 'SECURITY' | 'WORKSPACE' | 'INVENTORY' | 'BILLING' | 'SYSTEM';
 export type NotificationPriority = 'LOW' | 'NORMAL' | 'HIGH' | 'URGENT';
@@ -117,6 +118,9 @@ export const useNotificationStore = create<NotificationStoreState>((set, get) =>
   },
 
   markAsRead: async (notificationId: string) => {
+    const prevNotifications = get().notifications;
+    const prevUnreadCount = get().unreadCount;
+
     // Optimistic UI update
     set((state) => ({
       notifications: state.notifications.map((n) =>
@@ -127,9 +131,15 @@ export const useNotificationStore = create<NotificationStoreState>((set, get) =>
 
     try {
       await api.patch(`/notifications/${notificationId}/read`, {});
-    } catch {
-      // rollback or re-fetch on failure
-      get().fetchUnreadCount();
+    } catch (err: any) {
+      // Exact snapshot rollback on failure
+      set({ notifications: prevNotifications, unreadCount: prevUnreadCount });
+      toast.error(getErrorMessage(err, 'Failed to mark notification as read'), {
+        action: {
+          label: 'Retry',
+          onClick: () => get().markAsRead(notificationId),
+        },
+      });
     }
   },
 
@@ -146,25 +156,44 @@ export const useNotificationStore = create<NotificationStoreState>((set, get) =>
     try {
       await api.post('/notifications/mark-all-read', {});
       toast.success('All notifications marked as read');
-    } catch {
+    } catch (err: any) {
       set({ notifications: prevNotifications, unreadCount: prevCount });
-      toast.error('Failed to mark all as read');
+      toast.error(getErrorMessage(err, 'Failed to mark all as read'), {
+        action: {
+          label: 'Retry',
+          onClick: () => get().markAllAsRead(),
+        },
+      });
     }
   },
 
   archiveNotification: async (notificationId: string) => {
+    const prevNotifications = get().notifications;
+    const prevUnreadCount = get().unreadCount;
+
+    // Optimistic UI update
     set((state) => ({
       notifications: state.notifications.filter((n) => n._id !== notificationId && n.id !== notificationId),
     }));
 
     try {
       await api.delete(`/notifications/${notificationId}`);
-    } catch {
-      get().fetchNotifications();
+    } catch (err: any) {
+      // Exact snapshot rollback on failure
+      set({ notifications: prevNotifications, unreadCount: prevUnreadCount });
+      toast.error(getErrorMessage(err, 'Failed to archive notification'), {
+        action: {
+          label: 'Retry',
+          onClick: () => get().archiveNotification(notificationId),
+        },
+      });
     }
   },
 
   acceptInvite: async (inviteId: string, notificationId?: string) => {
+    const prevNotifications = get().notifications;
+    const prevUnreadCount = get().unreadCount;
+
     try {
       try {
         await api.post('/notifications/accept-invite', { inviteId, notificationId });
@@ -203,12 +232,16 @@ export const useNotificationStore = create<NotificationStoreState>((set, get) =>
       toast.success('Invitation accepted successfully! Switching workspace...');
       return true;
     } catch (err: any) {
-      toast.error(err.message || 'Failed to accept invitation');
+      set({ notifications: prevNotifications, unreadCount: prevUnreadCount });
+      toast.error(getErrorMessage(err, 'Failed to accept invitation'));
       return false;
     }
   },
 
   declineInvite: async (inviteId: string, notificationId?: string) => {
+    const prevNotifications = get().notifications;
+    const prevUnreadCount = get().unreadCount;
+
     try {
       try {
         await api.post('/notifications/decline-invite', { inviteId, notificationId });
@@ -246,7 +279,8 @@ export const useNotificationStore = create<NotificationStoreState>((set, get) =>
       toast.info('Invitation declined');
       return true;
     } catch (err: any) {
-      toast.error(err.message || 'Failed to decline invitation');
+      set({ notifications: prevNotifications, unreadCount: prevUnreadCount });
+      toast.error(getErrorMessage(err, 'Failed to decline invitation'));
       return false;
     }
   },

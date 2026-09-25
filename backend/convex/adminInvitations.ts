@@ -1,22 +1,10 @@
 import { mutation, query } from "./_generated/server.js";
 import { v } from "convex/values";
+import { requireAdminPermission } from "./adminAuth.js";
 
 // Helper to authenticate admin
-async function verifyAdminSession(ctx: any, sessionToken?: string) {
-  if (!sessionToken) throw new Error("Admin authentication required.");
-  const session = await ctx.db
-    .query("adminSessions")
-    .withIndex("by_token", (q: any) => q.eq("sessionToken", sessionToken))
-    .first();
-
-  if (!session || session.expiresAt < Date.now()) {
-    throw new Error("Invalid or expired session.");
-  }
-  const admin = await ctx.db.get(session.adminId);
-  if (!admin || !admin.isActive) {
-    throw new Error("Unauthorized admin account.");
-  }
-  return { admin, session };
+async function verifyAdminSession(ctx: any, sessionToken?: string, permission = "admin.members.view") {
+  return requireAdminPermission(ctx, sessionToken, permission);
 }
 
 async function logAudit(ctx: any, adminId: any, action: string, resourceId?: string, details?: any) {
@@ -115,7 +103,7 @@ export const resendInvitation = mutation({
     invitationId: v.id("workspaceInvitations"),
   },
   handler: async (ctx, args) => {
-    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.members.manage_access");
 
     const inv = await ctx.db.get(args.invitationId);
     if (!inv) throw new Error("Invitation not found.");
@@ -147,7 +135,7 @@ export const revokeInvitation = mutation({
     invitationId: v.id("workspaceInvitations"),
   },
   handler: async (ctx, args) => {
-    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.members.manage_access");
 
     const inv = await ctx.db.get(args.invitationId);
     if (!inv) throw new Error("Invitation not found.");
@@ -176,7 +164,7 @@ export const extendInvitationExpiry = mutation({
     days: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.members.manage_access");
 
     const inv = await ctx.db.get(args.invitationId);
     if (!inv) throw new Error("Invitation not found.");
@@ -207,7 +195,7 @@ export const acceptInvitationManually = mutation({
     invitationId: v.id("workspaceInvitations"),
   },
   handler: async (ctx, args) => {
-    const { admin } = await verifyAdminSession(ctx, args.sessionToken);
+    const { admin } = await verifyAdminSession(ctx, args.sessionToken, "admin.members.manage_access");
 
     const inv = await ctx.db.get(args.invitationId);
     if (!inv) throw new Error("Invitation not found.");

@@ -2,12 +2,8 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams, useParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
-import { useLocationStore } from '@/stores/useLocationStore';
 import { Spinner } from '@/components/ui/spinner';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { CustomSelect, type SelectOption } from '@/components/ui/custom-select';
 import { toast } from 'sonner';
 import {
   MapPin,
@@ -23,6 +19,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getHomeUrl } from '@/lib/domain';
+import { BranchForm, type BranchFormData } from '@/components/branch';
+import { useBranchLimit } from '@/hooks/useBranchLimit';
 
 interface Branch {
   _id: string;
@@ -48,7 +46,6 @@ export const BranchSetupPage: React.FC = () => {
   const params = useParams<{ orgId: string; appKey: string }>();
   const [searchParams] = useSearchParams();
   const { currentWorkspace } = useWorkspaceStore();
-  const { states, fetchStates } = useLocationStore();
 
   const orgId =
     params.orgId || searchParams.get('orgId') || currentWorkspace?.organizationId || currentWorkspace?.id;
@@ -59,30 +56,6 @@ export const BranchSetupPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-
-  // Form state
-  const [branchName, setBranchName] = useState('');
-  const [branchPhone, setBranchPhone] = useState('');
-  const [branchStreet, setBranchStreet] = useState('');
-  const [branchCity, setBranchCity] = useState('');
-  const [branchState, setBranchState] = useState('Lagos');
-
-  useEffect(() => {
-    fetchStates();
-  }, [fetchStates]);
-
-  const stateOptions: SelectOption[] = states.length > 0
-    ? states.map((s) => ({ value: s.name, label: s.name }))
-    : [
-        { value: 'Lagos', label: 'Lagos' },
-        { value: 'Abuja (FCT)', label: 'Abuja (FCT)' },
-        { value: 'Rivers', label: 'Rivers' },
-        { value: 'Oyo', label: 'Oyo' },
-        { value: 'Kano', label: 'Kano' },
-        { value: 'Delta', label: 'Delta' },
-        { value: 'Anambra', label: 'Anambra' },
-        { value: 'Enugu', label: 'Enugu' },
-      ];
 
   const loadData = useCallback(async () => {
     if (!orgId) return;
@@ -123,56 +96,44 @@ export const BranchSetupPage: React.FC = () => {
     loadData();
   }, [loadData]);
 
-  const planKey = org?.planKey || 'free_trial';
-  const isFreeTrialPlan = planKey === 'free_trial' || planKey === 'free';
-  const maxBranches = isFreeTrialPlan ? 1 : planKey === 'standard' ? 3 : 10;
-  const atLimit = branches.length >= maxBranches;
+  const { atLimit, maxBranches, isFreeTrial, limitMessage } = useBranchLimit({
+    planKey: org?.planKey,
+    currentCount: branches.length,
+  });
 
-  const handleCreateBranch = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleCreateBranch = async (formData: BranchFormData) => {
     if (!org) return;
-    if (!branchName.trim()) {
-      toast.error('Please enter a branch name.');
-      return;
-    }
     if (atLimit) {
-      toast.error(
-        isFreeTrialPlan
-          ? 'Free Trial allows only 1 branch. Upgrade to Standard for up to 3 branches.'
-          : `Your current plan allows up to ${maxBranches} branches. Upgrade to add more.`
-      );
+      toast.error(limitMessage);
       return;
     }
 
     setSubmitting(true);
     try {
-      const address = [branchStreet.trim(), branchCity.trim(), branchState, 'Nigeria']
-        .filter(Boolean)
-        .join(', ');
-
       await api.post(`/organizations/${org.id}/branches`, {
-        name: branchName.trim(),
-        phone: branchPhone.trim() || undefined,
-        street: branchStreet.trim() || undefined,
-        city: branchCity.trim() || undefined,
-        state: branchState || undefined,
-        country: 'Nigeria',
-        address: address || undefined,
+        name: formData.name,
+        phone: formData.phone,
+        street: formData.street,
+        city: formData.city,
+        state: formData.state,
+        stateCode: formData.stateCode,
+        lga: formData.lga,
+        country: formData.country || 'Nigeria',
+        blockNumber: formData.blockNumber,
+        area: formData.area,
+        landmark: formData.landmark,
+        postalCode: formData.postalCode,
+        address: formData.address,
         isPrimary: branches.length === 0,
       });
 
-      toast.success(`Branch "${branchName}" created successfully!`);
-      setBranchName('');
-      setBranchPhone('');
-      setBranchStreet('');
-      setBranchCity('');
-      setBranchState('Lagos');
+      toast.success(`Branch "${formData.name}" created successfully!`);
       setShowForm(false);
       await loadData();
     } catch (err: any) {
       const msg = err?.message || err?.error?.message || 'Failed to create branch.';
       if (msg.includes('Free Trial') || err?.code === 'BRANCH_LIMIT_REACHED') {
-        toast.error('Free Trial allows only 1 branch per app. Upgrade to add more.');
+        toast.error(limitMessage);
       } else {
         toast.error(msg);
       }
@@ -234,7 +195,7 @@ export const BranchSetupPage: React.FC = () => {
         </div>
 
         {/* Plan notice */}
-        {isFreeTrialPlan && (
+        {isFreeTrial && (
           <div className="flex items-start gap-3 p-4 rounded-xl border border-amber-500/20 bg-amber-500/5">
             <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" />
             <div className="text-sm">
@@ -247,7 +208,7 @@ export const BranchSetupPage: React.FC = () => {
                 >
                   Upgrade to Standard
                 </a>{' '}
-                to add unlimited branches.
+                to add up to 3 branches.
               </span>
             </div>
           </div>
@@ -259,7 +220,7 @@ export const BranchSetupPage: React.FC = () => {
             <h2 className="text-sm font-semibold text-slate-300">
               Branches{' '}
               <span className="text-slate-500 font-normal">
-                ({branches.length}{isFreeTrialPlan ? ' / 1' : ''})
+                ({branches.length} / {maxBranches})
               </span>
             </h2>
             {!atLimit && !showForm && (
@@ -276,6 +237,7 @@ export const BranchSetupPage: React.FC = () => {
               <a
                 href="/settings/billing"
                 className="inline-flex items-center gap-1 text-xs text-amber-400 hover:text-amber-300 transition-colors"
+                title={limitMessage}
               >
                 <Crown className="w-3 h-3" /> Upgrade for more
               </a>
@@ -335,8 +297,7 @@ export const BranchSetupPage: React.FC = () => {
                       )}
                     </div>
                     {(branch.formattedAddress || branch.address || branch.city) && (
-                      <p className="text-xs text-slate-500 truncate mt-0.5 flex items-center gap-1">
-                        <MapPin className="w-3 h-3 flex-shrink-0" />
+                      <p className="text-xs text-slate-500 truncate mt-0.5">
                         {branch.formattedAddress || branch.address || [branch.city, branch.state].filter(Boolean).join(', ')}
                       </p>
                     )}
@@ -357,118 +318,18 @@ export const BranchSetupPage: React.FC = () => {
 
           {/* Add branch form */}
           {showForm && (
-            <form
+            <BranchForm
+              organizationId={org?.id}
+              showCode={false}
+              theme="indigo"
               onSubmit={handleCreateBranch}
-              className="p-5 rounded-2xl border border-indigo-500/20 bg-indigo-500/5 space-y-4"
-            >
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                  <Plus className="w-4 h-4 text-indigo-400" />
-                  New Branch
-                </h3>
-                <button
-                  type="button"
-                  onClick={() => setShowForm(false)}
-                  className="text-xs text-slate-500 hover:text-slate-300"
-                >
-                  Cancel
-                </button>
-              </div>
-
-              {/* Name */}
-              <div className="space-y-1.5">
-                <Label className="text-xs text-slate-400">
-                  Branch Name <span className="text-red-400">*</span>
-                </Label>
-                <Input
-                  id="branch-name"
-                  value={branchName}
-                  onChange={(e) => setBranchName(e.target.value)}
-                  placeholder="e.g. Main Branch, Lekki Store, Victoria Island"
-                  className="h-9 text-sm bg-black/30 border-white/10 focus:border-indigo-500/50"
-                  required
-                />
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {/* Phone */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-slate-400">Phone</Label>
-                  <div className="relative flex items-center h-9 bg-black/30 border border-white/10 rounded-md text-xs transition-all focus-within:ring-1 focus-within:ring-indigo-500 focus-within:border-indigo-500">
-                    <div className="flex items-center gap-1.5 pl-3 pr-2.5 h-full border-r border-white/10 text-slate-300 select-none shrink-0 bg-white/[0.02]">
-                      <Phone className="w-3 h-3 text-slate-500" />
-                      <span className="text-xs font-medium text-slate-200">+234</span>
-                    </div>
-                    <input
-                      id="branch-phone"
-                      type="tel"
-                      value={branchPhone?.replace(/^\+234|^0/, '') || ''}
-                      onChange={(e) => {
-                        const raw = e.target.value.replace(/\s+/g, '');
-                        setBranchPhone(raw ? `+234${raw}` : '');
-                      }}
-                      placeholder="800 000 0000"
-                      className="w-full h-full bg-transparent px-3 text-white placeholder:text-slate-600 text-xs focus:outline-none"
-                    />
-                  </div>
-                </div>
-
-                {/* City */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-slate-400">City</Label>
-                  <Input
-                    id="branch-city"
-                    value={branchCity}
-                    onChange={(e) => setBranchCity(e.target.value)}
-                    placeholder="e.g. Lagos"
-                    className="h-9 text-sm bg-black/30 border-white/10 focus:border-indigo-500/50"
-                  />
-                </div>
-
-                {/* Street */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-slate-400">Street / Area</Label>
-                  <Input
-                    id="branch-street"
-                    value={branchStreet}
-                    onChange={(e) => setBranchStreet(e.target.value)}
-                    placeholder="e.g. 14 Admiralty Way, Lekki"
-                    className="h-9 text-sm bg-black/30 border-white/10 focus:border-indigo-500/50"
-                  />
-                </div>
-
-                {/* State */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-slate-400">State</Label>
-                  <CustomSelect
-                    options={stateOptions}
-                    value={branchState}
-                    onChange={(val) => setBranchState(val)}
-                    placeholder="Select state"
-                    className="h-9 text-sm"
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center gap-3 pt-1">
-                <Button
-                  type="submit"
-                  size="sm"
-                  disabled={submitting || !branchName.trim()}
-                  className="h-8 text-xs bg-indigo-600 hover:bg-indigo-500 text-white border-0 gap-1.5"
-                >
-                  {submitting ? <Spinner size="sm" /> : <Plus className="w-3 h-3" />}
-                  {submitting ? 'Creating…' : 'Create Branch'}
-                </Button>
-                <button
-                  type="button"
-                  onClick={() => setShowForm(false)}
-                  className="text-xs text-slate-500 hover:text-slate-300"
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
+              onCancel={() => setShowForm(false)}
+              isSubmitting={submitting}
+              isLimitReached={atLimit}
+              limitTooltip={limitMessage}
+              submitLabel="Create Branch"
+              submittingLabel="Creating…"
+            />
           )}
         </div>
 

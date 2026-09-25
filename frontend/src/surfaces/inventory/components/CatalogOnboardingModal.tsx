@@ -187,23 +187,23 @@ export const CatalogOnboardingModal: React.FC<CatalogOnboardingModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
-      <div className="max-w-2xl w-full bg-[#120a11] border border-[#714b67]/40 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6 text-slate-100">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+      <div className="max-w-2xl w-full bg-[#120a11] border border-[#714b67]/40 rounded-sm p-4 sm:p-8 shadow-2xl space-y-5 sm:space-y-6 text-slate-100 max-h-[90vh] overflow-y-auto">
         {/* Top Modal Header */}
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-3.5">
-            <div className="w-12 h-12 rounded-2xl bg-[#714b67]/25 border border-[#714b67]/40 flex items-center justify-center text-white shadow-inner">
-              <Boxes className="w-6 h-6 text-[#FDB02F]" />
+            <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-sm bg-[#714b67]/25 border border-[#714b67]/40 flex items-center justify-center text-white shadow-inner shrink-0">
+              <Boxes className="w-5 h-5 sm:w-6 sm:h-6 text-[#FDB02F]" />
             </div>
-            <div>
-              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#714b67]/20 border border-[#714b67]/30 text-[#c79dbd] text-[11px] font-bold">
+            <div className="min-w-0">
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-sm bg-[#714b67]/20 border border-[#714b67]/30 text-[#c79dbd] text-[11px] font-bold">
                 <Sparkles className="w-3 h-3 text-[#FDB02F]" />
                 <span>Product Catalog Setup</span>
               </div>
-              <h2 className="text-xl font-bold text-white tracking-tight mt-1">
+              <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight mt-1 truncate">
                 Populate Your Inventory Catalog
               </h2>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-slate-400 truncate">
                 Choose how you would like to initialize products for <strong className="text-slate-200">{orgName}</strong>.
               </p>
             </div>
@@ -211,54 +211,54 @@ export const CatalogOnboardingModal: React.FC<CatalogOnboardingModalProps> = ({
 
           <button
             onClick={onSkip}
-            className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/10 transition"
+            className="p-1.5 sm:p-2 rounded-sm text-slate-400 hover:text-white hover:bg-white/10 transition cursor-pointer shrink-0 ml-2"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Tab Selector */}
-        <div className="grid grid-cols-3 gap-2 p-1.5 bg-black/40 rounded-2xl border border-white/10">
+        <div className="grid grid-cols-3 gap-1.5 sm:gap-2 p-1.5 bg-black/40 rounded-sm border border-white/10">
           <button
             type="button"
             onClick={() => setActiveTab('sample')}
             className={cn(
-              'py-2.5 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2',
+              'py-2 sm:py-2.5 px-2 sm:px-3 rounded-sm text-xs font-bold transition flex items-center justify-center gap-1 sm:gap-2 cursor-pointer',
               activeTab === 'sample'
                 ? 'bg-[#714b67] text-white shadow-md'
                 : 'text-slate-400 hover:text-slate-200'
             )}
           >
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>1-Click Sample</span>
+            <Sparkles className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">1-Click Sample</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('csv')}
             className={cn(
-              'py-2.5 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2',
+              'py-2 sm:py-2.5 px-2 sm:px-3 rounded-sm text-xs font-bold transition flex items-center justify-center gap-1 sm:gap-2 cursor-pointer',
               activeTab === 'csv'
                 ? 'bg-[#714b67] text-white shadow-md'
                 : 'text-slate-400 hover:text-slate-200'
             )}
           >
-            <FileSpreadsheet className="w-3.5 h-3.5" />
-            <span>Upload CSV</span>
+            <FileSpreadsheet className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">Upload CSV</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('scratch')}
             className={cn(
-              'py-2.5 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2',
+              'py-2 sm:py-2.5 px-2 sm:px-3 rounded-sm text-xs font-bold transition flex items-center justify-center gap-1 sm:gap-2 cursor-pointer',
               activeTab === 'scratch'
                 ? 'bg-[#714b67] text-white shadow-md'
                 : 'text-slate-400 hover:text-slate-200'
             )}
           >
-            <Store className="w-3.5 h-3.5" />
-            <span>Start Empty</span>
+            <Store className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">Start Empty</span>
           </button>
         </div>
 
@@ -269,7 +269,7 @@ export const CatalogOnboardingModal: React.FC<CatalogOnboardingModalProps> = ({
               Select your business industry to seed 8–10 realistic products with barcodes, cost prices, and opening stock:
             </p>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {[
                 { id: 'retail', label: 'Supermarket & Retail', icon: '🛒', desc: 'Beverages, toiletries, household items' },
                 { id: 'groceries', label: 'Groceries & Foods', icon: '🍞', desc: 'Rice, semo, oil, packaged provisions' },
@@ -280,14 +280,14 @@ export const CatalogOnboardingModal: React.FC<CatalogOnboardingModalProps> = ({
                   key={sec.id}
                   onClick={() => setSelectedSector(sec.id as any)}
                   className={cn(
-                    'p-3.5 rounded-xl border transition cursor-pointer flex items-start gap-3',
+                    'p-3.5 rounded-sm border transition cursor-pointer flex items-start gap-3',
                     selectedSector === sec.id
                       ? 'bg-[#291325] border-[#714b67] shadow-lg ring-1 ring-[#714b67]'
                       : 'bg-black/30 border-white/10 hover:border-white/20'
                   )}
                 >
                   <span className="text-2xl shrink-0">{sec.icon}</span>
-                  <div className="space-y-0.5">
+                  <div className="space-y-0.5 min-w-0">
                     <p className="text-xs font-bold text-white">{sec.label}</p>
                     <p className="text-[10px] text-slate-400">{sec.desc}</p>
                   </div>
@@ -295,7 +295,7 @@ export const CatalogOnboardingModal: React.FC<CatalogOnboardingModalProps> = ({
               ))}
             </div>
 
-            <div className="p-3 rounded-xl bg-black/40 border border-white/10 flex items-center justify-between text-xs text-slate-400">
+            <div className="p-3 rounded-sm bg-black/40 border border-white/10 flex items-center justify-between text-xs text-slate-400">
               <span>• Instant stock tracking & POS test ready</span>
               <span className="text-[#c79dbd] font-semibold">~10 Sample SKUs</span>
             </div>
@@ -304,7 +304,7 @@ export const CatalogOnboardingModal: React.FC<CatalogOnboardingModalProps> = ({
               type="button"
               onClick={handleSeedSamples}
               disabled={isLoading}
-              className="w-full py-3.5 rounded-xl bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/30 transition flex items-center justify-center gap-2 cursor-pointer"
+              className="w-full py-3.5 rounded-sm bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/30 transition flex items-center justify-center gap-2 cursor-pointer"
             >
               {isLoading ? (
                 <>
@@ -324,14 +324,14 @@ export const CatalogOnboardingModal: React.FC<CatalogOnboardingModalProps> = ({
         {/* TAB 2: Upload CSV / Excel */}
         {activeTab === 'csv' && (
           <div className="space-y-4 animate-in fade-in duration-150">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
               <p className="text-xs text-slate-300">
                 Upload your CSV file with your product catalog:
               </p>
               <button
                 type="button"
                 onClick={handleDownloadTemplate}
-                className="text-xs text-[#c79dbd] hover:text-white flex items-center gap-1 font-semibold transition"
+                className="text-xs text-[#c79dbd] hover:text-white flex items-center gap-1 font-semibold transition cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>Download CSV Template</span>
@@ -341,7 +341,7 @@ export const CatalogOnboardingModal: React.FC<CatalogOnboardingModalProps> = ({
             {/* Dropzone */}
             <div
               onClick={() => fileInputRef.current?.click()}
-              className="p-6 rounded-2xl border-2 border-dashed border-white/20 hover:border-[#714b67] bg-black/40 text-center cursor-pointer transition space-y-2"
+              className="p-4 sm:p-6 rounded-sm border-2 border-dashed border-white/20 hover:border-[#714b67] bg-black/40 text-center cursor-pointer transition space-y-2"
             >
               <input
                 ref={fileInputRef}
@@ -350,7 +350,7 @@ export const CatalogOnboardingModal: React.FC<CatalogOnboardingModalProps> = ({
                 onChange={handleFileChange}
                 className="hidden"
               />
-              <div className="w-10 h-10 rounded-xl bg-[#714b67]/20 border border-[#714b67]/30 flex items-center justify-center text-[#c79dbd] mx-auto">
+              <div className="w-10 h-10 rounded-sm bg-[#714b67]/20 border border-[#714b67]/30 flex items-center justify-center text-[#c79dbd] mx-auto">
                 <Upload className="w-5 h-5" />
               </div>
               <div className="space-y-0.5">
@@ -363,7 +363,7 @@ export const CatalogOnboardingModal: React.FC<CatalogOnboardingModalProps> = ({
 
             {/* Parse Errors */}
             {parseErrors.length > 0 && (
-              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 space-y-1">
+              <div className="p-3 rounded-sm bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 space-y-1">
                 <div className="flex items-center gap-1.5 font-bold">
                   <AlertTriangle className="w-3.5 h-3.5" />
                   <span>Validation Notices</span>
@@ -381,8 +381,8 @@ export const CatalogOnboardingModal: React.FC<CatalogOnboardingModalProps> = ({
                   <span>Parsed Products Preview:</span>
                   <span className="text-emerald-400 font-bold">{parsedRows.length} items ready</span>
                 </div>
-                <div className="max-h-36 overflow-y-auto rounded-xl border border-white/10 bg-black/60 text-[11px]">
-                  <table className="w-full text-left">
+                <div className="max-h-36 overflow-y-auto rounded-sm border border-white/10 bg-black/60 text-[11px]">
+                  <table className="w-full text-left min-w-[500px]">
                     <thead className="bg-white/5 border-b border-white/10 text-slate-400">
                       <tr>
                         <th className="p-2">SKU</th>
@@ -414,7 +414,7 @@ export const CatalogOnboardingModal: React.FC<CatalogOnboardingModalProps> = ({
               type="button"
               onClick={handleImportCsv}
               disabled={parsedRows.length === 0 || isLoading}
-              className="w-full py-3.5 rounded-xl bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/30 transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-40"
+              className="w-full py-3.5 rounded-sm bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/30 transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-40"
             >
               {isLoading ? (
                 <>
@@ -434,7 +434,7 @@ export const CatalogOnboardingModal: React.FC<CatalogOnboardingModalProps> = ({
         {/* TAB 3: Start from Scratch */}
         {activeTab === 'scratch' && (
           <div className="space-y-4 animate-in fade-in duration-150 text-center py-4">
-            <div className="w-12 h-12 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 mx-auto">
+            <div className="w-12 h-12 rounded-sm bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 mx-auto">
               <Store className="w-6 h-6" />
             </div>
             <div className="space-y-1 max-w-sm mx-auto">
@@ -447,7 +447,7 @@ export const CatalogOnboardingModal: React.FC<CatalogOnboardingModalProps> = ({
             <Button
               type="button"
               onClick={onSkip}
-              className="w-full py-3 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer"
+              className="w-full py-3 rounded-sm bg-white/10 hover:bg-white/20 text-white text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer"
             >
               <span>Enter Dashboard with Empty Catalog</span>
               <ArrowRight className="w-4 h-4" />

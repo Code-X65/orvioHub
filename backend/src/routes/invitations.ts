@@ -3,10 +3,11 @@ import { dataService } from '../services/dataService.js';
 import { ERROR_CODES } from '../config/constants.js';
 
 export const invitationRoutes: FastifyPluginAsync = async (fastify) => {
-  // GET /api/v1/invitations/:token (Public lookup)
+  // GET /api/v1/invitations/:token (Public lookup — rate-limited to prevent enumeration)
   fastify.get(
     '/:token',
     {
+      config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
       schema: {
         tags: ['Invitations'],
         summary: 'Inspect team invitation details',
@@ -37,6 +38,7 @@ export const invitationRoutes: FastifyPluginAsync = async (fastify) => {
               workspaceLogoUrl: wsInvite.workspaceLogoUrl,
               inviterName: wsInvite.inviterName,
               email: wsInvite.email,
+              phone: wsInvite.phone || null,
               role: wsInvite.role,
               organizationRole: wsInvite.organizationRole || wsInvite.role,
               appAccess: wsInvite.appAccess || [],
@@ -53,17 +55,28 @@ export const invitationRoutes: FastifyPluginAsync = async (fastify) => {
       // 2. Fallback to organization invitation lookup
       const invite = await dataService.getInvitationByToken(token);
 
-      if (!invite) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: ERROR_CODES.INVITATION_NOT_FOUND,
-            message: 'Invitation link is invalid or no longer exists.',
-          },
-        });
+      if (invite) {
+        return reply.send({ success: true, data: { invitation: invite } });
       }
 
-      return reply.send({ success: true, data: { invitation: invite } });
+      // 3. Final fallback: team invitation by _id (branch-level invitations)
+      try {
+        const teamInvite = await dataService.query('teamInvitations:getInvitationById', { invitationId: token });
+        if (teamInvite) {
+          return reply.send({
+            success: true,
+            data: { invitation: teamInvite },
+          });
+        }
+      } catch (_e) {}
+
+      return reply.status(404).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INVITATION_NOT_FOUND,
+          message: 'Invitation link is invalid or no longer exists.',
+        },
+      });
     }
   );
 
@@ -243,18 +256,81 @@ export const invitationRoutes: FastifyPluginAsync = async (fastify) => {
           }
         }
 
-        const result = await dataService.acceptInvitation(token, request.user.id);
-        return reply.send({
-          success: true,
-          data: {
-            organization: {
-              id: result.organization.id,
-              name: result.organization.name,
-              slug: result.organization.slug,
+        // 2. Try org invitation accept
+        try {
+          const result = await dataService.acceptInvitation(token, request.user.id);
+          return reply.send({
+            success: true,
+            data: {
+              organization: {
+                id: result.organization.id,
+                name: result.organization.name,
+                slug: result.organization.slug,
+              },
+              role: result.role,
             },
-            role: result.role,
+            message: `Successfully joined ${result.organization.name}.`,
+          });
+        } catch (orgErr: any) {
+          if (!orgErr.message?.includes('INVITATION_NOT_FOUND') && !orgErr.message?.includes('ArgumentValidationError')) {
+            throw orgErr;
+          }
+        }
+
+        // 3. Try team (branch-level) invitation accept using token as Convex _id
+        const teamInvite: any = await dataService.query('teamInvitations:getInvitationById', { invitationId: token }).catch(() => null);
+        if (teamInvite) {
+          if (teamInvite.email && request.user?.email && teamInvite.email.toLowerCase() !== request.user.email.toLowerCase()) {
+            return reply.status(403).send({
+              success: false,
+              error: {
+                code: ERROR_CODES.INVITATION_EMAIL_MISMATCH || 'EMAIL_MISMATCH',
+                message: `This invitation was sent to ${teamInvite.email}. You are currently signed in as ${request.user.email}.`,
+              },
+            });
+          }
+          if (teamInvite.status === 'accepted') {
+            return reply.status(409).send({
+              success: false,
+              error: { code: 'INVITATION_ALREADY_ACCEPTED', message: 'This invitation has already been accepted.' },
+            });
+          }
+          if (teamInvite.expiresAt && teamInvite.expiresAt < Date.now()) {
+            return reply.status(400).send({
+              success: false,
+              error: { code: 'INVITATION_EXPIRED', message: 'This invitation has expired.' },
+            });
+          }
+          if (teamInvite.status === 'revoked') {
+            return reply.status(400).send({
+              success: false,
+              error: { code: 'INVITATION_CANCELLED', message: 'This invitation has been revoked.' },
+            });
+          }
+
+          const acceptResult: any = await dataService.mutate('teamInvitations:acceptTeamInvitation', {
+            invitationId: token,
+            userId: request.user.id,
+          });
+
+          return reply.send({
+            success: true,
+            data: {
+              type: 'team',
+              workspace: { id: acceptResult?.workspaceId },
+              branchId: acceptResult?.branchId,
+              branchRole: acceptResult?.branchRole,
+            },
+            message: `Successfully joined the branch as ${teamInvite.branchRole || 'staff'}.`,
+          });
+        }
+
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.INVITATION_NOT_FOUND,
+            message: 'Invitation link is invalid or no longer exists.',
           },
-          message: `Successfully joined ${result.organization.name}.`,
         });
       } catch (err: any) {
         if (err.code === 'INVITATION_NOT_FOUND' || err.message?.includes('INVITATION_NOT_FOUND')) {
@@ -334,11 +410,29 @@ export const invitationRoutes: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       const { token } = request.params as { token: string };
-      await dataService.declineWorkspaceInvitation(token, (request as any).user?.id);
-      return reply.send({
-        success: true,
-        message: 'Invitation declined.',
-      });
+      try {
+        await dataService.declineWorkspaceInvitation(token, (request as any).user?.id);
+        return reply.send({
+          success: true,
+          message: 'Invitation declined.',
+        });
+      } catch (wsErr: any) {
+        try {
+          await dataService.mutate('teamInvitations:declineTeamInvitation', {
+            invitationId: token,
+            userId: (request as any).user?.id,
+          });
+          return reply.send({
+            success: true,
+            message: 'Invitation declined.',
+          });
+        } catch (_teamErr) {
+          return reply.send({
+            success: true,
+            message: 'Invitation declined.',
+          });
+        }
+      }
     }
   );
 

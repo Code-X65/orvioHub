@@ -1,4 +1,5 @@
 import { useAuthContext } from "../contexts/AuthContext";
+import { canAdmin } from "../auth/permissions";
 
 export const useAuth = () => {
   const { admin, sessionToken, isAuthenticated, isLoading, login, logout, refreshSession } =
@@ -12,7 +13,7 @@ export const useAuth = () => {
     login,
     logout,
     refreshSession,
-    isSuperAdmin: admin?.role === "super_admin",
+    isSuperAdmin: canAdmin(admin?.role, "admin.dashboard.view"),
   };
 };
 

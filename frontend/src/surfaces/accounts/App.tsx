@@ -12,6 +12,9 @@ import { PaymentPage } from "../../pages/billing/PaymentPage";
 import { AcceptInvite } from "../../pages/auth/AcceptInvite";
 import { AuthCallback } from "../../pages/auth/AuthCallback";
 import { ConfirmEmailChange } from "../../pages/auth/ConfirmEmailChange";
+import { TwoFactorChallenge } from "../../pages/auth/TwoFactorChallenge";
+import { TermsOfService } from "../../pages/legal/TermsOfService";
+import { PrivacyPolicy } from "../../pages/legal/PrivacyPolicy";
 
 // Profile & Account Settings Pages
 import { PersonalProfile } from "../../pages/profile/PersonalProfile";
@@ -50,6 +53,8 @@ export default function AccountsApp() {
           </AuthGuard>
         }
       />
+      <Route path="/login/2fa" element={<TwoFactorChallenge />} />
+      <Route path="/2fa-challenge" element={<TwoFactorChallenge />} />
       <Route
         path="/signup"
         element={
@@ -81,6 +86,8 @@ export default function AccountsApp() {
       <Route path="/verify-phone" element={<VerifyPhone />} />
       <Route path="/payment" element={<PaymentPage />} />
       <Route path="/confirm-email-change" element={<ConfirmEmailChange />} />
+      <Route path="/terms" element={<TermsOfService />} />
+      <Route path="/privacy" element={<PrivacyPolicy />} />
 
       {/* Invitations */}
       <Route path="/invite" element={<AcceptInvite />} />

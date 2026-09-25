@@ -235,6 +235,86 @@ export class NotificationService {
     } catch {}
   }
 
+  public async onPaymentSuccess(subscription: {
+    userId: string;
+    organizationId?: string;
+    workspaceId?: string;
+    ownerEmail?: string;
+    amount: number;
+    planKey: string;
+    invoiceId?: string;
+  }) {
+    const orgId = subscription.organizationId || subscription.workspaceId || 'system';
+    await this.createFromEvent(
+      {
+        eventType: 'billing.payment_succeeded',
+        organizationId: orgId,
+        workspaceId: subscription.workspaceId || orgId,
+        actorUserId: subscription.userId,
+      },
+      {
+        recipients: [subscription.userId],
+        title: 'Payment Confirmed',
+        body: `₦${subscription.amount.toLocaleString()} payment received for ${subscription.planKey} plan.`,
+        actionUrl: subscription.invoiceId ? `/billing/invoices/${subscription.invoiceId}` : '/billing/settings',
+      }
+    );
+  }
+
+  public async onPaymentFailed(
+    subscription: {
+      userId: string;
+      organizationId?: string;
+      workspaceId?: string;
+      ownerEmail?: string;
+      planKey: string;
+    },
+    reason?: string
+  ) {
+    const orgId = subscription.organizationId || subscription.workspaceId || 'system';
+    await this.createFromEvent(
+      {
+        eventType: 'billing.payment_failed',
+        organizationId: orgId,
+        workspaceId: subscription.workspaceId || orgId,
+        actorUserId: subscription.userId,
+      },
+      {
+        recipients: [subscription.userId],
+        title: 'Payment Failed',
+        body: `Your ${subscription.planKey} subscription payment could not be processed${reason ? `: ${reason}` : ''}. Please update your payment method.`,
+        actionUrl: '/billing/settings',
+      }
+    );
+  }
+
+  public async onUpcomingRenewal(subscription: {
+    userId: string;
+    organizationId?: string;
+    workspaceId?: string;
+    ownerEmail?: string;
+    currentPeriodEnd: number;
+    amount: number;
+    planKey: string;
+  }) {
+    const orgId = subscription.organizationId || subscription.workspaceId || 'system';
+    const dateStr = new Date(subscription.currentPeriodEnd).toLocaleDateString('en-NG');
+    await this.createFromEvent(
+      {
+        eventType: 'billing.upcoming_renewal',
+        organizationId: orgId,
+        workspaceId: subscription.workspaceId || orgId,
+        actorUserId: subscription.userId,
+      },
+      {
+        recipients: [subscription.userId],
+        title: 'Upcoming Subscription Renewal',
+        body: `Your ${subscription.planKey} subscription will renew on ${dateStr} for ₦${subscription.amount.toLocaleString()}.`,
+        actionUrl: '/billing/settings',
+      }
+    );
+  }
+
   private formatDefaultTitle(eventType: string): string {
     return eventType
       .split('.')

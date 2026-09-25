@@ -87,6 +87,9 @@ export const getWorkspaceSettings = query({
       // Business contact
       email: ws.email || "",
       phone: ws.phone || "",
+      phoneVerified: Boolean(ws.phoneVerifiedAt || ws.phoneVerified),
+      phoneVerifiedAt: ws.phoneVerifiedAt || null,
+      phoneStatus: ws.phoneStatus || (ws.phoneVerifiedAt ? "verified" : ws.phone ? "unverified" : "unverified"),
       // Address
       country: ws.country || "Nigeria",
       state: ws.state || "",
@@ -220,11 +223,39 @@ export const updateBusinessSettings = mutation({
     const wsUpdates: Record<string, any> = { updatedAt: now };
 
     if (args.email !== undefined) wsUpdates.email = args.email.trim().toLowerCase();
-    if (args.phone !== undefined) wsUpdates.phone = args.phone.trim();
+    if (args.phone !== undefined) {
+      const trimmedPhone = args.phone.trim();
+      wsUpdates.phone = trimmedPhone;
+      if (trimmedPhone !== (ws.phone || '')) {
+        wsUpdates.phoneVerified = false;
+        wsUpdates.phoneVerifiedAt = undefined;
+        wsUpdates.phoneStatus = 'unverified';
+      }
+    }
     if (args.category !== undefined) wsUpdates.category = args.category.trim();
     if (args.description !== undefined) wsUpdates.description = args.description.trim();
 
     await ctx.db.patch(ws._id, wsUpdates);
+
+    // Keep corresponding organizations table record in sync
+    const targetOrgId = ws.organizationId || (ws._id as any);
+    if (targetOrgId) {
+      try {
+        const org = await ctx.db.get(targetOrgId);
+        if (org) {
+          const orgPatch: Record<string, any> = { updatedAt: now };
+          if (args.phone !== undefined) {
+            orgPatch.phone = args.phone.trim();
+            if (args.phone.trim() !== ((org as any).phone || '')) {
+              orgPatch.phoneVerifiedAt = undefined;
+              orgPatch.phoneStatus = 'unverified';
+            }
+          }
+          if (args.category !== undefined) orgPatch.category = args.category.trim();
+          await ctx.db.patch(org._id, orgPatch);
+        }
+      } catch {}
+    }
 
     // Also update/upsert workspaceSettings record for legal metadata
     const existing = await ctx.db

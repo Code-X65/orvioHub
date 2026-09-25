@@ -5,46 +5,10 @@ import { Check, Sparkles, ArrowRight, ChevronDown, CreditCard, ShieldCheck, Zap 
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useHost } from '@/host/useHost';
+import { usePlanConfig } from '@/hooks/usePlanConfig';
 import { getApiUrl } from '@orviohub/shared';
 
 type BillingCycle = 'monthly' | 'annual';
-
-interface LivePlan {
-  _id?: string;
-  key: string;
-  name: string;
-  monthlyPrice: number; // in kobo
-  annualPrice: number; // in kobo
-  currency: string;
-  isActive: boolean;
-}
-
-const DEFAULT_DB_PLANS: LivePlan[] = [
-  {
-    key: 'free_trial',
-    name: 'Free Trial',
-    monthlyPrice: 0,
-    annualPrice: 0,
-    currency: 'NGN',
-    isActive: true,
-  },
-  {
-    key: 'standard',
-    name: 'Standard',
-    monthlyPrice: 750000, // ₦7,500
-    annualPrice: 7500000, // ₦75,000
-    currency: 'NGN',
-    isActive: true,
-  },
-  {
-    key: 'premium',
-    name: 'Premium',
-    monthlyPrice: 2500000, // ₦25,000
-    annualPrice: 25000000, // ₦250,000
-    currency: 'NGN',
-    isActive: true,
-  },
-];
 
 export const PricingPage: React.FC = () => {
   const host = useHost();
@@ -52,7 +16,7 @@ export const PricingPage: React.FC = () => {
   const { user, isAuthenticated, isInitialized, refreshSession } = useAuthStore();
   const [billingCycle, setBillingCycle] = useState<BillingCycle>('monthly');
   const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(null);
-  const [dbPlans, setDbPlans] = useState<LivePlan[]>(DEFAULT_DB_PLANS);
+  const { planMap, getPlanPrice } = usePlanConfig();
 
   // Ensure auth state is populated when landing directly on pricing page
   useEffect(() => {
@@ -61,39 +25,13 @@ export const PricingPage: React.FC = () => {
     }
   }, [isInitialized, refreshSession]);
 
-  // Fetch live plans from database via backend API
-  useEffect(() => {
-    let isMounted = true;
-    const fetchPlans = async () => {
-      try {
-        const apiUrl = getApiUrl(env).replace(/\/$/, '');
-        const res = await fetch(`${apiUrl}/api/v1/plans`);
-        if (res.ok) {
-          const json = await res.json();
-          if (json.success && Array.isArray(json.data) && json.data.length > 0 && isMounted) {
-            setDbPlans(json.data);
-          }
-        }
-      } catch {
-        // Fallback gracefully to DEFAULT_DB_PLANS
-      }
-    };
-    fetchPlans();
-    return () => {
-      isMounted = false;
-    };
-  }, [env]);
-
-  const standardPlan = dbPlans.find((p) => p.key === 'standard') || DEFAULT_DB_PLANS[1];
-  const premiumPlan = dbPlans.find((p) => p.key === 'premium') || DEFAULT_DB_PLANS[2];
-
-  // Prices in Nigerian Naira (divide kobo by 100)
-  const stdMonthlyNGN = Math.round(standardPlan.monthlyPrice / 100);
-  const stdAnnualNGN = Math.round(standardPlan.annualPrice / 100);
+  // Prices in Nigerian Naira
+  const stdMonthlyNGN = getPlanPrice('standard', 'monthly') || 7500;
+  const stdAnnualNGN = getPlanPrice('standard', 'annual') || 75000;
   const stdAnnualMonthlyNGN = Math.round(stdAnnualNGN / 12);
 
-  const premMonthlyNGN = Math.round(premiumPlan.monthlyPrice / 100);
-  const premAnnualNGN = Math.round(premiumPlan.annualPrice / 100);
+  const premMonthlyNGN = getPlanPrice('premium', 'monthly') || 25000;
+  const premAnnualNGN = getPlanPrice('premium', 'annual') || 250000;
   const premAnnualMonthlyNGN = Math.round(premAnnualNGN / 12);
 
   const formatNaira = (amount: number) => {

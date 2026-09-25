@@ -19,8 +19,16 @@ export const Header: React.FC = () => {
   const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
-  const { user, isAuthenticated, isInitialized, refreshSession, logout } = useAuthStore();
-  const { workspaces, fetchWorkspaces, isLoading } = useWorkspaceStore();
+  const user = useAuthStore(s => s.user);
+  const isAuthenticated = useAuthStore(s => s.isAuthenticated);
+  const isInitialized = useAuthStore(s => s.isInitialized);
+  const refreshSession = useAuthStore(s => s.refreshSession);
+  const logout = useAuthStore(s => s.logout);
+  const workspaces = useWorkspaceStore(s => s.workspaces);
+  const fetchWorkspaces = useWorkspaceStore(s => s.fetchWorkspaces);
+  const isLoading = useWorkspaceStore(s => s.isLoading);
+
+  const hasFetchedWorkspacesRef = useRef(false);
 
   useEffect(() => {
     if (!isInitialized) {
@@ -29,8 +37,9 @@ export const Header: React.FC = () => {
   }, [isInitialized, refreshSession]);
 
   useEffect(() => {
-    if (isAuthenticated && workspaces.length === 0 && !isLoading) {
-      fetchWorkspaces('inventory').catch(() => {});
+    if (isAuthenticated && workspaces.length === 0 && !isLoading && !hasFetchedWorkspacesRef.current) {
+      hasFetchedWorkspacesRef.current = true;
+      fetchWorkspaces().catch(() => {});
     }
   }, [isAuthenticated, fetchWorkspaces, workspaces.length, isLoading]);
 

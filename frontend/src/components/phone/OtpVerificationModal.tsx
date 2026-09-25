@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { useUserPhoneStore } from '@/stores/useUserPhoneStore';
+import { api } from '@/lib/api';
 import { formatPhoneForDisplay } from '@/lib/phoneValidation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,20 +11,32 @@ import { toast } from 'sonner';
 interface OtpVerificationModalProps {
   isOpen: boolean;
   phone: string;
+  title?: string;
+  subtitle?: string;
   onClose: () => void;
   onSuccess?: () => void;
+  onVerifyOverride?: (otp: string) => Promise<void>;
+  onResendOverride?: () => Promise<void>;
 }
 
 export const OtpVerificationModal: React.FC<OtpVerificationModalProps> = ({
   isOpen,
   phone,
+  title = 'Verify Phone Number',
+  subtitle,
   onClose,
   onSuccess,
+  onVerifyOverride,
+  onResendOverride,
 }) => {
-  const { verifyOtp, sendOtp, isVerifyingOtp, isSendingOtp } = useUserPhoneStore();
   const [otp, setOtp] = useState('');
   const [cooldown, setCooldown] = useState(60);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isResending, setIsResending] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const isVerifying = isSubmitting;
+  const isSending = isResending;
 
   useEffect(() => {
     if (isOpen) {
@@ -51,24 +63,48 @@ export const OtpVerificationModal: React.FC<OtpVerificationModalProps> = ({
       return;
     }
 
+    setIsSubmitting(true);
     try {
-      await verifyOtp(phone, otp);
+      if (onVerifyOverride) {
+        await onVerifyOverride(otp);
+      } else {
+        const res = await api.post<{ success: boolean }>('/users/me/phone/verification/verify', {
+          code: otp.trim(),
+          purpose: 'user_phone_verification',
+        });
+        if (!res.success) {
+          throw new Error('Verification failed.');
+        }
+        toast.success('Phone number verified successfully!');
+      }
       if (onSuccess) onSuccess();
       onClose();
-    } catch {
-      // Error handled in store
+    } catch (err: any) {
+      toast.error(err.message || 'Verification failed. Please check the code.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   const handleResend = async () => {
-    if (cooldown > 0 || isSendingOtp) return;
+    if (cooldown > 0 || isSending) return;
+    setIsResending(true);
     try {
-      await sendOtp(phone);
+      if (onResendOverride) {
+        await onResendOverride();
+      } else {
+        await api.post('/users/me/phone/verification/resend', {
+          purpose: 'user_phone_verification',
+        });
+        toast.success(`Verification code sent to ${phone}`);
+      }
       setCooldown(60);
       setOtp('');
       inputRef.current?.focus();
-    } catch {
-      // Error handled in store
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to resend code.');
+    } finally {
+      setIsResending(false);
     }
   };
 
@@ -95,9 +131,15 @@ export const OtpVerificationModal: React.FC<OtpVerificationModalProps> = ({
           <Smartphone className="w-6 h-6" />
         </div>
 
-        <h3 className="text-base font-bold text-white tracking-tight">Verify Phone Number</h3>
+        <h3 className="text-base font-bold text-white tracking-tight">{title}</h3>
         <p className="text-xs text-slate-400 mt-1 max-w-[280px] mx-auto leading-relaxed">
-          We sent a 6-digit verification code to <span className="text-white font-medium">{formatPhoneForDisplay(phone)}</span>.
+          {subtitle ? (
+            subtitle
+          ) : (
+            <>
+              We sent a 6-digit verification code to <span className="text-white font-medium">{formatPhoneForDisplay(phone)}</span>.
+            </>
+          )}
         </p>
 
         <form onSubmit={handleSubmit} className="mt-5 space-y-4">
@@ -120,11 +162,11 @@ export const OtpVerificationModal: React.FC<OtpVerificationModalProps> = ({
           {/* Action Buttons */}
           <Button
             type="submit"
-            disabled={otp.length !== 6 || isVerifyingOtp}
+            disabled={otp.length !== 6 || isVerifying}
             className="w-full h-10 bg-[#714b67] hover:bg-[#85587a] text-white text-xs font-semibold rounded-xl shadow-md cursor-pointer flex items-center justify-center gap-2"
           >
-            {isVerifyingOtp ? <Spinner size="sm" /> : <ShieldCheck className="w-4 h-4" />}
-            <span>{isVerifyingOtp ? 'Verifying Code...' : 'Verify Phone'}</span>
+            {isVerifying ? <Spinner size="sm" /> : <ShieldCheck className="w-4 h-4" />}
+            <span>{isVerifying ? 'Verifying Code...' : 'Verify Phone'}</span>
           </Button>
 
           {/* Resend Countdown */}
@@ -137,11 +179,11 @@ export const OtpVerificationModal: React.FC<OtpVerificationModalProps> = ({
               <button
                 type="button"
                 onClick={handleResend}
-                disabled={isSendingOtp}
+                disabled={isSending}
                 className="inline-flex items-center gap-1.5 text-xs text-[#d4a8c9] hover:text-white font-medium transition-colors cursor-pointer"
               >
-                <RefreshCw className={`w-3.5 h-3.5 ${isSendingOtp ? 'animate-spin' : ''}`} />
-                <span>{isSendingOtp ? 'Sending fresh code...' : 'Resend Verification Code'}</span>
+                <RefreshCw className={`w-3.5 h-3.5 ${isSending ? 'animate-spin' : ''}`} />
+                <span>{isSending ? 'Sending fresh code...' : 'Resend Verification Code'}</span>
               </button>
             )}
           </div>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, Link } from 'react-router-dom';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { api } from '@/lib/api';
@@ -11,14 +11,18 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
+import { useComfortLevel } from '@/hooks/useComfortLevel';
 import {
   Package,
   Layers,
   ShoppingBag,
-  Receipt,
   Users,
   Loader2,
   Save,
+  ArrowRight,
+  Info,
+  Store,
+  Sliders,
 } from 'lucide-react';
 
 export const InventorySettingsPage: React.FC = () => {
@@ -37,7 +41,7 @@ export const InventorySettingsPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
 
-  // Settings State
+  // Application-level Settings State
   const [productConfig, setProductConfig] = useState({
     skuPrefix: 'PRD',
     autoGenerateSku: true,
@@ -49,9 +53,6 @@ export const InventorySettingsPage: React.FC = () => {
   });
 
   const [stockRules, setStockRules] = useState({
-    negativeStockAllowed: false,
-    lowStockThreshold: 10,
-    stockAdjustmentApprovalRequired: false,
     costingMethod: 'FIFO',
     autoDeductOnSale: true,
     branchTransferApprovalRequired: true,
@@ -67,24 +68,6 @@ export const InventorySettingsPage: React.FC = () => {
     receiptPrefix: 'INV-',
   });
 
-  const [receiptSettings, setReceiptSettings] = useState({
-    storeName: '',
-    tagline: 'Quality goods & exceptional service',
-    headerText: 'Welcome to our store',
-    footerMessage: 'Thank you for your patronage! Please keep this receipt.',
-    returnPolicy: 'Goods in original condition may be returned within 7 days.',
-    tin: '',
-    vatRate: 7.5,
-    enableVat: false,
-    showCashier: true,
-    showCustomer: true,
-    showBarcode: true,
-    paperWidth: '80mm',
-    phone: '',
-    email: '',
-    address: '',
-  });
-
   const [selectedRoleForMatrix, setSelectedRoleForMatrix] = useState<string>('cashier');
 
   // Load Inventory Settings
@@ -98,9 +81,14 @@ export const InventorySettingsPage: React.FC = () => {
       const app = res.data?.application;
       if (app?.settings) {
         if (app.settings.productConfig) setProductConfig(app.settings.productConfig);
-        if (app.settings.stockRules) setStockRules(app.settings.stockRules);
+        if (app.settings.stockRules) {
+          setStockRules({
+            costingMethod: app.settings.stockRules.costingMethod || 'FIFO',
+            autoDeductOnSale: app.settings.stockRules.autoDeductOnSale ?? true,
+            branchTransferApprovalRequired: app.settings.stockRules.branchTransferApprovalRequired ?? true,
+          });
+        }
         if (app.settings.salesRules) setSalesRules(app.settings.salesRules);
-        if (app.settings.receiptSettings) setReceiptSettings(app.settings.receiptSettings);
       }
     } catch {
       // Use defaults if empty
@@ -123,7 +111,6 @@ export const InventorySettingsPage: React.FC = () => {
           productConfig,
           stockRules,
           salesRules,
-          receiptSettings,
         },
       });
       toast.success('Inventory application settings saved.');
@@ -134,19 +121,28 @@ export const InventorySettingsPage: React.FC = () => {
     }
   };
 
+  const { comfortLevelId, densityTier } = useComfortLevel();
+
+  const COMFORT_LABELS: Record<string, { label: string; desc: string; color: string }> = {
+    very: { label: 'Very comfortable', desc: 'Compact layout, tooltips hidden, concise empty states', color: 'text-emerald-400' },
+    somewhat: { label: 'Somewhat comfortable', desc: 'Default layout with guided tooltips', color: 'text-blue-400' },
+    not_very: { label: 'Not very comfortable', desc: 'Spacious layout, larger controls, extended onboarding tour', color: 'text-amber-400' },
+    not_at_all: { label: 'First time with business apps', desc: 'Maximum guidance, large targets, verbose empty states', color: 'text-rose-400' },
+  };
+
   const navItems: SettingsNavItem[] = [
     { id: 'products', label: 'Product Configuration', icon: Package },
-    { id: 'stock', label: 'Stock Rules & Alerts', icon: Layers },
-    { id: 'sales', label: 'POS & Sales Rules', icon: ShoppingBag },
-    { id: 'receipts', label: 'Receipt Template', icon: Receipt },
+    { id: 'stock', label: 'Stock Accounting Rules', icon: Layers },
+    { id: 'sales', label: 'Sales & POS Policies', icon: ShoppingBag },
     { id: 'permissions', label: 'Inventory Roles & RBAC', icon: Users },
+    { id: 'preferences', label: 'UI Preferences', icon: Sliders },
   ];
 
   return (
     <SettingsLayout
       title="Inventory Settings"
-      subtitle="Configure SKU conventions, stock decrement policies, POS rules, and receipt formatting"
-      contextTag="Inventory & POS"
+      subtitle="Configure organization-wide catalog standards, inventory costing methods, and POS sales policies"
+      contextTag="Inventory Application"
       sidebar={
         <SettingsSidebar
           items={navItems}
@@ -170,9 +166,9 @@ export const InventorySettingsPage: React.FC = () => {
           {activeTab === 'products' && (
             <div className="space-y-6 animate-in fade-in duration-150">
               <div className="border-b border-white/10 pb-4">
-                <h2 className="text-base font-bold text-white">Product & SKU Configuration</h2>
+                <h2 className="text-base font-bold text-white">Global Product & Catalog Configuration</h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Standards for automated barcode assignment, SKU prefixes, and default categories.
+                  Standards for automated barcode assignment, SKU generation prefixes, and default product categorization across all branches.
                 </p>
               </div>
 
@@ -199,6 +195,19 @@ export const InventorySettingsPage: React.FC = () => {
                   />
                 </div>
 
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-slate-200">Cost Price Visibility</Label>
+                  <select
+                    value={productConfig.costVisibility}
+                    onChange={(e) => setProductConfig({ ...productConfig, costVisibility: e.target.value })}
+                    disabled={!isOwnerOrAdmin}
+                    className="w-full h-9 px-3 bg-black/40 border border-white/10 rounded-md text-xs text-white focus:border-[#714b67] focus:outline-none cursor-pointer"
+                  >
+                    <option value="admin_only">Owners & Managers Only</option>
+                    <option value="all_staff">All Inventory Staff</option>
+                  </select>
+                </div>
+
                 <div className="sm:col-span-2 space-y-3 pt-2">
                   <div className="flex items-center justify-between p-3.5 rounded-xl border border-white/10 bg-black/40">
                     <div>
@@ -212,7 +221,7 @@ export const InventorySettingsPage: React.FC = () => {
                       checked={productConfig.autoGenerateSku}
                       onChange={(e) => setProductConfig({ ...productConfig, autoGenerateSku: e.target.checked })}
                       disabled={!isOwnerOrAdmin}
-                      className="w-4 h-4 rounded"
+                      className="w-4 h-4 rounded cursor-pointer"
                     />
                   </div>
 
@@ -220,7 +229,7 @@ export const InventorySettingsPage: React.FC = () => {
                     <div>
                       <h4 className="text-xs font-bold text-white">Enable Barcode Scanning</h4>
                       <p className="text-[11px] text-slate-400">
-                        Allow USB/Bluetooth handheld barcode scanners at POS register.
+                        Allow USB/Bluetooth handheld barcode scanners at POS registers.
                       </p>
                     </div>
                     <input
@@ -228,7 +237,23 @@ export const InventorySettingsPage: React.FC = () => {
                       checked={productConfig.enableBarcodes}
                       onChange={(e) => setProductConfig({ ...productConfig, enableBarcodes: e.target.checked })}
                       disabled={!isOwnerOrAdmin}
-                      className="w-4 h-4 rounded"
+                      className="w-4 h-4 rounded cursor-pointer"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between p-3.5 rounded-xl border border-white/10 bg-black/40">
+                    <div>
+                      <h4 className="text-xs font-bold text-white">Allow Product Archiving</h4>
+                      <p className="text-[11px] text-slate-400">
+                        Permit soft-deleting products to preserve historic sales reports and stock ledger entries.
+                      </p>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={productConfig.allowProductArchive}
+                      onChange={(e) => setProductConfig({ ...productConfig, allowProductArchive: e.target.checked })}
+                      disabled={!isOwnerOrAdmin}
+                      className="w-4 h-4 rounded cursor-pointer"
                     />
                   </div>
                 </div>
@@ -240,60 +265,69 @@ export const InventorySettingsPage: React.FC = () => {
           {activeTab === 'stock' && (
             <div className="space-y-6 animate-in fade-in duration-150">
               <div className="border-b border-white/10 pb-4">
-                <h2 className="text-base font-bold text-white">Stock Decrement & Threshold Policies</h2>
+                <h2 className="text-base font-bold text-white">Stock Accounting & Valuation Policies</h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Accounting costing methods and global stock alerting limits.
+                  Global valuation methodology and inventory movement automation rules.
                 </p>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-slate-200">Default Low-Stock Threshold</Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    value={stockRules.lowStockThreshold}
-                    onChange={(e) => setStockRules({ ...stockRules, lowStockThreshold: parseInt(e.target.value) || 0 })}
-                    disabled={!isOwnerOrAdmin}
-                    className="bg-black/40 border-white/10 text-xs"
-                  />
+              {/* Notice Banner pointing to Branch Settings for location-level rules */}
+              <div className="p-4 rounded-xl bg-purple-950/30 border border-[#714b67]/40 flex items-start justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <Info className="w-4 h-4 text-[#e6a8d6] shrink-0 mt-0.5" />
+                  <div className="text-xs space-y-0.5">
+                    <p className="font-semibold text-white">Looking for Location-Specific Stock Alert Levels?</p>
+                    <p className="text-slate-400">
+                      Low-stock thresholds, negative stock checkout permissions, and physical stock count approval are configured per branch.
+                    </p>
+                  </div>
                 </div>
+                <Link
+                  to="/settings/branches?tab=inventory"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#714b67]/30 hover:bg-[#714b67]/50 text-[#f3bce2] text-xs font-semibold border border-[#714b67]/40 shrink-0 transition-colors"
+                >
+                  <Store className="w-3.5 h-3.5" />
+                  <span>Branch Inventory Rules</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
+              </div>
 
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <Label className="text-xs text-slate-200">Inventory Costing Method</Label>
                   <select
                     value={stockRules.costingMethod}
                     onChange={(e) => setStockRules({ ...stockRules, costingMethod: e.target.value })}
                     disabled={!isOwnerOrAdmin}
-                    className="w-full h-9 px-3 bg-black/40 border border-white/10 rounded-md text-xs text-white focus:border-[#714b67] focus:outline-none"
+                    className="w-full h-9 px-3 bg-black/40 border border-white/10 rounded-md text-xs text-white focus:border-[#714b67] focus:outline-none cursor-pointer"
                   >
                     <option value="FIFO">First In, First Out (FIFO)</option>
-                    <option value="WEIGHTED_AVERAGE">Weighted Average Cost</option>
+                    <option value="WEIGHTED_AVERAGE">Weighted Average Cost (AVCO)</option>
                   </select>
                 </div>
 
                 <div className="sm:col-span-2 space-y-3 pt-2">
                   <div className="flex items-center justify-between p-3.5 rounded-xl border border-white/10 bg-black/40">
                     <div>
-                      <h4 className="text-xs font-bold text-white">Require Approval for Stock Adjustments</h4>
+                      <h4 className="text-xs font-bold text-white">Auto-Deduct Stock on Completed Sale</h4>
                       <p className="text-[11px] text-slate-400">
-                        Manual inventory count changes require manager sign-off.
+                        Automatically decrement inventory quantities in real-time when cashiers complete a checkout.
                       </p>
                     </div>
                     <input
                       type="checkbox"
-                      checked={stockRules.stockAdjustmentApprovalRequired}
-                      onChange={(e) => setStockRules({ ...stockRules, stockAdjustmentApprovalRequired: e.target.checked })}
+                      checked={stockRules.autoDeductOnSale}
+                      onChange={(e) => setStockRules({ ...stockRules, autoDeductOnSale: e.target.checked })}
                       disabled={!isOwnerOrAdmin}
-                      className="w-4 h-4 rounded"
+                      className="w-4 h-4 rounded cursor-pointer"
                     />
                   </div>
 
                   <div className="flex items-center justify-between p-3.5 rounded-xl border border-white/10 bg-black/40">
                     <div>
-                      <h4 className="text-xs font-bold text-white">Require Approval for Branch Transfers</h4>
+                      <h4 className="text-xs font-bold text-white">Require Two-Way Approval for Branch Transfers</h4>
                       <p className="text-[11px] text-slate-400">
-                        Transfers between stores require destination branch acceptance.
+                        Inter-store inventory transfers require receiving confirmation at the destination location.
                       </p>
                     </div>
                     <input
@@ -301,7 +335,7 @@ export const InventorySettingsPage: React.FC = () => {
                       checked={stockRules.branchTransferApprovalRequired}
                       onChange={(e) => setStockRules({ ...stockRules, branchTransferApprovalRequired: e.target.checked })}
                       disabled={!isOwnerOrAdmin}
-                      className="w-4 h-4 rounded"
+                      className="w-4 h-4 rounded cursor-pointer"
                     />
                   </div>
                 </div>
@@ -313,10 +347,31 @@ export const InventorySettingsPage: React.FC = () => {
           {activeTab === 'sales' && (
             <div className="space-y-6 animate-in fade-in duration-150">
               <div className="border-b border-white/10 pb-4">
-                <h2 className="text-base font-bold text-white">POS Checkout & Sales Policies</h2>
+                <h2 className="text-base font-bold text-white">Cross-Branch POS & Checkout Policies</h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Allowed payment types, discount limits, and credit sale permissions.
+                  Organization-wide payment acceptance types, cashier discount ceilings, and credit sale permissions.
                 </p>
+              </div>
+
+              {/* Notice Banner pointing to Branch Settings for Thermal Receipts */}
+              <div className="p-4 rounded-xl bg-purple-950/30 border border-[#714b67]/40 flex items-start justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <Info className="w-4 h-4 text-[#e6a8d6] shrink-0 mt-0.5" />
+                  <div className="text-xs space-y-0.5">
+                    <p className="font-semibold text-white">Configuring Thermal Receipts & Printers?</p>
+                    <p className="text-slate-400">
+                      Receipt headers, footers, tax ID (TIN), paper widths (80mm/58mm), and branch phone numbers are customized per branch location.
+                    </p>
+                  </div>
+                </div>
+                <Link
+                  to="/settings/branches?tab=pos"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#714b67]/30 hover:bg-[#714b67]/50 text-[#f3bce2] text-xs font-semibold border border-[#714b67]/40 shrink-0 transition-colors"
+                >
+                  <Store className="w-3.5 h-3.5" />
+                  <span>Branch POS Receipts</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -334,10 +389,10 @@ export const InventorySettingsPage: React.FC = () => {
                 </div>
 
                 <div className="space-y-1.5">
-                  <Label className="text-xs text-slate-200">Receipt Number Prefix</Label>
+                  <Label className="text-xs text-slate-200">Default Global Invoice Prefix</Label>
                   <Input
                     value={salesRules.receiptPrefix}
-                    onChange={(e) => setSalesRules({ ...salesRules, receiptPrefix: e.target.value })}
+                    onChange={(e) => setSalesRules({ ...salesRules, receiptPrefix: e.target.value.toUpperCase() })}
                     placeholder="INV-"
                     disabled={!isOwnerOrAdmin}
                     className="bg-black/40 border-white/10 text-xs font-mono uppercase"
@@ -349,7 +404,7 @@ export const InventorySettingsPage: React.FC = () => {
                     <div>
                       <h4 className="text-xs font-bold text-white">Allow Credit Sales (Pay Later)</h4>
                       <p className="text-[11px] text-slate-400">
-                        Allow recording sales without immediate payment settlement.
+                        Allow recording sales on customer account without immediate cash/transfer settlement.
                       </p>
                     </div>
                     <input
@@ -357,15 +412,31 @@ export const InventorySettingsPage: React.FC = () => {
                       checked={salesRules.allowCreditSales}
                       onChange={(e) => setSalesRules({ ...salesRules, allowCreditSales: e.target.checked })}
                       disabled={!isOwnerOrAdmin}
-                      className="w-4 h-4 rounded"
+                      className="w-4 h-4 rounded cursor-pointer"
                     />
                   </div>
 
                   <div className="flex items-center justify-between p-3.5 rounded-xl border border-white/10 bg-black/40">
                     <div>
-                      <h4 className="text-xs font-bold text-white">Allow Sale Ticket Cancellation</h4>
+                      <h4 className="text-xs font-bold text-white">Require Customer Profile for Credit Sales</h4>
                       <p className="text-[11px] text-slate-400">
-                        Allow cashiers to void or reverse posted transactions with audit tracking.
+                        Enforce attaching a registered customer with verified phone number before issuing credit.
+                      </p>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={salesRules.requireCustomerForCredit}
+                      onChange={(e) => setSalesRules({ ...salesRules, requireCustomerForCredit: e.target.checked })}
+                      disabled={!isOwnerOrAdmin}
+                      className="w-4 h-4 rounded cursor-pointer"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between p-3.5 rounded-xl border border-white/10 bg-black/40">
+                    <div>
+                      <h4 className="text-xs font-bold text-white">Allow Sale Ticket Void & Cancellation</h4>
+                      <p className="text-[11px] text-slate-400">
+                        Permit authorized staff to void transactions with automated inventory reversal and audit logging.
                       </p>
                     </div>
                     <input
@@ -373,7 +444,7 @@ export const InventorySettingsPage: React.FC = () => {
                       checked={salesRules.saleCancellationAllowed}
                       onChange={(e) => setSalesRules({ ...salesRules, saleCancellationAllowed: e.target.checked })}
                       disabled={!isOwnerOrAdmin}
-                      className="w-4 h-4 rounded"
+                      className="w-4 h-4 rounded cursor-pointer"
                     />
                   </div>
                 </div>
@@ -381,149 +452,25 @@ export const InventorySettingsPage: React.FC = () => {
             </div>
           )}
 
-          {/* 4. Receipts Tab with Live Preview */}
-          {activeTab === 'receipts' && (
-            <div className="space-y-6 animate-in fade-in duration-150">
-              <div className="border-b border-white/10 pb-4">
-                <h2 className="text-base font-bold text-white">Receipt Design & Layout</h2>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Customize thermal receipt headers, footer thank-you messages, and tax information.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
-                {/* Form Inputs */}
-                <div className="space-y-4">
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-slate-200">Store Name on Receipt</Label>
-                    <Input
-                      value={receiptSettings.storeName}
-                      onChange={(e) => setReceiptSettings({ ...receiptSettings, storeName: e.target.value })}
-                      placeholder="e.g. Code X Stores"
-                      disabled={!isOwnerOrAdmin}
-                      className="bg-black/40 border-white/10 text-xs"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-slate-200">Tagline / Subheader</Label>
-                    <Input
-                      value={receiptSettings.tagline}
-                      onChange={(e) => setReceiptSettings({ ...receiptSettings, tagline: e.target.value })}
-                      disabled={!isOwnerOrAdmin}
-                      className="bg-black/40 border-white/10 text-xs"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-slate-200">Footer Thank You Message</Label>
-                    <Input
-                      value={receiptSettings.footerMessage}
-                      onChange={(e) => setReceiptSettings({ ...receiptSettings, footerMessage: e.target.value })}
-                      disabled={!isOwnerOrAdmin}
-                      className="bg-black/40 border-white/10 text-xs"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-slate-200">Return Policy Note</Label>
-                    <Input
-                      value={receiptSettings.returnPolicy}
-                      onChange={(e) => setReceiptSettings({ ...receiptSettings, returnPolicy: e.target.value })}
-                      disabled={!isOwnerOrAdmin}
-                      className="bg-black/40 border-white/10 text-xs"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3 pt-2">
-                    <div className="space-y-1.5">
-                      <Label className="text-xs text-slate-200">Tax ID / TIN</Label>
-                      <Input
-                        value={receiptSettings.tin}
-                        onChange={(e) => setReceiptSettings({ ...receiptSettings, tin: e.target.value })}
-                        placeholder="e.g. 12345678-0001"
-                        disabled={!isOwnerOrAdmin}
-                        className="bg-black/40 border-white/10 text-xs font-mono"
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label className="text-xs text-slate-200">Paper Width</Label>
-                      <select
-                        value={receiptSettings.paperWidth}
-                        onChange={(e) => setReceiptSettings({ ...receiptSettings, paperWidth: e.target.value })}
-                        disabled={!isOwnerOrAdmin}
-                        className="w-full h-9 px-3 bg-black/40 border border-white/10 rounded-md text-xs text-white focus:border-[#714b67] focus:outline-none"
-                      >
-                        <option value="80mm">80mm (Standard POS)</option>
-                        <option value="58mm">58mm (Mobile POS)</option>
-                      </select>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Live Preview Paper */}
-                <div className="p-6 bg-slate-900 border border-white/10 rounded-2xl flex flex-col items-center shadow-2xl">
-                  <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-4">
-                    Live Receipt Thermal Preview
-                  </div>
-
-                  <div className="w-64 bg-white text-black p-5 rounded-lg shadow-xl font-mono text-[11px] leading-tight space-y-3">
-                    <div className="text-center space-y-1 border-b border-black/20 pb-2">
-                      <div className="font-bold text-sm tracking-tight">{receiptSettings.storeName || 'ORVIOHUB STORE'}</div>
-                      <div className="text-[10px] text-gray-600">{receiptSettings.tagline}</div>
-                      <div className="text-[9px] text-gray-500">Ikeja, Lagos, Nigeria</div>
-                      {receiptSettings.tin && <div className="text-[9px]">TIN: {receiptSettings.tin}</div>}
-                    </div>
-
-                    <div className="text-[10px] text-gray-600 space-y-0.5">
-                      <div className="flex justify-between"><span>Rcpt: INV-00421</span><span>Date: 15/09/2026</span></div>
-                      <div className="flex justify-between"><span>Cashier: Admin User</span><span>Time: 14:32</span></div>
-                    </div>
-
-                    <div className="border-t border-b border-black/20 py-1.5 space-y-1">
-                      <div className="flex justify-between font-semibold"><span>Item</span><span>Total</span></div>
-                      <div className="flex justify-between text-[10px]"><span>1x Coffee Beans 1kg</span><span>₦ 12,500</span></div>
-                      <div className="flex justify-between text-[10px]"><span>2x Milk Cartons</span><span>₦ 4,000</span></div>
-                    </div>
-
-                    <div className="space-y-1 font-bold">
-                      <div className="flex justify-between"><span>SUBTOTAL</span><span>₦ 16,500</span></div>
-                      <div className="flex justify-between"><span>VAT (7.5%)</span><span>₦ 1,237.50</span></div>
-                      <div className="flex justify-between text-xs border-t border-black/20 pt-1">
-                        <span>TOTAL</span><span>₦ 17,737.50</span>
-                      </div>
-                    </div>
-
-                    <div className="text-center text-[9px] text-gray-600 pt-2 border-t border-dashed border-black/20 space-y-1">
-                      <div>{receiptSettings.footerMessage}</div>
-                      <div>{receiptSettings.returnPolicy}</div>
-                      <div className="font-bold">*** THANK YOU ***</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* 5. Permissions Tab */}
+          {/* 4. Permissions Tab */}
           {activeTab === 'permissions' && (
             <div className="space-y-6 animate-in fade-in duration-150">
               <div className="border-b border-white/10 pb-4 flex items-center justify-between">
                 <div>
-                  <h2 className="text-base font-bold text-white">Inventory Role Privileges</h2>
+                  <h2 className="text-base font-bold text-white">Inventory Role Privileges & RBAC</h2>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Review permissions granted across Manager, Cashier, Stock Manager, and Accountant roles.
+                    Review and verify role permissions across Manager, Cashier, Stock Manager, and Accountant.
                   </p>
                 </div>
                 <select
                   value={selectedRoleForMatrix}
                   onChange={(e) => setSelectedRoleForMatrix(e.target.value)}
-                  className="h-8 px-3 bg-black/40 border border-white/10 text-white rounded-lg text-xs"
+                  className="h-8 px-3 bg-black/40 border border-white/10 text-white rounded-lg text-xs cursor-pointer"
                 >
                   <option value="owner">Inventory Owner</option>
                   <option value="manager">Inventory Manager</option>
                   <option value="cashier">Cashier</option>
-                  <option value="stock_manager">Stock Manager</option>
+                  <option value="stock_manager">Stock Keeper</option>
                   <option value="accountant">Accountant</option>
                 </select>
               </div>
@@ -544,16 +491,74 @@ export const InventorySettingsPage: React.FC = () => {
             </div>
           )}
 
+          {/* 5. UI Preferences Tab */}
+          {activeTab === 'preferences' && (
+            <div className="space-y-6 animate-in fade-in duration-150">
+              <div className="border-b border-white/10 pb-4">
+                <h2 className="text-base font-bold text-white">UI Preferences</h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Your team's comfort level controls layout density, tooltip visibility, onboarding tour depth, and empty-state guidance across the inventory app.
+                </p>
+              </div>
+
+              {/* Current comfort level card */}
+              <div className="rounded-xl border border-white/10 bg-black/40 p-5 space-y-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="space-y-1">
+                    <p className="text-xs text-slate-400 uppercase tracking-wide font-semibold">Current Team Comfort Level</p>
+                    <p className={`text-sm font-bold ${COMFORT_LABELS[comfortLevelId]?.color ?? 'text-white'}`}>
+                      {COMFORT_LABELS[comfortLevelId]?.label ?? comfortLevelId}
+                    </p>
+                    <p className="text-xs text-slate-400">
+                      {COMFORT_LABELS[comfortLevelId]?.desc}
+                    </p>
+                  </div>
+                  <span className="shrink-0 text-[10px] font-mono px-2 py-1 rounded-md border border-white/10 text-slate-300 bg-white/5">
+                    {densityTier}
+                  </span>
+                </div>
+
+                {/* Active adaptations */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
+                  {[
+                    { label: 'Layout density', value: densityTier },
+                    { label: 'Tooltips', value: comfortLevelId === 'very' ? 'Hidden' : 'Visible' },
+                    { label: 'Button size', value: comfortLevelId === 'very' ? 'Small' : comfortLevelId === 'somewhat' ? 'Default' : 'Large' },
+                    { label: 'Onboarding tour', value: (comfortLevelId === 'not_very' || comfortLevelId === 'not_at_all') ? 'Extended' : 'Standard' },
+                  ].map(({ label, value }) => (
+                    <div key={label} className="rounded-lg bg-white/5 border border-white/5 p-3 space-y-1">
+                      <p className="text-[10px] text-slate-500 uppercase tracking-wide">{label}</p>
+                      <p className="text-xs font-semibold text-slate-200 capitalize">{value}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* CTA */}
+                <div className="flex items-center gap-3 pt-3 border-t border-white/10">
+                  <Link
+                    to={`/onboard/inventory-setup?org=${workspaceId}&step=4`}
+                    className="inline-flex items-center gap-1.5 text-xs text-[#c79dbd] hover:text-[#e6a8d6] font-medium transition-colors"
+                  >
+                    <Sliders className="w-3.5 h-3.5" />
+                    Change comfort level
+                    <ArrowRight className="w-3 h-3" />
+                  </Link>
+                  <span className="text-slate-600 text-xs">• Takes you to the team questionnaire</span>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Submit Footer */}
-          {isOwnerOrAdmin && activeTab !== 'permissions' && (
+          {isOwnerOrAdmin && activeTab !== 'permissions' && activeTab !== 'preferences' && (
             <div className="flex justify-end pt-4 border-t border-white/10">
               <Button
                 type="submit"
                 disabled={isSaving}
-                className="bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-semibold px-5"
+                className="bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-semibold px-5 cursor-pointer shadow-md shadow-[#714b67]/20"
               >
                 {isSaving ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Save className="w-3.5 h-3.5 mr-1.5" />}
-                Save Inventory Settings
+                Save Inventory Application Settings
               </Button>
             </div>
           )}

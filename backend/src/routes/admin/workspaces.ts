@@ -112,7 +112,7 @@ export const adminWorkspaceRoutes: FastifyPluginAsync = async (fastify) => {
           applications: [
             { key: 'inventory', name: 'Inventory & POS', status: 'active', isUserFacing: true, setupComplete: true },
             { key: 'crm', name: 'CRM', status: 'hidden', isUserFacing: false, setupComplete: false },
-            { key: 'task_management', name: 'Tasks', status: 'hidden', isUserFacing: false, setupComplete: false },
+            { key: 'taskmanagement', name: 'Tasks', status: 'hidden', isUserFacing: false, setupComplete: false },
           ],
         },
       });
@@ -152,7 +152,7 @@ export const adminWorkspaceRoutes: FastifyPluginAsync = async (fastify) => {
   const getInvitationsHandler = async (request: any, reply: any) => {
     const { workspaceId } = request.params as { workspaceId: string };
     try {
-      const invitations = await dataService.getWorkspaceInvitations(workspaceId);
+      const invitations = await dataService.getWorkspaceInvitations(workspaceId, (request.user?.id || 'admin') as string);
       return reply.send({ success: true, data: { invitations: invitations || [] } });
     } catch {
       return reply.send({ success: true, data: { invitations: [] } });
@@ -378,6 +378,97 @@ export const adminWorkspaceRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.send({ success: true, data: res });
     }
   );
+  // Workspace / Organization Phone Verification & Unlink
+  const overrideWorkspacePhoneHandler = async (request: any, reply: any) => {
+    const { workspaceId } = request.params as { workspaceId: string };
+    const body = (request.body as { reason?: string; phone?: string }) || {};
+    const token = getAdminToken(request);
+    try {
+      const res = await dataService.adminOverrideWorkspacePhoneVerified(
+        token,
+        workspaceId,
+        body.reason || 'Administrative verification override',
+        body.phone
+      );
+      return reply.send({ success: true, message: 'Workspace phone marked as verified.', data: res });
+    } catch (err: any) {
+      return reply.status(400).send({
+        success: false,
+        error: { code: ERROR_CODES.VALIDATION_ERROR, message: err.message || 'Failed to mark workspace phone as verified.' },
+      });
+    }
+  };
+
+  const unlinkWorkspacePhoneHandler = async (request: any, reply: any) => {
+    const { workspaceId } = request.params as { workspaceId: string };
+    const body = (request.body as { reason?: string }) || {};
+    const token = getAdminToken(request);
+    try {
+      const res = await dataService.adminUnlinkWorkspacePhone(
+        token,
+        workspaceId,
+        body.reason || 'Admin phone reset'
+      );
+      return reply.send({ success: true, message: 'Workspace phone unlinked successfully.', data: res });
+    } catch (err: any) {
+      return reply.status(400).send({
+        success: false,
+        error: { code: ERROR_CODES.VALIDATION_ERROR, message: err.message || 'Failed to unlink workspace phone.' },
+      });
+    }
+  };
+
+  fastify.post('/organizations/:workspaceId/phone/mark-verified', overrideWorkspacePhoneHandler);
+  fastify.post('/workspaces/:workspaceId/phone/mark-verified', overrideWorkspacePhoneHandler);
+  fastify.post('/organizations/:workspaceId/phone/unlink', unlinkWorkspacePhoneHandler);
+  fastify.post('/workspaces/:workspaceId/phone/unlink', unlinkWorkspacePhoneHandler);
+
+  // Branch Phone Verification & Unlink
+  const overrideBranchPhoneHandler = async (request: any, reply: any) => {
+    const { branchId } = request.params as { branchId: string };
+    const body = (request.body as { reason?: string; phone?: string }) || {};
+    const token = getAdminToken(request);
+    try {
+      const res = await dataService.adminOverrideBranchPhoneVerified(
+        token,
+        branchId,
+        body.reason || 'Administrative verification override',
+        body.phone
+      );
+      return reply.send({ success: true, message: 'Branch phone marked as verified.', data: res });
+    } catch (err: any) {
+      return reply.status(400).send({
+        success: false,
+        error: { code: ERROR_CODES.VALIDATION_ERROR, message: err.message || 'Failed to mark branch phone as verified.' },
+      });
+    }
+  };
+
+  const unlinkBranchPhoneHandler = async (request: any, reply: any) => {
+    const { branchId } = request.params as { branchId: string };
+    const body = (request.body as { reason?: string }) || {};
+    const token = getAdminToken(request);
+    try {
+      const res = await dataService.adminUnlinkBranchPhone(
+        token,
+        branchId,
+        body.reason || 'Admin branch phone reset'
+      );
+      return reply.send({ success: true, message: 'Branch phone unlinked successfully.', data: res });
+    } catch (err: any) {
+      return reply.status(400).send({
+        success: false,
+        error: { code: ERROR_CODES.VALIDATION_ERROR, message: err.message || 'Failed to unlink branch phone.' },
+      });
+    }
+  };
+
+  fastify.post('/organizations/:workspaceId/branches/:branchId/phone/mark-verified', overrideBranchPhoneHandler);
+  fastify.post('/workspaces/:workspaceId/branches/:branchId/phone/mark-verified', overrideBranchPhoneHandler);
+  fastify.post('/branches/:branchId/phone/mark-verified', overrideBranchPhoneHandler);
+  fastify.post('/organizations/:workspaceId/branches/:branchId/phone/unlink', unlinkBranchPhoneHandler);
+  fastify.post('/workspaces/:workspaceId/branches/:branchId/phone/unlink', unlinkBranchPhoneHandler);
+  fastify.post('/branches/:branchId/phone/unlink', unlinkBranchPhoneHandler);
 };
 
 export default adminWorkspaceRoutes;

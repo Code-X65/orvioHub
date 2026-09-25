@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
+import { getAllowedHosts } from "@orviohub/shared";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -15,19 +16,8 @@ export default defineConfig({
     port: 3000,
     strictPort: true,
 
-    // Vite blocks unrecognized Host headers.
-    allowedHosts: [
-      "orviohub.localhost",
-      ".orviohub.localhost",
-      "account.orviohub.localhost",
-      "accounts.orviohub.localhost",
-      "home.orviohub.localhost",
-      "app.orviohub.localhost",
-      "inventory.orviohub.localhost",
-      "pos.orviohub.localhost",
-      "billing.orviohub.localhost",
-      "taskmanagement.orviohub.localhost",
-    ],
+    // Dynamically generated from the central @orviohub/shared application registry
+    allowedHosts: getAllowedHosts(),
 
     // HMR websocket connects to port 3000
     hmr: { clientPort: 3000 },

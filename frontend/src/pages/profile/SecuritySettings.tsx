@@ -28,6 +28,8 @@ export const SecuritySettings: React.FC = () => {
   const [revokeOtherSessions, setRevokeOtherSessions] = useState(true);
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
   const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [twoFactorCode, setTwoFactorCode] = useState('');
+  const [requires2Fa, setRequires2Fa] = useState(false);
 
   // 2FA State
   const [is2faModalOpen, setIs2faModalOpen] = useState(false);
@@ -82,21 +84,38 @@ export const SecuritySettings: React.FC = () => {
       return;
     }
 
+    if (newPassword === currentPassword) {
+      setPasswordError('New password cannot be the same as your current password.');
+      return;
+    }
+
     setIsUpdatingPassword(true);
     try {
       await api.post('/users/me/password/change', {
         currentPassword,
         newPassword,
         revokeOtherSessions,
+        twoFactorCode: twoFactorCode.trim() || undefined,
       });
       toast.success('Password updated successfully!');
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
+      setTwoFactorCode('');
+      setRequires2Fa(false);
     } catch (err: any) {
-      const msg = err.message || 'Failed to update password.';
-      setPasswordError(msg);
-      toast.error(msg);
+      if (err.code === 'STEP_UP_AUTH_REQUIRED') {
+        setRequires2Fa(true);
+        setPasswordError('Two-factor verification code is required to change password.');
+      } else if (err.code === 'PASSWORD_REUSED') {
+        setPasswordError('New password cannot be the same as your current password.');
+      } else if (err.code === 'INVALID_2FA_CODE') {
+        setPasswordError('Invalid two-factor authentication code.');
+      } else {
+        const msg = err.message || 'Failed to update password.';
+        setPasswordError(msg);
+        toast.error(msg);
+      }
     } finally {
       setIsUpdatingPassword(false);
     }
@@ -254,6 +273,27 @@ export const SecuritySettings: React.FC = () => {
                 placeholder="••••••••••••"
               />
             </div>
+
+            {(user?.twoFactorEnabled || requires2Fa) && (
+              <div className="space-y-1.5 p-3 rounded-xs bg-[#160f14] border border-[#2d1b27]">
+                <Label className="text-xs font-medium text-slate-300 flex items-center justify-between">
+                  <span>Two-Factor Authentication Code *</span>
+                  <span className="text-[10px] text-[#c79dbd]">Step-up verification</span>
+                </Label>
+                <Input
+                  type="text"
+                  maxLength={10}
+                  value={twoFactorCode}
+                  onChange={(e) => setTwoFactorCode(e.target.value)}
+                  required
+                  className="bg-black/60 border-white/10 text-white font-mono tracking-wider focus:border-[#714b67] rounded-xs"
+                  placeholder="Enter 6-digit code or backup code"
+                />
+                <p className="text-[10px] text-slate-400">
+                  Enter your current authenticator code to authorize this password change.
+                </p>
+              </div>
+            )}
 
             <label className="flex items-center gap-2 cursor-pointer pt-1">
               <input

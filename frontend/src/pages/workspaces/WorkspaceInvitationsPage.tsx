@@ -37,7 +37,9 @@ export const WorkspaceInvitationsPage: React.FC = () => {
 
   // Invite Form
   const [email, setEmail] = useState('');
-  const [role, setRole] = useState<'ADMIN' | 'MANAGER' | 'MEMBER' | 'VIEWER'>('MEMBER');
+  const [role, setRole] = useState<
+    'OWNER' | 'ADMIN' | 'MANAGER' | 'SALES_ATTENDANT' | 'STOCK_MANAGER' | 'ACCOUNTANT' | 'MEMBER' | 'VIEWER'
+  >('MEMBER');
   const [selectedBranchIds, setSelectedBranchIds] = useState<string[]>([]);
 
   const loadData = async () => {
@@ -72,7 +74,7 @@ export const WorkspaceInvitationsPage: React.FC = () => {
           {
             email: email.trim().toLowerCase(),
             role,
-            allowedBranches: selectedBranchIds,
+            branchAccess: selectedBranchIds.length > 0 ? selectedBranchIds : undefined,
           },
         ],
       });
@@ -86,6 +88,7 @@ export const WorkspaceInvitationsPage: React.FC = () => {
       setIsInviting(false);
     }
   };
+
 
   const handleResend = async (invitationId: string, inviteEmail: string) => {
     if (!workspaceId) return;
@@ -183,9 +186,13 @@ export const WorkspaceInvitationsPage: React.FC = () => {
                 onChange={(e) => setRole(e.target.value as any)}
                 className="w-full bg-black/60 border border-white/15 rounded-lg px-3 py-2 text-xs text-white"
               >
-                <option value="MEMBER">Member (Standard Access)</option>
-                <option value="MANAGER">Manager (Store/Ops Lead)</option>
+                <option value="OWNER">Owner (Full Legal & Org Ownership)</option>
                 <option value="ADMIN">Admin (Full Control)</option>
+                <option value="MANAGER">Manager (Store/Ops Lead)</option>
+                <option value="SALES_ATTENDANT">Sales Attendant (POS Checkout)</option>
+                <option value="STOCK_MANAGER">Stock Keeper (Inventory Audits)</option>
+                <option value="ACCOUNTANT">Accountant (Finance & Billing)</option>
+                <option value="MEMBER">Member (Standard Access)</option>
                 <option value="VIEWER">Viewer (Read Only)</option>
               </select>
             </div>

@@ -9,24 +9,25 @@ import { InventoryMarketingPage } from "../../pages/marketing/InventoryMarketing
 import { InventoryPricingPage } from "../../pages/marketing/InventoryPricingPage";
 import { InventoryInteractiveDemoPage } from "../../pages/marketing/InventoryInteractiveDemoPage";
 import { getLoginUrl, getSignupUrl, getAccountsUrl } from "@/lib/domain";
+import { crossSubdomainNavigate } from "@/lib/crossSubdomainNavigate";
 
 function RedirectToLogin() {
   useEffect(() => {
-    window.location.href = getLoginUrl(window.location.origin);
+    crossSubdomainNavigate(getLoginUrl(window.location.origin));
   }, []);
   return null;
 }
 
 function RedirectToSignup() {
   useEffect(() => {
-    window.location.href = getSignupUrl(window.location.origin);
+    crossSubdomainNavigate(getSignupUrl(window.location.origin));
   }, []);
   return null;
 }
 
 function RedirectToAccounts() {
   useEffect(() => {
-    window.location.href = `${getAccountsUrl()}${window.location.pathname}${window.location.search}`;
+    crossSubdomainNavigate(`${getAccountsUrl()}${window.location.pathname}${window.location.search}`);
   }, []);
   return null;
 }

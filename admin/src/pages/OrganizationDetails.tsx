@@ -28,13 +28,14 @@ import {
 import { InventoryIcon } from "../components/icons/InventoryIcon";
 import { useAuth } from "../hooks/useAuth";
 import { adminOrganizationsApi } from "../api/adminOrganizations";
-import { adminBillingApi, ManualPaymentRecord } from "../api/adminBilling";
+import { adminBillingApi, ManualPaymentRecord, PaymentMethodItem, AuditLogItem } from "../api/adminBilling";
 import StatusBadge from "../components/StatusBadge";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { RecordPaymentModal } from "../components/RecordPaymentModal";
 import SuspendModal from "../components/SuspendModal";
 import DeleteModal from "../components/DeleteModal";
 import EmergencyTransferModal from "../components/EmergencyTransferModal";
+import { AlertTriangle, ScrollText, RefreshCw, Zap } from "lucide-react";
 
 export const OrganizationDetails: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -42,16 +43,20 @@ export const OrganizationDetails: React.FC = () => {
   const { sessionToken, admin } = useAuth();
   const [data, setData] = useState<any>(null);
   const [fullSettings, setFullSettings] = useState<any>(null);
-  const [activeTab, setActiveTab] = useState<"overview" | "settings">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "settings" | "audit">("overview");
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [manualPayments, setManualPayments] = useState<ManualPaymentRecord[]>([]);
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethodItem[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
   const [isRecordPaymentOpen, setIsRecordPaymentOpen] = useState(false);
   const [isExtendTrialOpen, setIsExtendTrialOpen] = useState(false);
   const [extensionDays, setExtensionDays] = useState(14);
   const [isSuspendModalOpen, setIsSuspendModalOpen] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [isEmergencyTransferOpen, setIsEmergencyTransferOpen] = useState(false);
+  const [dunningActionLoading, setDunningActionLoading] = useState(false);
   const [branchActionModal, setBranchActionModal] = useState<{
     isOpen: boolean;
     branch: any;
@@ -109,14 +114,16 @@ export const OrganizationDetails: React.FC = () => {
   const loadDetails = async () => {
     if (!id || !sessionToken) return;
     try {
-      const [res, payments, settingsRes] = await Promise.all([
+      const [res, payments, settingsRes, pms] = await Promise.all([
         adminOrganizationsApi.getOrganizationDetails(sessionToken, id),
         adminBillingApi.listManualPayments(id),
         adminOrganizationsApi.getFullSettings(sessionToken, id).catch(() => null),
+        adminBillingApi.getPaymentMethods(sessionToken, id).catch(() => []),
       ]);
       setData(res);
       setManualPayments(payments || []);
       setFullSettings(settingsRes);
+      setPaymentMethods(pms || []);
     } catch (err) {
       console.error("Failed to load organization details:", err);
     } finally {
@@ -124,9 +131,83 @@ export const OrganizationDetails: React.FC = () => {
     }
   };
 
+  const loadAuditLogs = async () => {
+    if (!id || !sessionToken) return;
+    setAuditLoading(true);
+    try {
+      const res = await adminBillingApi.getAuditLog(sessionToken, id);
+      setAuditLogs(res.items || []);
+    } catch (err) {
+      console.error("Failed to load audit logs:", err);
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
   useEffect(() => {
     loadDetails();
   }, [sessionToken, id]);
+
+  useEffect(() => {
+    if (activeTab === "audit") {
+      loadAuditLogs();
+    }
+  }, [activeTab, sessionToken, id]);
+
+  const handleSetDefaultPM = async (pmId: string) => {
+    if (!id || !sessionToken) return;
+    try {
+      const ok = await adminBillingApi.setDefaultPaymentMethod(sessionToken, id, pmId);
+      if (ok) {
+        alert("Payment method set as primary default.");
+        await loadDetails();
+      }
+    } catch (err: any) {
+      alert(err.message || "Failed to set default.");
+    }
+  };
+
+  const handleRemovePM = async (pmId: string) => {
+    if (!id || !sessionToken) return;
+    if (!confirm("Are you sure you want to remove this saved payment method?")) return;
+    try {
+      const ok = await adminBillingApi.removePaymentMethod(sessionToken, id, pmId);
+      if (ok) {
+        alert("Payment method removed.");
+        await loadDetails();
+      }
+    } catch (err: any) {
+      alert(err.message || "Failed to remove payment method.");
+    }
+  };
+
+  const handleRetryDunning = async () => {
+    if (!id || !sessionToken) return;
+    setDunningActionLoading(true);
+    try {
+      const res = await adminBillingApi.retryPayment(sessionToken, id);
+      alert(res.message || "Payment retry completed.");
+      await loadDetails();
+    } catch (err: any) {
+      alert(err.message || "Retry failed.");
+    } finally {
+      setDunningActionLoading(false);
+    }
+  };
+
+  const handleExtendGrace = async () => {
+    if (!id || !sessionToken) return;
+    setDunningActionLoading(true);
+    try {
+      const res = await adminBillingApi.extendGrace(sessionToken, id, 3);
+      alert(res.message || "Grace extended by 3 days.");
+      await loadDetails();
+    } catch (err: any) {
+      alert(err.message || "Failed to extend grace.");
+    } finally {
+      setDunningActionLoading(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -370,9 +451,105 @@ export const OrganizationDetails: React.FC = () => {
           <Sliders className="w-4 h-4" />
           <span>Settings & Branding Inspector</span>
         </button>
+
+        <button
+          onClick={() => setActiveTab("audit")}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-2 ${
+            activeTab === "audit"
+              ? "bg-brand-600/20 text-brand-300 border border-brand-500/30 shadow-sm"
+              : "text-slate-400 hover:text-white hover:bg-slate-800/50"
+          }`}
+        >
+          <ScrollText className="w-4 h-4" />
+          <span>Audit Log & Events</span>
+        </button>
       </div>
 
-      {activeTab === "settings" ? (
+      {activeTab === "audit" ? (
+        /* Audit Log & Events Tab */
+        <div className="p-6 md:p-8 rounded-2xl bg-slate-900/80 border border-slate-800 shadow-xl space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 flex items-center justify-center">
+                <ScrollText className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-base font-bold text-white">Organization Audit Trail</h2>
+                <p className="text-xs text-slate-400">
+                  Structured log of billing events, plan changes, member invitations, and administrative overrides.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={loadAuditLogs}
+              disabled={auditLoading}
+              className="px-3.5 py-1.5 rounded-xl bg-slate-950 border border-slate-800 hover:bg-slate-800 text-slate-300 text-xs font-semibold flex items-center gap-2 transition cursor-pointer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${auditLoading ? "animate-spin text-brand-400" : ""}`} />
+              <span>Refresh Logs</span>
+            </button>
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/60">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-800 bg-slate-900/80 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                  <th className="py-3 px-4">Timestamp</th>
+                  <th className="py-3 px-4">Actor</th>
+                  <th className="py-3 px-4">Event Type</th>
+                  <th className="py-3 px-4">Entity</th>
+                  <th className="py-3 px-4">IP / Source</th>
+                  <th className="py-3 px-4 text-right">Details</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60 text-slate-300">
+                {auditLoading ? (
+                  <tr>
+                    <td colSpan={6} className="text-center py-12 text-slate-500">
+                      <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-brand-400" />
+                      Loading audit events...
+                    </td>
+                  </tr>
+                ) : auditLogs.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="text-center py-12 text-slate-500">
+                      No audit log entries recorded for this organization yet.
+                    </td>
+                  </tr>
+                ) : (
+                  auditLogs.map((log) => (
+                    <tr key={log.id} className="hover:bg-slate-900/40 transition">
+                      <td className="py-3.5 px-4 font-mono text-[11px] text-slate-400">
+                        {new Date(log.timestamp).toLocaleString("en-NG")}
+                      </td>
+                      <td className="py-3.5 px-4 font-medium text-white">
+                        <div>{log.actorName || "System"}</div>
+                        <span className="text-[10px] text-slate-500 uppercase">{log.actorRole || "auto"}</span>
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-brand-500/10 text-brand-300 border border-brand-500/20">
+                          {log.eventType}
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-4 font-mono text-[11px] text-slate-300">
+                        {log.entityType} ({log.entityId.slice(0, 8)}...)
+                      </td>
+                      <td className="py-3.5 px-4 font-mono text-[11px] text-slate-500">
+                        {log.ipAddress || "127.0.0.1"}
+                      </td>
+                      <td className="py-3.5 px-4 text-right">
+                        <span className="font-mono text-[10px] text-slate-400 bg-slate-900 px-2 py-1 rounded border border-slate-800">
+                          {JSON.stringify(log.metadata || {}).slice(0, 30)}...
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : activeTab === "settings" ? (
         /* Settings & Configuration Inspector */
         <div className="space-y-6">
           {/* General & Structured Address Profile */}
@@ -676,6 +853,119 @@ export const OrganizationDetails: React.FC = () => {
               </div>
             </div>
 
+            {/* Dunning Risk / Past Due Management Card */}
+            {(org.subscription?.status === "past_due" || org.status === "past_due") && (
+              <div className="p-5 rounded-xl bg-gradient-to-r from-rose-950/40 via-amber-950/20 to-slate-900 border border-rose-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-rose-500/20 text-rose-300 border border-rose-500/30 flex items-center gap-1">
+                      <AlertTriangle className="w-3 h-3 text-rose-400" />
+                      Active Dunning State (Payment Past Due)
+                    </span>
+                    <span className="text-xs font-mono font-bold text-amber-300">
+                      Grace Period Active
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-300">
+                    Failed automated charge attempt. Organization operations will be restricted if uncollected.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleRetryDunning}
+                    disabled={dunningActionLoading}
+                    className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-lg shadow-emerald-600/20 transition cursor-pointer disabled:opacity-50"
+                  >
+                    Retry Charge
+                  </button>
+                  <button
+                    onClick={handleExtendGrace}
+                    disabled={dunningActionLoading}
+                    className="px-3 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 text-xs font-semibold transition cursor-pointer disabled:opacity-50"
+                  >
+                    +3d Grace
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Smart Plan Recommendation Banner */}
+            {(() => {
+              const currentPlan = (org.planId || org.subscription?.planKey || "free_trial").toLowerCase();
+              const branchCount = branches.length;
+              const memberCount = members.length;
+              const shouldRecommendStandard =
+                (currentPlan === "free_trial" || currentPlan === "trial") &&
+                (branchCount >= 1 || memberCount >= 2);
+              const shouldRecommendPremium =
+                currentPlan === "standard" && (branchCount >= 3 || memberCount >= 5);
+
+              if (shouldRecommendStandard) {
+                return (
+                  <div className="p-4 rounded-xl bg-gradient-to-r from-brand-950/40 to-indigo-950/30 border border-brand-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-brand-500/20 text-brand-300 border border-brand-500/30 flex items-center gap-1">
+                          <Zap className="w-3 h-3 text-amber-400" />
+                          Recommended Upgrade: Standard Tier
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-300">
+                        Based on active usage ({branchCount} branch, {members.length} team members), this organization is reaching free trial limits. Upgrading to Standard unlocks up to 3 branches & all core apps.
+                      </p>
+                    </div>
+                    <button
+                      onClick={async () => {
+                        setActionLoading(true);
+                        try {
+                          await adminOrganizationsApi.updateOrganizationPlan(sessionToken!, org.id, "standard");
+                          await loadDetails();
+                        } finally {
+                          setActionLoading(false);
+                        }
+                      }}
+                      className="px-3.5 py-2 rounded-xl bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold shadow-lg shadow-brand-600/30 transition shrink-0 cursor-pointer"
+                    >
+                      Upgrade to Standard (₦7,500/mo)
+                    </button>
+                  </div>
+                );
+              }
+
+              if (shouldRecommendPremium) {
+                return (
+                  <div className="p-4 rounded-xl bg-gradient-to-r from-purple-950/40 to-indigo-950/30 border border-purple-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1">
+                          <Zap className="w-3 h-3 text-amber-400" />
+                          Recommended Upgrade: Premium Tier
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-300">
+                        This organization operates {branchCount} branches and {members.length} members. Premium offers unlimited branches, advanced multi-location analytics, and priority SLA.
+                      </p>
+                    </div>
+                    <button
+                      onClick={async () => {
+                        setActionLoading(true);
+                        try {
+                          await adminOrganizationsApi.updateOrganizationPlan(sessionToken!, org.id, "premium");
+                          await loadDetails();
+                        } finally {
+                          setActionLoading(false);
+                        }
+                      }}
+                      className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold shadow-lg shadow-purple-600/30 transition shrink-0 cursor-pointer"
+                    >
+                      Upgrade to Premium (₦20,000/mo)
+                    </button>
+                  </div>
+                );
+              }
+              return null;
+            })()}
+
             {/* Free Trial Status & Entitlement Meters */}
             {data?.entitlements?.isFreeTrial && (
               <div className="p-4 rounded-xl bg-gradient-to-r from-purple-950/30 to-indigo-950/20 border border-purple-500/20 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -701,7 +991,7 @@ export const OrganizationDetails: React.FC = () => {
                 </div>
                 <button
                   onClick={() => setIsExtendTrialOpen(true)}
-                  className="px-3.5 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold shadow-lg shadow-purple-600/30 transition shrink-0"
+                  className="px-3.5 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold shadow-lg shadow-purple-600/30 transition shrink-0 cursor-pointer"
                 >
                   + Extend Duration
                 </button>
@@ -837,6 +1127,66 @@ export const OrganizationDetails: React.FC = () => {
                 </div>
               </div>
             )}
+
+            {/* Tokenized Payment Methods Section */}
+            <div className="pt-4 border-t border-slate-800 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <CreditCard className="w-4 h-4 text-brand-400" />
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">
+                    Saved Payment Methods ({paymentMethods.length})
+                  </h3>
+                </div>
+              </div>
+
+              {paymentMethods.length === 0 ? (
+                <div className="p-4 rounded-xl bg-slate-950/40 border border-slate-800 text-xs text-slate-500 text-center">
+                  No tokenized recurring payment methods saved on file.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {paymentMethods.map((pm) => (
+                    <div
+                      key={pm.id}
+                      className={`p-3.5 rounded-xl bg-slate-950/60 border transition space-y-2 ${
+                        pm.isDefault ? "border-brand-500/50 bg-brand-950/10" : "border-slate-800"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-2 font-mono font-bold text-white">
+                          <CreditCard className="w-3.5 h-3.5 text-slate-400" />
+                          <span>•••• {pm.last4}</span>
+                        </div>
+                        {pm.isDefault ? (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+                            Primary
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => handleSetDefaultPM(pm.id)}
+                            className="text-[10px] text-brand-400 hover:text-brand-300 underline cursor-pointer"
+                          >
+                            Set Default
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-slate-400">
+                        <span className="capitalize">{pm.brand} {pm.bank ? `(${pm.bank})` : ""}</span>
+                        <span className="font-mono">Exp: {pm.expMonth}/{pm.expYear}</span>
+                      </div>
+                      <div className="flex justify-end pt-1">
+                        <button
+                          onClick={() => handleRemovePM(pm.id)}
+                          className="text-[10px] text-slate-500 hover:text-rose-400 transition cursor-pointer"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Grid: Products & Members */}

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Header } from '@/components/landing/Header';
 import { Button } from '@/components/ui/button';
@@ -23,6 +23,8 @@ import {
 import { toast } from 'sonner';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
+import { usePlanConfig } from '@/hooks/usePlanConfig';
+import { usePaymentRecovery } from '@/hooks/usePaymentRecovery';
 import { api } from '@/lib/api';
 import { openPaystackPopup } from '@/lib/payment';
 import { getHomeUrl, getCrossSubdomainUrl } from '@/lib/domain';
@@ -47,6 +49,7 @@ export const PaymentPage: React.FC = () => {
   const navigate = useNavigate();
   const { user, refreshSession } = useAuthStore();
   const { invalidateCache, fetchWorkspaces, selectWorkspace } = useWorkspaceStore();
+  const { prices: dynamicPrices, getPlanPrice } = usePlanConfig();
 
   const orgId = searchParams.get('orgId') || searchParams.get('org') || searchParams.get('organizationId');
   const orgName = searchParams.get('orgName') || 'Your Business';
@@ -56,6 +59,13 @@ export const PaymentPage: React.FC = () => {
   const [selectedPlan, setSelectedPlan] = useState<'standard' | 'premium'>(planParam);
   const [billingCycle, setBillingCycle] = useState<'monthly' | 'annual'>(cycleParam);
   const [paymentMethod, setPaymentMethod] = useState<'paystack' | 'bank_transfer'>('paystack');
+
+  // Activate automated background payment recovery
+  usePaymentRecovery(orgId, {
+    onSuccess: () => {
+      navigate('/dashboard');
+    },
+  });
 
   // Paystack and payment processing states
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
@@ -73,8 +83,8 @@ export const PaymentPage: React.FC = () => {
   const [createdInvoiceNumber, setCreatedInvoiceNumber] = useState<string | null>(null);
   const [confirmedPaymentRef, setConfirmedPaymentRef] = useState<string>('');
 
-  // Authoritative Pricing (Standard: ₦7.5k/mo or ₦75k/yr, Premium: ₦25k/mo or ₦250k/yr)
-  const prices = {
+  // Authoritative Pricing
+  const prices = dynamicPrices || {
     standard: {
       monthly: 7500,
       annual: 75000,
@@ -85,8 +95,29 @@ export const PaymentPage: React.FC = () => {
     },
   };
 
-  const amountNGN = prices[selectedPlan][billingCycle];
+  const amountNGN = getPlanPrice(selectedPlan, billingCycle) || prices[selectedPlan]?.[billingCycle] || 7500;
   const uniqueRefCode = `ORV-PAY-${(user?.id || 'USER').slice(-6).toUpperCase()}-${Date.now().toString(36).slice(-4).toUpperCase()}`;
+
+  // Fetch proration preview if upgrading mid-cycle
+  const [prorationData, setProrationData] = useState<any>(null);
+
+  useEffect(() => {
+    if (!orgId) return;
+    let isMounted = true;
+    api.get(`/billing/proration-preview?organizationId=${orgId}&targetPlan=${selectedPlan}&billingCycle=${billingCycle}`)
+      .then((res: any) => {
+        if (isMounted && res.data?.data) {
+          setProrationData(res.data.data);
+        }
+      })
+      .catch(() => {
+        if (isMounted) setProrationData(null);
+      });
+    return () => { isMounted = false; };
+  }, [orgId, selectedPlan, billingCycle]);
+
+  const hasProration = Boolean(prorationData && prorationData.creditAmount > 0 && prorationData.breakdown);
+  const effectiveAmountNGN = hasProration ? prorationData.proratedAmount : amountNGN;
 
   const copyToClipboard = (text: string, key: string) => {
     navigator.clipboard.writeText(text);
@@ -107,7 +138,7 @@ export const PaymentPage: React.FC = () => {
           JSON.stringify({
             orgId,
             plan: selectedPlan,
-            amount: amountNGN,
+            amount: effectiveAmountNGN,
             cycle: billingCycle,
             timestamp: Date.now(),
           })
@@ -119,7 +150,7 @@ export const PaymentPage: React.FC = () => {
       const email = user?.email || 'customer@orvio.io';
       await openPaystackPopup({
         email,
-        amountInNaira: amountNGN,
+        amountInNaira: effectiveAmountNGN,
         planName: `Orviohub ${selectedPlan === 'premium' ? 'Premium' : 'Standard'} Plan (${billingCycle})`,
         onSuccess: async (verifiedRef: string) => {
           try {
@@ -136,7 +167,7 @@ export const PaymentPage: React.FC = () => {
                 organizationId: orgId,
                 paymentReference: verifiedRef,
                 provider: 'paystack',
-                amount: amountNGN,
+                amount: effectiveAmountNGN,
                 planKey: selectedPlan,
                 billingInterval: billingCycle,
               });
@@ -167,7 +198,7 @@ export const PaymentPage: React.FC = () => {
 
             setSubmittedSuccess(true);
             const planTitle = selectedPlan === 'premium' ? 'Premium Plan' : 'Standard Plan';
-            toast.success(`Payment of ₦${amountNGN.toLocaleString('en-NG')} confirmed! "${orgName}" is now active on ${planTitle}.`);
+            toast.success(`Payment of ₦${effectiveAmountNGN.toLocaleString('en-NG')} confirmed! "${orgName}" is now active on ${planTitle}.`);
           } catch (backendErr: any) {
             const errorMsg = backendErr?.message || 'Payment confirmation failed. Please contact support.';
             setPaymentError(errorMsg);
@@ -239,7 +270,7 @@ export const PaymentPage: React.FC = () => {
           organizationId: orgId,
           paymentReference: ref,
           provider: 'bank_transfer',
-          amount: amountNGN,
+          amount: effectiveAmountNGN,
           planKey: selectedPlan,
           billingInterval: billingCycle,
         });
@@ -247,7 +278,7 @@ export const PaymentPage: React.FC = () => {
         res = await api.post('/billing/submit-bank-transfer', {
           planKey: selectedPlan,
           billingInterval: billingCycle,
-          amount: amountNGN,
+          amount: effectiveAmountNGN,
           senderName: senderName.trim(),
           reference: ref,
           bankName: selectedBank,
@@ -362,7 +393,7 @@ export const PaymentPage: React.FC = () => {
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-400">Amount Paid</span>
-                <span className="text-white font-bold">₦{amountNGN.toLocaleString('en-NG')}</span>
+                <span className="text-white font-bold">₦{effectiveAmountNGN.toLocaleString('en-NG')}</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-400">Date</span>
@@ -416,9 +447,16 @@ export const PaymentPage: React.FC = () => {
                     <h4 className="text-lg font-bold text-white">{orgName}</h4>
                     <p className="text-xs text-slate-400 capitalize">{selectedPlan} Plan • {billingCycle}</p>
                   </div>
-                  <span className="text-xl font-extrabold text-white">
-                    ₦{amountNGN.toLocaleString('en-NG')}
-                  </span>
+                  <div className="text-right">
+                    <span className="text-xl font-extrabold text-white">
+                      ₦{effectiveAmountNGN.toLocaleString('en-NG')}
+                    </span>
+                    {hasProration && (
+                      <p className="text-[10px] text-slate-400 line-through">
+                        ₦{amountNGN.toLocaleString('en-NG')}
+                      </p>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -480,6 +518,42 @@ export const PaymentPage: React.FC = () => {
                   </button>
                 </div>
               </div>
+
+              {/* Proration Breakdown Card */}
+              {hasProration && prorationData?.breakdown && (
+                <div className="p-4 rounded-xl bg-purple-500/10 border border-purple-500/30 space-y-2.5 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-purple-300 flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-[#FDB02F]" />
+                      <span>Mid-Cycle Upgrade Proration</span>
+                    </span>
+                    <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-purple-500/20 text-purple-200">
+                      {prorationData.breakdown.daysRemaining}d left
+                    </span>
+                  </div>
+
+                  <div className="space-y-1.5 pt-1 border-t border-purple-500/20">
+                    <div className="flex justify-between items-center text-slate-300 text-[11px]">
+                      <span>Unused Current Plan Credit:</span>
+                      <span className="text-emerald-400 font-semibold">-₦{Number(prorationData.creditAmount || 0).toLocaleString('en-NG')}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-slate-300 text-[11px]">
+                      <span>New Plan Remaining Period:</span>
+                      <span className="text-white font-medium">+₦{Number(prorationData.chargeAmount || 0).toLocaleString('en-NG')}</span>
+                    </div>
+                    <div className="flex justify-between items-center pt-1.5 border-t border-purple-500/20 font-bold text-white text-xs">
+                      <span>Net Amount Due Today:</span>
+                      <span className="text-[#FDB02F] text-sm">₦{Number(effectiveAmountNGN).toLocaleString('en-NG')}</span>
+                    </div>
+                  </div>
+
+                  {prorationData.nextChargeDate && (
+                    <p className="text-[10px] text-slate-400 pt-1">
+                      Next renewal: ₦{Number(prorationData.nextFullCharge || 0).toLocaleString('en-NG')} on {new Date(prorationData.nextChargeDate).toLocaleDateString('en-NG', { day: 'numeric', month: 'short', year: 'numeric' })}.
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* Inclusions */}
               <div className="pt-4 border-t border-white/5 space-y-2.5 text-xs text-slate-300">

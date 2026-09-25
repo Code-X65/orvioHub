@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useTransition } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
@@ -15,6 +15,14 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useWizardDraft } from '@/hooks/useWizardDraft';
+
+export interface InventoryQuestionnaireDraft {
+  previousTools: string[];
+  painPoints: string[];
+  priorityFeatures: string[];
+  teamComfortLevel: string;
+}
 
 // Question 1: Previous Tools
 const PREVIOUS_TOOLS_OPTIONS = [
@@ -59,7 +67,7 @@ const TEAM_COMFORT_OPTIONS = [
 
 export const InventoryAppOnboarding: React.FC = () => {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const orgParam = searchParams.get('org');
 
   const { currentWorkspace, workspaces, fetchWorkspaces, selectWorkspace } = useWorkspaceStore();
@@ -68,7 +76,12 @@ export const InventoryAppOnboarding: React.FC = () => {
   const [isInitializing, setIsInitializing] = useState(true);
 
   // Questionnaire States (4 Questions)
-  const [currentStep, setCurrentStep] = useState<number>(1); // 1 to 4
+  const urlStep = Number(searchParams.get('step'));
+  const [currentStep, setCurrentStep] = useState<number>(
+    urlStep >= 1 && urlStep <= 4 ? urlStep : 1
+  );
+  const [direction, setDirection] = useState<'forward' | 'backward'>('forward');
+  const [, startTransition] = useTransition();
   const [previousTools, setPreviousTools] = useState<string[]>([]);
   const [painPoints, setPainPoints] = useState<string[]>([]);
   const [priorityFeatures, setPriorityFeatures] = useState<string[]>([]);
@@ -77,43 +90,124 @@ export const InventoryAppOnboarding: React.FC = () => {
   const activeOrgId = orgParam || currentWorkspace?.id || localStorage.getItem('orvio_active_workspace_id') || workspaces[0]?.workspace?.id;
   const activeOrgName = currentWorkspace?.name || workspaces.find((w) => w.workspace.id === activeOrgId)?.workspace.name || 'Your Business';
 
+  const goToStep = (nextStep: number, isBackward = false) => {
+    setDirection(isBackward ? 'backward' : 'forward');
+    startTransition(() => {
+      setCurrentStep(nextStep);
+    });
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('step', String(nextStep));
+      if (activeOrgId && !next.has('org')) {
+        next.set('org', activeOrgId);
+      }
+      return next;
+    }, { replace: true });
+
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  // Sync step changes from browser Back/Forward navigation
+  useEffect(() => {
+    const s = Number(searchParams.get('step'));
+    if (s >= 1 && s <= 4 && s !== currentStep) {
+      setDirection(s < currentStep ? 'backward' : 'forward');
+      startTransition(() => {
+        setCurrentStep(s);
+      });
+      if (typeof window !== 'undefined') {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    }
+  }, [searchParams, currentStep]);
+
+  const { hasDraft, getSavedDraft, saveDraft, clearDraft } =
+    useWizardDraft<InventoryQuestionnaireDraft>({
+      storageKey: activeOrgId ? `orvio_inv_onboarding_${activeOrgId}` : 'orvio_inv_onboarding_draft',
+      isMeaningful: (d) =>
+        (d.previousTools?.length || 0) > 0 ||
+        (d.painPoints?.length || 0) > 0 ||
+        (d.priorityFeatures?.length || 0) > 0,
+    });
+
+  // Restore draft answers from useWizardDraft on mount
+  useEffect(() => {
+    if (hasDraft) {
+      const saved = getSavedDraft();
+      if (saved) {
+        if (Array.isArray(saved.previousTools) && saved.previousTools.length > 0) {
+          setPreviousTools(saved.previousTools);
+        }
+        if (Array.isArray(saved.painPoints) && saved.painPoints.length > 0) {
+          setPainPoints(saved.painPoints);
+        }
+        if (Array.isArray(saved.priorityFeatures) && saved.priorityFeatures.length > 0) {
+          setPriorityFeatures(saved.priorityFeatures);
+        }
+        if (saved.teamComfortLevel) {
+          setTeamComfortLevel(saved.teamComfortLevel);
+        }
+        toast.info('Restored your in-progress questionnaire responses.');
+      }
+    }
+  }, [hasDraft, getSavedDraft]);
+
+  // Persist draft answers with debouncing via useWizardDraft
+  useEffect(() => {
+    saveDraft({
+      previousTools,
+      painPoints,
+      priorityFeatures,
+      teamComfortLevel,
+    });
+  }, [previousTools, painPoints, priorityFeatures, teamComfortLevel, saveDraft]);
+
   useEffect(() => {
     let mounted = true;
     const init = async () => {
       try {
-        let wsList = workspaces;
-        if (wsList.length === 0) {
-          wsList = await fetchWorkspaces('inventory');
-        }
+        const resolvedOrg =
+          orgParam ||
+          currentWorkspace?.id ||
+          localStorage.getItem('orvio_active_workspace_id') ||
+          workspaces[0]?.workspace?.id;
 
-        const resolvedOrg = orgParam || currentWorkspace?.id || wsList[0]?.workspace?.id;
         if (resolvedOrg && mounted) {
-          localStorage.setItem('orvio_active_workspace_id', resolvedOrg);
-          if (currentWorkspace?.id !== resolvedOrg) {
-            await selectWorkspace(resolvedOrg).catch(() => {});
-          }
+          try {
+            localStorage.setItem('orvio_active_workspace_id', resolvedOrg);
+          } catch {}
 
-          // Verify that application is activated for this organization
-          const appStatus = await api
-            .get<{ success: boolean; data?: { active: boolean } }>(
-              `/organizations/${resolvedOrg}/applications/inventory/status`
-            )
-            .catch(() => null);
+          // Parallelize workspace selection, app status, and onboarding checks
+          const [, appStatusRes, statusRes] = await Promise.all([
+            currentWorkspace?.id !== resolvedOrg ? selectWorkspace(resolvedOrg).catch(() => {}) : Promise.resolve(),
+            api
+              .get<{ success: boolean; data?: { active: boolean } }>(
+                `/organizations/${resolvedOrg}/applications/inventory/status`
+              )
+              .catch(() => null),
+            api
+              .get<{ completed: boolean; responses?: any }>(`/organizations/${resolvedOrg}/inventory-onboarding`)
+              .catch(() => null),
+          ]);
 
-          if (appStatus?.data && appStatus.data.active === false) {
-            navigate(`/onboard/activate?org=${resolvedOrg}`, { replace: true });
+          if (!mounted) return;
+
+          if (appStatusRes?.data && appStatusRes.data.active === false) {
+            navigate(`/onboard/app?org=${resolvedOrg}`, { replace: true });
             return;
           }
-
-          // Check if onboarding responses already recorded
-          const statusRes = await api
-            .get<{ completed: boolean; responses?: any }>(`/organizations/${resolvedOrg}/inventory-onboarding`)
-            .catch(() => null);
 
           if (statusRes?.completed) {
             navigate(`/onboard/branch-single?org=${resolvedOrg}`, { replace: true });
             return;
           }
+        }
+
+        // Fetch remaining workspace list non-blockingly if not populated
+        if (workspaces.length === 0) {
+          fetchWorkspaces('inventory').catch(() => {});
         }
       } catch {
         // Proceed with questionnaire
@@ -165,7 +259,7 @@ export const InventoryAppOnboarding: React.FC = () => {
     }
 
     if (currentStep < 4) {
-      setCurrentStep(currentStep + 1);
+      goToStep(currentStep + 1);
     } else {
       handleSubmit();
     }
@@ -173,8 +267,26 @@ export const InventoryAppOnboarding: React.FC = () => {
 
   const handleBack = () => {
     if (currentStep > 1) {
-      setCurrentStep(currentStep - 1);
+      goToStep(currentStep - 1, true);
     }
+  };
+
+  const handleSkipQuestionnaire = async () => {
+    saveDraft({
+      previousTools,
+      painPoints,
+      priorityFeatures,
+      teamComfortLevel,
+    });
+
+    if (activeOrgId) {
+      try {
+        await api.post(`/organizations/${activeOrgId}/inventory-onboarding/skip`).catch(() => {});
+      } catch {}
+    }
+
+    toast.info("Questionnaire skipped. You can update these answers anytime from Settings → Inventory Preferences.");
+    navigate(`/onboard/branch-single?org=${activeOrgId || ''}`);
   };
 
   const handleSubmit = async () => {
@@ -185,16 +297,16 @@ export const InventoryAppOnboarding: React.FC = () => {
 
     setIsLoading(true);
     try {
-      const payload = {
+      await api.post(`/organizations/${activeOrgId}/inventory-onboarding`, {
         previousTools,
         painPoints,
         priorityFeatures,
         teamComfortLevel,
-      };
+      });
 
-      await api.post(`/organizations/${activeOrgId}/inventory-onboarding`, payload);
+      clearDraft();
 
-      toast.success('Inventory configuration saved!');
+      toast.success('Inventory preferences saved! You can update these answers anytime from Settings → Inventory Preferences.');
       navigate(`/onboard/branch-single?org=${activeOrgId}`);
     } catch (err: any) {
       toast.error(err?.message || 'Failed to save Inventory preferences.');
@@ -205,16 +317,9 @@ export const InventoryAppOnboarding: React.FC = () => {
 
   if (isInitializing) {
     return (
-      <div className="min-h-screen bg-black text-slate-100 flex flex-col justify-between animate-pulse">
-        <div className="h-20 border-b border-white/5 bg-black/90 px-6 sm:px-12 flex items-center justify-between">
-          <div className="w-28 h-8 rounded-xs bg-white/10" />
-          <div className="w-20 h-8 rounded-xs bg-white/5" />
-        </div>
-        <div className="flex-1 max-w-3xl w-full mx-auto px-6 py-12 space-y-6">
-          <div className="w-48 h-7 rounded-xs bg-white/10" />
-          <div className="w-80 h-4 rounded-xs bg-white/5" />
-          <div className="h-72 rounded-2xl bg-white/[0.02] border border-white/5" />
-        </div>
+      <div className="min-h-screen bg-black text-slate-100 flex flex-col items-center justify-center space-y-4">
+        <Spinner size="lg" className="text-[#714b67]" />
+        <p className="text-xs text-slate-400 animate-pulse">Preparing your inventory workspace...</p>
       </div>
     );
   }
@@ -222,59 +327,67 @@ export const InventoryAppOnboarding: React.FC = () => {
   return (
     <div className="min-h-screen bg-black text-slate-100 flex flex-col justify-between selection:bg-[#714b67] selection:text-white">
       {/* Top Bar Header */}
-      <header className="h-16 border-b border-white/10 px-6 flex items-center justify-between bg-[#0d090d]">
+      <header className="h-16 border-b border-white/10 px-4 sm:px-6 flex items-center justify-between bg-[#0d090d]">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-[#714b67] flex items-center justify-center text-white font-bold text-sm shadow-md">
-            <Boxes className="w-5 h-5" />
+          <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-sm bg-[#714b67] flex items-center justify-center text-white font-bold text-sm shadow-md shrink-0">
+            <Boxes className="w-4 h-4 sm:w-5 sm:h-5" />
           </div>
-          <div>
-            <div className="text-xs font-bold text-white flex items-center gap-1.5">
+          <div className="min-w-0">
+            <div className="text-xs font-bold text-white flex items-center gap-1.5 truncate">
               <span>{activeOrgName}</span>
               <span className="text-slate-500">•</span>
               <span className="text-[#c79dbd]">Inventory App Setup</span>
             </div>
-            <p className="text-[10px] text-slate-400">Mandatory configuration to tailor POS & Stock tracking</p>
+            <p className="text-[10px] text-slate-400 truncate">Mandatory configuration to tailor POS & Stock tracking</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] font-bold px-2.5 py-1 rounded-full bg-[#714b67]/20 border border-[#714b67]/30 text-[#c79dbd] flex items-center gap-1.5">
-            <ShieldCheck className="w-3.5 h-3.5 text-[#FDB02F]" />
-            <span>Required Setup</span>
-          </span>
+        <div className="flex items-center gap-2 shrink-0 ml-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={handleSkipQuestionnaire}
+            className="h-8 text-xs text-slate-400 hover:text-white hover:bg-white/5 rounded-sm flex items-center gap-1 cursor-pointer"
+          >
+            <span>Skip for now</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </Button>
         </div>
       </header>
 
       {/* Main Questionnaire Container */}
-      <main className="flex-1 max-w-2xl w-full mx-auto px-4 sm:px-6 py-8 space-y-8 animate-in fade-in duration-300">
+      <main className="flex-1 max-w-2xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6 sm:space-y-8 animate-in fade-in duration-300">
         {/* Step Badge & Title */}
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#714b67]/20 border border-[#714b67]/30 text-[#c79dbd] text-[11px] font-bold">
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-sm bg-[#714b67]/20 border border-[#714b67]/30 text-[#c79dbd] text-[11px] font-bold">
               <Sparkles className="w-3 h-3 text-[#FDB02F]" />
               <span>Question {currentStep} of 4</span>
             </div>
             <span className="text-xs font-medium text-slate-400">Step {currentStep} / 4</span>
           </div>
 
-          <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">
-            {currentStep === 1 && 'How were you tracking inventory and sales before Orviohub?'}
-            {currentStep === 2 && 'What is your biggest pain point with your current setup?'}
-            {currentStep === 3 && 'Which features are most important to you right now?'}
-            {currentStep === 4 && 'How comfortable is your team with apps and software?'}
-          </h1>
+          <div className="min-h-[80px] sm:min-h-[82px] flex flex-col justify-center">
+            <h1 className="text-lg sm:text-2xl font-extrabold text-white tracking-tight transition-all duration-200">
+              {currentStep === 1 && 'How were you tracking inventory and sales before Orviohub?'}
+              {currentStep === 2 && 'What is your biggest pain point with your current setup?'}
+              {currentStep === 3 && 'Which features are most important to you right now?'}
+              {currentStep === 4 && 'How comfortable is your team with apps and software?'}
+            </h1>
 
-          <p className="text-xs text-slate-400">
-            {currentStep === 1 && 'Select all that apply to help us migrate or import your previous system.'}
-            {currentStep === 2 && 'Choose the issues you would most like Orviohub to solve.'}
-            {currentStep === 3 && 'Select up to 3 priority features to customize your shortcuts.'}
-            {currentStep === 4 && 'We adjust interface density and helper tips based on your team’s comfort level.'}
-          </p>
+            <p className="text-xs text-slate-400 mt-1 transition-all duration-200">
+              {currentStep === 1 && 'Select all that apply to help us migrate or import your previous system.'}
+              {currentStep === 2 && 'Choose the issues you would most like Orviohub to solve.'}
+              {currentStep === 3 && 'Select up to 3 priority features to customize your shortcuts.'}
+              {currentStep === 4 && 'We adjust interface density and helper tips based on your team’s comfort level.'}
+            </p>
+          </div>
 
           {/* Progress bar */}
-          <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
+          <div className="w-full bg-white/10 h-1.5 rounded-sm overflow-hidden">
             <div
-              className="bg-[#c79dbd] h-full rounded-full transition-all duration-300"
+              className="bg-[#c79dbd] h-full rounded-sm transition-all duration-300"
               style={{ width: `${(currentStep / 4) * 100}%` }}
             />
           </div>
@@ -282,7 +395,13 @@ export const InventoryAppOnboarding: React.FC = () => {
 
         {/* QUESTION 1: Previous Tools */}
         {currentStep === 1 && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div
+            key="inv-step-1"
+            className={cn(
+              "grid grid-cols-1 sm:grid-cols-2 gap-3 animate-in fade-in duration-200 fill-mode-both",
+              direction === 'forward' ? 'slide-in-from-right-3' : 'slide-in-from-left-3'
+            )}
+          >
             {PREVIOUS_TOOLS_OPTIONS.map((opt) => {
               const selected = previousTools.includes(opt.id);
               return (
@@ -290,7 +409,7 @@ export const InventoryAppOnboarding: React.FC = () => {
                   key={opt.id}
                   onClick={() => toggleMultiSelect(previousTools, setPreviousTools, opt.id)}
                   className={cn(
-                    'p-4 rounded-xl border transition-all cursor-pointer flex items-start justify-between gap-3',
+                    'p-3.5 sm:p-4 rounded-sm border transition-all cursor-pointer flex items-start justify-between gap-3',
                     selected
                       ? 'bg-[#21111e] border-[#714b67] shadow-lg shadow-[#714b67]/20 ring-1 ring-[#714b67]'
                       : 'bg-[#120b10] border-white/10 hover:border-white/25 hover:bg-white/[0.02]'
@@ -302,7 +421,7 @@ export const InventoryAppOnboarding: React.FC = () => {
                   </div>
                   <div
                     className={cn(
-                      'w-5 h-5 rounded-md border flex items-center justify-center shrink-0 transition-colors',
+                      'w-5 h-5 rounded-sm border flex items-center justify-center shrink-0 transition-colors',
                       selected
                         ? 'bg-[#714b67] border-[#714b67] text-white'
                         : 'border-white/20 bg-black/40 text-transparent'
@@ -318,7 +437,13 @@ export const InventoryAppOnboarding: React.FC = () => {
 
         {/* QUESTION 2: Pain Points */}
         {currentStep === 2 && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div
+            key="inv-step-2"
+            className={cn(
+              "grid grid-cols-1 sm:grid-cols-2 gap-3 animate-in fade-in duration-200 fill-mode-both",
+              direction === 'forward' ? 'slide-in-from-right-3' : 'slide-in-from-left-3'
+            )}
+          >
             {PAIN_POINTS_OPTIONS.map((opt) => {
               const selected = painPoints.includes(opt.id);
               return (
@@ -326,7 +451,7 @@ export const InventoryAppOnboarding: React.FC = () => {
                   key={opt.id}
                   onClick={() => toggleMultiSelect(painPoints, setPainPoints, opt.id)}
                   className={cn(
-                    'p-4 rounded-xl border transition-all cursor-pointer flex items-start justify-between gap-3',
+                    'p-3.5 sm:p-4 rounded-sm border transition-all cursor-pointer flex items-start justify-between gap-3',
                     selected
                       ? 'bg-[#21111e] border-[#714b67] shadow-lg shadow-[#714b67]/20 ring-1 ring-[#714b67]'
                       : 'bg-[#120b10] border-white/10 hover:border-white/25 hover:bg-white/[0.02]'
@@ -338,7 +463,7 @@ export const InventoryAppOnboarding: React.FC = () => {
                   </div>
                   <div
                     className={cn(
-                      'w-5 h-5 rounded-md border flex items-center justify-center shrink-0 transition-colors',
+                      'w-5 h-5 rounded-sm border flex items-center justify-center shrink-0 transition-colors',
                       selected
                         ? 'bg-[#714b67] border-[#714b67] text-white'
                         : 'border-white/20 bg-black/40 text-transparent'
@@ -354,7 +479,13 @@ export const InventoryAppOnboarding: React.FC = () => {
 
         {/* QUESTION 3: Priority Features (Limit 3) */}
         {currentStep === 3 && (
-          <div className="space-y-3">
+          <div
+            key="inv-step-3"
+            className={cn(
+              "space-y-3 animate-in fade-in duration-200 fill-mode-both",
+              direction === 'forward' ? 'slide-in-from-right-3' : 'slide-in-from-left-3'
+            )}
+          >
             <div className="text-[11px] text-[#c79dbd] font-semibold flex items-center justify-between px-1">
               <span>Selected: {priorityFeatures.length} / 3</span>
               {priorityFeatures.length === 3 && <span className="text-amber-300 font-bold">Maximum 3 selected</span>}
@@ -367,7 +498,7 @@ export const InventoryAppOnboarding: React.FC = () => {
                     key={opt.id}
                     onClick={() => toggleMultiSelect(priorityFeatures, setPriorityFeatures, opt.id, 3)}
                     className={cn(
-                      'p-4 rounded-xl border transition-all cursor-pointer flex items-start justify-between gap-3',
+                      'p-3.5 sm:p-4 rounded-sm border transition-all cursor-pointer flex items-start justify-between gap-3',
                       selected
                         ? 'bg-[#21111e] border-[#714b67] shadow-lg shadow-[#714b67]/20 ring-1 ring-[#714b67]'
                         : 'bg-[#120b10] border-white/10 hover:border-white/25 hover:bg-white/[0.02]'
@@ -379,7 +510,7 @@ export const InventoryAppOnboarding: React.FC = () => {
                     </div>
                     <div
                       className={cn(
-                        'w-5 h-5 rounded-md border flex items-center justify-center shrink-0 transition-colors',
+                        'w-5 h-5 rounded-sm border flex items-center justify-center shrink-0 transition-colors',
                         selected
                           ? 'bg-[#714b67] border-[#714b67] text-white'
                           : 'border-white/20 bg-black/40 text-transparent'
@@ -396,7 +527,13 @@ export const InventoryAppOnboarding: React.FC = () => {
 
         {/* QUESTION 4: Team Comfort Level */}
         {currentStep === 4 && (
-          <div className="space-y-3">
+          <div
+            key="inv-step-4"
+            className={cn(
+              "space-y-3 animate-in fade-in duration-200 fill-mode-both",
+              direction === 'forward' ? 'slide-in-from-right-3' : 'slide-in-from-left-3'
+            )}
+          >
             {TEAM_COMFORT_OPTIONS.map((opt) => {
               const selected = teamComfortLevel === opt.id;
               return (
@@ -404,7 +541,7 @@ export const InventoryAppOnboarding: React.FC = () => {
                   key={opt.id}
                   onClick={() => setTeamComfortLevel(opt.id)}
                   className={cn(
-                    'p-4 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-3',
+                    'p-3.5 sm:p-4 rounded-sm border transition-all cursor-pointer flex items-center justify-between gap-3',
                     selected
                       ? 'bg-[#21111e] border-[#714b67] shadow-lg shadow-[#714b67]/20 ring-1 ring-[#714b67]'
                       : 'bg-[#120b10] border-white/10 hover:border-white/25 hover:bg-white/[0.02]'
@@ -416,7 +553,7 @@ export const InventoryAppOnboarding: React.FC = () => {
                   </div>
                   <div
                     className={cn(
-                      'w-5 h-5 rounded-full border flex items-center justify-center shrink-0 transition-colors',
+                      'w-5 h-5 rounded-sm border flex items-center justify-center shrink-0 transition-colors',
                       selected ? 'bg-[#714b67] border-[#714b67] text-white' : 'border-white/20'
                     )}
                   >
@@ -429,23 +566,33 @@ export const InventoryAppOnboarding: React.FC = () => {
         )}
 
         {/* Navigation Buttons */}
-        <div className="pt-6 border-t border-white/10 flex items-center justify-between">
-          <Button
-            type="button"
-            variant="outline"
-            disabled={currentStep === 1 || isLoading}
-            onClick={handleBack}
-            className="border-white/10 hover:bg-white/5 text-xs text-slate-300 disabled:opacity-30 cursor-pointer"
-          >
-            <ArrowLeft className="w-3.5 h-3.5 mr-1.5" />
-            <span>Back</span>
-          </Button>
+        <div className="pt-6 border-t border-white/10 flex flex-col-reverse sm:flex-row items-center justify-between gap-3">
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={currentStep === 1 || isLoading}
+              onClick={handleBack}
+              className="rounded-sm border-white/10 hover:bg-white/5 text-xs text-slate-300 disabled:opacity-30 cursor-pointer flex-1 sm:flex-initial"
+            >
+              <ArrowLeft className="w-3.5 h-3.5 mr-1.5" />
+              <span>Back</span>
+            </Button>
+
+            <button
+              type="button"
+              onClick={handleSkipQuestionnaire}
+              className="text-xs text-slate-400 hover:text-slate-200 underline underline-offset-4 px-2 py-1 transition-colors cursor-pointer"
+            >
+              Skip for now — I'll configure later
+            </button>
+          </div>
 
           <Button
             type="button"
             onClick={handleNext}
             disabled={isLoading}
-            className="px-6 rounded-xl bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/25 transition cursor-pointer flex items-center gap-2"
+            className="px-6 rounded-sm bg-[#714b67] hover:bg-[#86597a] text-white text-xs font-bold shadow-lg shadow-[#714b67]/25 transition cursor-pointer flex items-center justify-center gap-2 w-full sm:w-auto"
           >
             {isLoading ? (
               <>

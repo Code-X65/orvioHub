@@ -1,23 +1,40 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useForm, useFieldArray } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/useAuthStore';
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
+import { useBranchStore } from '@/stores/useBranchStore';
 import { OnboardingLayout } from '@/components/onboarding/OnboardingLayout';
 import { CustomSelect, type SelectOption } from '@/components/ui/custom-select';
+import { BranchAccessSelector, InviteLinkManager } from '@/components/team';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
 import { toast } from 'sonner';
 import { Plus, Trash2, ArrowRight, Link2, Check, Mail } from 'lucide-react';
 
+const ROLE_KEYS = [
+  'OWNER',
+  'ADMIN',
+  'MANAGER',
+  'SALES_ATTENDANT',
+  'STOCK_MANAGER',
+  'ACCOUNTANT',
+  'MEMBER',
+  'VIEWER',
+] as const;
+
+export type OrganizationRole = (typeof ROLE_KEYS)[number];
+
 const invitationSchema = z.object({
   invitations: z.array(
     z.object({
       email: z.string().email('Invalid email address').or(z.literal('')),
-      role: z.enum(['ADMIN', 'MANAGER', 'MEMBER']),
+      role: z.enum(ROLE_KEYS),
+      branchAccess: z.array(z.string()).optional(),
     })
   ),
 });
@@ -25,18 +42,83 @@ const invitationSchema = z.object({
 type InvitationFormData = z.infer<typeof invitationSchema>;
 
 const ROLE_OPTIONS: SelectOption[] = [
-  { value: 'MEMBER', label: 'Member', badge: 'Standard', badgeColor: 'bg-white/5 text-slate-300 border border-white/10' },
-  { value: 'MANAGER', label: 'Manager', badge: 'Lead', badgeColor: 'bg-blue-500/20 text-blue-300 border border-blue-500/30' },
-  { value: 'ADMIN', label: 'Admin', badge: 'Full Access', badgeColor: 'bg-[#714b67]/20 text-[#d4a8c9] border border-[#714b67]/30' },
+  // Management
+  {
+    value: 'OWNER',
+    label: 'Owner',
+    badge: 'Owner',
+    badgeColor: 'bg-amber-500/20 text-amber-300 border border-amber-500/30',
+    description: 'Full organizational ownership and legal administration',
+  },
+  {
+    value: 'ADMIN',
+    label: 'Admin',
+    badge: 'Full Access',
+    badgeColor: 'bg-[#714b67]/25 text-[#f0d8e8] border border-[#714b67]/40',
+    description: 'Full administrative control over settings, apps, staff, and billing',
+  },
+  {
+    value: 'MANAGER',
+    label: 'Manager',
+    badge: 'Lead',
+    badgeColor: 'bg-blue-500/20 text-blue-300 border border-blue-500/30',
+    description: 'Operational supervisor across branches, inventory, and staff',
+  },
+  // Operations
+  {
+    value: 'SALES_ATTENDANT',
+    label: 'Sales Attendant',
+    badge: 'POS',
+    badgeColor: 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30',
+    description: 'Point of sale operator, processing sales checkouts and customer receipts',
+  },
+  {
+    value: 'STOCK_MANAGER',
+    label: 'Stock Keeper',
+    badge: 'Inventory',
+    badgeColor: 'bg-purple-500/20 text-purple-300 border border-purple-500/30',
+    description: 'Manages inventory stock levels, counts, transfers, and receiving',
+  },
+  {
+    value: 'ACCOUNTANT',
+    label: 'Accountant',
+    badge: 'Finance',
+    badgeColor: 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30',
+    description: 'Financial oversight, invoices, customer payouts, and revenue reports',
+  },
+  // Standard
+  {
+    value: 'MEMBER',
+    label: 'Member',
+    badge: 'Standard',
+    badgeColor: 'bg-white/5 text-slate-300 border border-white/10',
+    description: 'General team member with standard operational collaboration access',
+  },
+  {
+    value: 'VIEWER',
+    label: 'Viewer',
+    badge: 'Read-only',
+    badgeColor: 'bg-slate-500/20 text-slate-400 border border-slate-500/30',
+    description: 'Read-only visibility into operational dashboards, records, and reports',
+  },
 ];
 
 export const TeamInvite: React.FC = () => {
   const navigate = useNavigate();
   const { refreshSession, onboardingStatus } = useAuthStore();
+  const { currentWorkspace } = useWorkspaceStore();
+  const { branches, loadBranches } = useBranchStore();
+
   const [isLoading, setIsLoading] = useState(false);
   const [isSkipping, setIsSkipping] = useState(false);
-  const [copiedLink, setCopiedLink] = useState(false);
-  const [shareableLink, setShareableLink] = useState<string | null>(null);
+
+  const activeOrgId = onboardingStatus?.organization?.id || currentWorkspace?.id;
+
+  useEffect(() => {
+    if (activeOrgId) {
+      loadBranches(activeOrgId, 'inventory').catch(() => {});
+    }
+  }, [activeOrgId, loadBranches]);
 
   const {
     register,
@@ -49,7 +131,7 @@ export const TeamInvite: React.FC = () => {
     defaultValues: {
       invitations: [
         { email: '', role: 'MEMBER' },
-        { email: '', role: 'MEMBER' },
+        { email: '', role: 'SALES_ATTENDANT' },
       ],
     },
   });
@@ -61,30 +143,14 @@ export const TeamInvite: React.FC = () => {
 
   const invitations = watch('invitations');
 
-  const generateAndCopyLink = async () => {
-    try {
-      if (shareableLink) {
-        await navigator.clipboard.writeText(shareableLink);
-        setCopiedLink(true);
-        toast.success('Organization invite link copied to clipboard!');
-        setTimeout(() => setCopiedLink(false), 3000);
-        return;
-      }
-
-      const res: any = await api.post('/onboarding/share-link', { role: 'MEMBER' });
-      const link = res.data?.inviteUrl || `${window.location.origin}/invitations/${res.data?.token}`;
-      setShareableLink(link);
-      await navigator.clipboard.writeText(link);
-      setCopiedLink(true);
-      toast.success('Organization invite link generated and copied!');
-      setTimeout(() => setCopiedLink(false), 3000);
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to generate shareable invite link.');
-    }
-  };
-
   const onSubmit = async (data: InvitationFormData) => {
-    const validInvites = data.invitations.filter((inv) => inv.email.trim() !== '');
+    const validInvites = data.invitations
+      .filter((inv) => inv.email.trim() !== '')
+      .map((inv) => ({
+        email: inv.email.trim(),
+        role: inv.role,
+        branchAccess: inv.branchAccess && inv.branchAccess.length > 0 ? inv.branchAccess : undefined,
+      }));
 
     if (validInvites.length === 0) {
       handleSkip();
@@ -93,14 +159,14 @@ export const TeamInvite: React.FC = () => {
 
     setIsLoading(true);
     try {
-      await api.post(`/organizations/${onboardingStatus?.organization?.id}/invitations`, {
+      await api.post(`/organizations/${activeOrgId}/invitations`, {
         invitations: validInvites,
       });
       toast.success(`Successfully sent ${validInvites.length} invitation(s)!`);
       await refreshSession();
       navigate('/onboarding/complete');
     } catch (error: any) {
-      toast.error(error.message || 'Failed to send invitations.');
+      toast.error(error?.message || 'Failed to send invitations.');
     } finally {
       setIsLoading(false);
     }
@@ -129,72 +195,92 @@ export const TeamInvite: React.FC = () => {
       totalSteps={4}
     >
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
-        {/* Shareable Link Box */}
-        <div className="p-4 rounded-2xl bg-[#160f14] border border-white/10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-inner">
-          <div className="space-y-0.5 min-w-0">
-            <div className="text-xs font-semibold text-white flex items-center gap-1.5">
-              <Link2 className="w-3.5 h-3.5 text-[#d4a8c9]" />
-              <span>Shareable Invitation Link</span>
-            </div>
-            <p className="text-[11px] text-slate-400">
-              Anyone with this link can join as a team Member
-            </p>
-          </div>
-
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={generateAndCopyLink}
-            className="w-full sm:w-auto h-9 text-xs font-medium border-white/10 bg-[#160f14] text-slate-200 hover:text-white hover:bg-white/5 rounded-xl flex items-center gap-1.5 cursor-pointer shadow-sm"
-          >
-            {copiedLink ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Link2 className="w-3.5 h-3.5 text-[#d4a8c9]" />}
-            <span>{copiedLink ? 'Link Copied!' : 'Copy Invite Link'}</span>
-          </Button>
-        </div>
+        {/* Shareable Link Dashboard */}
+        <InviteLinkManager organizationId={activeOrgId} defaultRole="MEMBER" />
 
         <div className="relative flex items-center justify-center">
           <div className="border-t border-white/5 w-full" />
           <span className="px-3 text-[10px] font-medium text-slate-500 uppercase tracking-wider absolute bg-[#0c080b]">
-            Or invite by email
+            Or invite by email with roles & branch access
           </span>
         </div>
 
         {/* Email Invitation Rows */}
         <div className="space-y-3">
-          {fields.map((field, index) => (
-            <div key={field.id} className="flex items-center gap-2.5">
-              <div className="relative flex-1">
-                <Mail className="w-3.5 h-3.5 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <Input
-                  placeholder="colleague@company.com"
-                  {...register(`invitations.${index}.email`)}
-                  className="pl-10 h-10 bg-[#160f14] border-white/10 text-white rounded-xl text-xs focus:border-[#714b67] shadow-inner"
-                  disabled={isLoading}
-                />
-              </div>
+          {fields.map((field, index) => {
+            const currentRole = invitations[index]?.role || 'MEMBER';
+            const roleMeta = ROLE_OPTIONS.find((r) => r.value === currentRole);
 
-              <div className="w-36 shrink-0">
-                <CustomSelect
-                  options={ROLE_OPTIONS}
-                  value={invitations[index]?.role || 'MEMBER'}
-                  onChange={(val) => setValue(`invitations.${index}.role`, val as any)}
-                  searchable={false}
-                  disabled={isLoading}
-                />
-              </div>
+            return (
+              <div
+                key={field.id}
+                className="p-3.5 rounded-2xl bg-[#160f14] border border-white/10 space-y-3 shadow-inner transition-colors hover:border-white/15"
+              >
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+                  <div className="relative flex-1">
+                    <Mail className="w-3.5 h-3.5 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                    <Input
+                      placeholder="colleague@company.com"
+                      {...register(`invitations.${index}.email`)}
+                      className="pl-10 h-10 bg-black/40 border-white/10 text-white rounded-xl text-xs focus:border-[#714b67]"
+                      disabled={isLoading}
+                    />
+                  </div>
 
-              {fields.length > 1 && (
-                <button
-                  type="button"
-                  onClick={() => remove(index)}
-                  className="w-10 h-10 rounded-xl flex items-center justify-center text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer shrink-0"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-          ))}
+                  <div className="w-full sm:w-48 shrink-0">
+                    <CustomSelect
+                      options={ROLE_OPTIONS}
+                      value={currentRole}
+                      onChange={(val) => setValue(`invitations.${index}.role`, val as any)}
+                      placeholder="Select Role"
+                      disabled={isLoading}
+                    />
+                  </div>
+
+                  {fields.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => remove(index)}
+                      className="w-10 h-10 rounded-xl flex items-center justify-center text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer shrink-0 self-end sm:self-auto"
+                      title="Remove invitation"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Role Description & Branch Access Scope */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-2 border-t border-white/5">
+                  <div className="text-[11px] text-slate-400 min-w-0 pr-2">
+                    <span className="text-slate-500">Role scope: </span>
+                    <span className="text-slate-300 font-medium">
+                      {roleMeta?.description || 'Standard access'}
+                    </span>
+                  </div>
+
+                  <div className="w-full sm:w-56 shrink-0">
+                    <BranchAccessSelector
+                      branches={branches}
+                      selectedBranchIds={invitations[index]?.branchAccess || []}
+                      allBranches={
+                        !invitations[index]?.branchAccess ||
+                        invitations[index]?.branchAccess?.length === 0 ||
+                        (branches.length > 0 &&
+                          invitations[index]?.branchAccess?.length === branches.length)
+                      }
+                      onChange={(selectedIds, all) => {
+                        setValue(
+                          `invitations.${index}.branchAccess`,
+                          all ? undefined : selectedIds
+                        );
+                      }}
+                      disabled={isLoading}
+                    />
+                  </div>
+                </div>
+              </div>
+            );
+          })}
 
           <button
             type="button"
@@ -235,3 +321,5 @@ export const TeamInvite: React.FC = () => {
     </OnboardingLayout>
   );
 };
+
+export default TeamInvite;

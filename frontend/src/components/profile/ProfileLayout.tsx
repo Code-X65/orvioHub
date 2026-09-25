@@ -9,7 +9,6 @@ import {
   Activity,
   Bell,
   Sliders,
-  Briefcase,
   Database,
   Trash2,
   ChevronRight,
@@ -101,12 +100,6 @@ const navGroups: NavGroup[] = [
         label: 'Regional & Display',
         path: '/profile/preferences',
         icon: Sliders,
-      },
-      {
-        id: 'workspaces',
-        label: 'Organizations',
-        path: '/profile/workspaces',
-        icon: Briefcase,
       },
       {
         id: 'privacy',

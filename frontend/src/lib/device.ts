@@ -20,6 +20,18 @@ export function getOrCreateDeviceId(): string {
   return deviceId;
 }
 
+export function rotateDeviceId(): string {
+  const STORAGE_KEY = 'orvio_device_id';
+  const newDeviceId = `dev_${crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15)}`;
+  localStorage.setItem(STORAGE_KEY, newDeviceId);
+  return newDeviceId;
+}
+
+export function clearDeviceId(): void {
+  const STORAGE_KEY = 'orvio_device_id';
+  localStorage.removeItem(STORAGE_KEY);
+}
+
 export function detectDeviceInfo(): DeviceInfo {
   const deviceId = getOrCreateDeviceId();
   const ua = navigator.userAgent;

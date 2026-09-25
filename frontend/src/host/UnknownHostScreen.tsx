@@ -1,5 +1,5 @@
 import React from "react";
-import { applications, DEV_ROOT, PROD_ROOT } from "@orviohub/shared";
+import { applications, DEV_ROOT, PREPROD_ROOT, PROD_ROOT, type Environment } from "@orviohub/shared";
 import { AlertTriangle, Globe, ArrowRight } from "lucide-react";
 
 interface UnknownHostScreenProps {
@@ -7,9 +7,32 @@ interface UnknownHostScreenProps {
 }
 
 export const UnknownHostScreen: React.FC<UnknownHostScreenProps> = ({ hostname }) => {
-  const isDev = hostname.includes("localhost");
-  const rootDomain = isDev ? DEV_ROOT : PROD_ROOT;
-  const rootUrl = isDev ? `http://${DEV_ROOT}:5173` : `https://${PROD_ROOT}`;
+  const hostLower = (hostname || "").toLowerCase().split(":")[0];
+  let env: Environment = "production";
+
+  if (
+    hostLower === DEV_ROOT ||
+    hostLower.endsWith(`.${DEV_ROOT}`) ||
+    hostLower === "localhost" ||
+    hostLower.endsWith(".localhost") ||
+    hostLower === "127.0.0.1"
+  ) {
+    env = "development";
+  } else if (
+    hostLower === PREPROD_ROOT ||
+    hostLower.endsWith(`.${PREPROD_ROOT}`) ||
+    hostLower.includes("vercel.app")
+  ) {
+    env = "preproduction";
+  }
+
+  const rootDomain = env === "development" ? DEV_ROOT : env === "preproduction" ? PREPROD_ROOT : PROD_ROOT;
+  const rootUrl =
+    env === "development"
+      ? applications.marketing.developmentUrl
+      : env === "preproduction"
+        ? (applications.marketing.preproductionUrl || applications.marketing.productionUrl)
+        : applications.marketing.productionUrl;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-6 font-sans selection:bg-indigo-500 selection:text-white">
@@ -45,7 +68,13 @@ export const UnknownHostScreen: React.FC<UnknownHostScreenProps> = ({ hostname }
             {Object.values(applications)
               .filter((app) => app.enabled)
               .map((app) => {
-                const targetUrl = isDev ? app.developmentUrl : app.productionUrl;
+                const targetUrl =
+                  env === "development"
+                    ? app.developmentUrl
+                    : env === "preproduction"
+                      ? (app.preproductionUrl || app.productionUrl)
+                      : app.productionUrl;
+
                 return (
                   <a
                     key={app.key}

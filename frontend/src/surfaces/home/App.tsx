@@ -1,8 +1,7 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import { AuthGuard } from "../../components/auth/AuthGuard";
 import { HomePage } from "./pages/HomePage";
-import { ApplicationsPage } from "./pages/ApplicationsPage";
-import { BranchesPage } from "./pages/BranchesPage";
+import { WorkplacePage } from "./pages/WorkplacePage";
 import { WorkspaceSettingsPage } from "../../pages/settings/WorkspaceSettingsPage";
 import { BranchSettingsPage } from "../../pages/settings/BranchSettingsPage";
 import { InventorySettingsPage } from "../../pages/settings/InventorySettingsPage";
@@ -184,40 +183,30 @@ export default function HomeApp() {
         }
       />
 
-      {/* 2. Application Level: /applications & /application (shows applications registered for active organization) */}
+      {/* 2. Unified Workplace Level: /workplace (Hierarchy: Organization -> Applications -> Branches) */}
       <Route
-        path="/applications"
+        path="/workplace"
         element={
           <AuthGuard>
-            <ApplicationsPage />
+            <WorkplacePage />
           </AuthGuard>
         }
+      />
+      <Route
+        path="/applications"
+        element={<Navigate to="/workplace" replace />}
       />
       <Route
         path="/application"
-        element={
-          <AuthGuard>
-            <ApplicationsPage />
-          </AuthGuard>
-        }
+        element={<Navigate to="/workplace" replace />}
       />
-
-      {/* 3. Branch Level: /branches & /branche (branch selector) */}
       <Route
         path="/branches"
-        element={
-          <AuthGuard>
-            <BranchesPage />
-          </AuthGuard>
-        }
+        element={<Navigate to="/workplace" replace />}
       />
       <Route
         path="/branche"
-        element={
-          <AuthGuard>
-            <BranchesPage />
-          </AuthGuard>
-        }
+        element={<Navigate to="/workplace" replace />}
       />
 
       {/* 4. Settings */}

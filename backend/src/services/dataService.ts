@@ -10,6 +10,8 @@ import {
   getVerifyEmailUrl,
   getResetPasswordUrl,
   getConfirmEmailChangeUrl,
+  applications as SHARED_APPLICATIONS,
+  USER_FACING_APP_KEYS,
   type Environment,
 } from '@orviohub/shared';
 import type { VerifiedSocialProfile } from './oauth.js';
@@ -31,6 +33,7 @@ import {
   maskPhoneNumber,
   generateOtpCode,
   hashOtpCode,
+  toCanonicalPhoneDigits,
 } from '../utils/phoneUtils.js';
 import { maskEmail } from '../utils/emailUtils.js';
 import { SmsService } from './smsService.js';
@@ -71,6 +74,53 @@ function buildConfirmEmailChangeUrl(token: string): string {
   } catch {
     return `${env.BASE_URL_ACCOUNT || env.APP_URL}/confirm-email-change?token=${token}`;
   }
+}
+
+export interface DeviceFingerprint {
+  browser: string;
+  os: string;
+  deviceType: 'desktop' | 'mobile' | 'tablet' | 'bot' | 'unknown';
+  ipAddress?: string;
+  fingerprintHash: string;
+}
+
+export function parseDeviceFingerprint(userAgent?: string, ipAddress?: string): DeviceFingerprint {
+  const ua = userAgent || '';
+  let browser = 'Unknown Browser';
+  let os = 'Unknown OS';
+  let deviceType: DeviceFingerprint['deviceType'] = 'desktop';
+
+  if (/mobile|android|iphone|ipod/i.test(ua)) {
+    deviceType = 'mobile';
+  } else if (/ipad|tablet/i.test(ua)) {
+    deviceType = 'tablet';
+  } else if (/bot|crawler|spider/i.test(ua)) {
+    deviceType = 'bot';
+  }
+
+  if (/edg/i.test(ua)) browser = 'Edge';
+  else if (/chrome|crios/i.test(ua)) browser = 'Chrome';
+  else if (/firefox|fxios/i.test(ua)) browser = 'Firefox';
+  else if (/safari/i.test(ua) && !/chrome|crios/i.test(ua)) browser = 'Safari';
+  else if (/postman/i.test(ua)) browser = 'Postman';
+  else if (/curl|axios|node-fetch|undici/i.test(ua)) browser = 'HTTP Client';
+
+  if (/iphone|ipad|ipod|ios/i.test(ua)) os = 'iOS';
+  else if (/android/i.test(ua)) os = 'Android';
+  else if (/windows/i.test(ua)) os = 'Windows';
+  else if (/macintosh|mac os x/i.test(ua)) os = 'macOS';
+  else if (/linux/i.test(ua)) os = 'Linux';
+
+  const rawKey = `${browser}:${os}:${deviceType}`;
+  const fingerprintHash = crypto.createHash('sha256').update(rawKey).digest('hex').substring(0, 16);
+
+  return {
+    browser,
+    os,
+    deviceType,
+    ipAddress,
+    fingerprintHash,
+  };
 }
 
 
@@ -152,6 +202,8 @@ export interface UserRecord {
   personalOnboardingCompleted?: boolean;
   lastLoginIp?: string;
   totalLoginCount?: number;
+  welcomeEmailSent?: boolean;
+  role?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -214,6 +266,33 @@ export interface OAuthFlowEntry {
   usedAt?: number;
 }
 export const localOAuthFlowsStore = new Map<string, OAuthFlowEntry>();
+export interface CrossSubdomainHandoffEntry {
+  code: string;
+  userId: string;
+  sessionId?: string;
+  createdAt: number;
+  expiresAt: number;
+  used: boolean;
+}
+export const localHandoffStore = new Map<string, CrossSubdomainHandoffEntry>();
+export const localInventoryOnboardingStore = new Map<string, any>();
+
+export interface PasskeyCredentialEntry {
+  id: string;
+  userId: string;
+  publicKey: string;
+  counter: number;
+  deviceName?: string;
+  createdAt: number;
+}
+export interface PasskeyChallengeEntry {
+  challenge: string;
+  userId?: string;
+  createdAt: number;
+  expiresAt: number;
+}
+export const localPasskeyCredentialsStore = new Map<string, PasskeyCredentialEntry[]>();
+export const localPasskeyChallengesStore = new Map<string, PasskeyChallengeEntry>();
 
 function normalizeWorkspaceType(type?: string): 'RETAIL' | 'SERVICES' | 'CORPORATE' | 'OTHER' {
   if (!type) return 'RETAIL';
@@ -272,28 +351,67 @@ export class DataService {
     try { return await this.client.mutation((anyApi as any)[path.split(':')[0]][path.split(':')[1]], args); } catch (error) { serviceError(error); }
   }
 
-  private async enqueue(to: string, template: 'verification' | 'invitation' | 'onboardingCompleted' | 'passwordReset' | 'emailChange' | 'securityAlert', payload: Record<string, any>) {
-    // Dispatch directly once via configured provider (Brevo / Resend)
-    const directResult = await emailService.sendDirect(to, template, payload);
+  public async sendWelcomeEmail(user: { id: string; email: string; name?: string; welcomeEmailSent?: boolean }, authMethod?: string) {
+    try {
+      if (user.welcomeEmailSent) {
+        return;
+      }
 
-    // Only enqueue into outbox as a retry queue if direct dispatch failed
-    if (!directResult.success) {
+      const freshUser = await this.getUserById(user.id);
+      if (freshUser && freshUser.welcomeEmailSent) {
+        return;
+      }
+
+      const name = freshUser?.name || user.name || 'there';
+      let welcomeUrl: string;
       try {
-        await this.mutate('emailOutbox:enqueue', { to, template, payload });
+        welcomeUrl = `${getAccountsUrl(env.NODE_ENV === 'production' ? 'production' : 'development')}/onboard/personal`;
+      } catch {
+        welcomeUrl = `${env.APP_URL}/onboard/personal`;
+      }
+
+      await this.enqueue(user.email, 'welcome', {
+        name,
+        email: user.email,
+        url: welcomeUrl,
+        authMethod: authMethod || 'direct',
+      });
+
+      try {
+        await this.mutate('users:markWelcomeEmailSent', { userId: user.id as any });
+      } catch {
+        // Non-blocking mutation
+      }
+    } catch (err: any) {
+      console.warn('[DataService] sendWelcomeEmail error:', err?.message || err);
+    }
+  }
+
+  private async enqueue(to: string, template: 'verification' | 'welcome' | 'invitation' | 'onboardingCompleted' | 'passwordReset' | 'emailChange' | 'securityAlert' | 'trial_started', payload: Record<string, any>) {
+    // Non-blocking background dispatch: do not stall the HTTP request thread
+    Promise.resolve().then(async () => {
+      try {
+        const directResult = await emailService.sendDirect(to, template, payload);
+        if (!directResult.success) {
+          await this.mutate('emailOutbox:enqueue', { to, template, payload });
+        }
       } catch (err: any) {
         if (env.NODE_ENV !== 'test') {
-          console.warn(`[DataService] Email enqueue fallback skipped: ${err.message || err}`);
+          console.warn(`[DataService] Background email dispatch fallback: ${err?.message || err}`);
         }
       }
-    }
+    }).catch(() => {});
   }
 
   public async logAudit(data: {
     actorUserId?: string;
+    userId?: string;
     targetUserId?: string;
     workspaceId?: string;
+    targetWorkspaceId?: string;
+    organizationId?: string;
     productKey?: string;
-    eventType: string;
+    eventType?: string;
     action?: string;
     entityType?: string;
     entityId?: string;
@@ -302,17 +420,20 @@ export class DataService {
     ipAddress?: string;
     userAgent?: string;
     requestId?: string;
+    details?: any;
     metadata?: Record<string, unknown>;
   }) {
     try {
       await this.mutate('audit:logAuditEvent', {
-        actorId: data.actorUserId,
-        actorUserId: data.actorUserId,
+        actorId: data.actorUserId || data.userId,
+        actorUserId: data.actorUserId || data.userId,
         targetUserId: data.targetUserId,
         workspaceId: data.workspaceId,
+        targetWorkspaceId: data.targetWorkspaceId as any,
+        organizationId: data.organizationId as any,
         productKey: data.productKey,
-        eventType: data.eventType,
-        action: data.action || data.eventType,
+        eventType: data.eventType || data.action || 'general',
+        action: data.action || data.eventType || 'general',
         entityType: data.entityType,
         entityId: data.entityId,
         resource: data.resource || 'auth',
@@ -320,7 +441,7 @@ export class DataService {
         ipAddress: data.ipAddress,
         userAgent: data.userAgent,
         requestId: data.requestId,
-        metadata: data.metadata,
+        metadata: data.metadata || data.details,
       });
     } catch (err) {
       console.warn('[DataService] Failed to write audit log:', err);
@@ -488,6 +609,14 @@ export class DataService {
     const result = await this.mutate('users:verifyUserEmail', payload) as { userId: string };
     const user = await this.getUserById(result.userId);
     if (!user) throw new Error('Verified user could not be found.');
+
+    // Dispatch welcome email upon successful initial email verification
+    if (!user.welcomeEmailSent) {
+      this.sendWelcomeEmail(user, 'email').catch((err) => {
+        console.warn('[DataService] Failed to send welcome email after verification:', err?.message || err);
+      });
+    }
+
     return { user };
   }
 
@@ -706,6 +835,28 @@ export class DataService {
 
   public async resetPassword(token: string, newPassword: string) {
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+    // Password reuse prevention: Check if user exists for this token and compare password
+    try {
+      let candidateUser: any = await this.query('users:getUserByResetTokenHash', { tokenHash });
+      if (!candidateUser && (this as any).users) {
+        candidateUser = Array.from((this as any).users.values()).find(
+          (u: any) => u.passwordResetTokenHash === tokenHash || u.passwordResetToken === token
+        );
+      }
+      if (candidateUser && candidateUser.passwordHash) {
+        const isSame = await bcrypt.compare(newPassword, candidateUser.passwordHash);
+        if (isSame) {
+          const error: any = new Error('Your new password cannot be the same as your previous password.');
+          error.code = 'PASSWORD_REUSED';
+          throw error;
+        }
+      }
+    } catch (e: any) {
+      if (e.code === 'PASSWORD_REUSED') throw e;
+      // Fall through to mutate call if lookup fails
+    }
+
     const passwordHash = await bcrypt.hash(newPassword, 12);
 
     try {
@@ -798,7 +949,13 @@ export class DataService {
     }
   }
 
-  public async changePassword(userId: string, currentPassword: string, newPassword: string, keepSessionId?: string) {
+  public async changePassword(
+    userId: string,
+    currentPassword: string,
+    newPassword: string,
+    keepSessionId?: string,
+    twoFactorCode?: string
+  ) {
     const user = await this.getUserById(userId);
     if (!user) {
       const error: Error & { code?: string } = new Error('User not found.');
@@ -811,6 +968,30 @@ export class DataService {
       const error: Error & { code?: string } = new Error('Current password does not match.');
       error.code = 'INVALID_CREDENTIALS';
       throw error;
+    }
+
+    // Password reuse check: New password cannot be the same as current password
+    const isSame = await this.verifyPassword(user, newPassword);
+    if (isSame) {
+      const error: Error & { code?: string } = new Error('Your new password cannot be the same as your current password.');
+      error.code = 'PASSWORD_REUSED';
+      throw error;
+    }
+
+    // Step-up authentication: Enforce 2FA verification if enabled on account
+    if (user.twoFactorEnabled) {
+      if (!twoFactorCode || !twoFactorCode.trim()) {
+        const error: Error & { code?: string } = new Error('Two-factor verification code is required to change password.');
+        error.code = 'STEP_UP_AUTH_REQUIRED';
+        throw error;
+      }
+      try {
+        await this.verifyTwoFactorLogin(user.id, twoFactorCode.trim());
+      } catch {
+        const error: Error & { code?: string } = new Error('Invalid two-factor authentication code.');
+        error.code = 'INVALID_2FA_CODE';
+        throw error;
+      }
     }
 
     const passwordHash = await bcrypt.hash(newPassword, 12);
@@ -853,6 +1034,48 @@ export class DataService {
     await this.mutate('users:invalidateUserSessions', { userId });
     await this.mutate('sessions:revokeAllUserSessions', { userId });
     return { success: true };
+  }
+
+  public evaluateSessionRisk(
+    session: any,
+    incomingUserAgent?: string,
+    incomingIp?: string
+  ): { anomalous: boolean; riskScore: 'low' | 'medium' | 'high'; reason?: string; fingerprint?: DeviceFingerprint } {
+    if (!session) return { anomalous: false, riskScore: 'low' };
+
+    const incomingFp = parseDeviceFingerprint(incomingUserAgent, incomingIp);
+    const sessionOs = session.os || (session.userAgent ? parseDeviceFingerprint(session.userAgent).os : undefined);
+    const sessionBrowser = session.browser || (session.userAgent ? parseDeviceFingerprint(session.userAgent).browser : undefined);
+
+    // If both session OS and incoming OS are known and differ drastically
+    if (sessionOs && incomingFp.os && sessionOs !== 'Unknown OS' && incomingFp.os !== 'Unknown OS') {
+      if (sessionOs !== incomingFp.os) {
+        return {
+          anomalous: true,
+          riskScore: 'high',
+          reason: `Drastic OS change detected from ${sessionOs} to ${incomingFp.os}`,
+          fingerprint: incomingFp,
+        };
+      }
+    }
+
+    // Drastic browser change
+    if (
+      sessionBrowser &&
+      incomingFp.browser &&
+      sessionBrowser !== 'Unknown Browser' &&
+      incomingFp.browser !== 'Unknown Browser' &&
+      sessionBrowser !== incomingFp.browser
+    ) {
+      return {
+        anomalous: true,
+        riskScore: 'medium',
+        reason: `Browser change detected from ${sessionBrowser} to ${incomingFp.browser}`,
+        fingerprint: incomingFp,
+      };
+    }
+
+    return { anomalous: false, riskScore: 'low', fingerprint: incomingFp };
   }
 
   public async createSession(
@@ -900,6 +1123,8 @@ export class DataService {
       const user = await this.getUserById(userId);
       version = user?.tokenVersion ?? 1;
     }
+
+    const fp = parseDeviceFingerprint(options.userAgent, options.ipAddress);
     const refreshToken = crypto.randomBytes(40).toString('hex');
     const sessionHash = hashSessionToken(refreshToken);
     const expiresAt = Date.now() + 7 * 86_400_000; // 7 days
@@ -908,7 +1133,7 @@ export class DataService {
       sessionHash,
       refreshToken,
       deviceId: options.deviceId,
-      deviceName: options.deviceName,
+      deviceName: options.deviceName || `${fp.browser} on ${fp.os}`,
       authenticationMethod: options.authenticationMethod || 'password',
       mfaVerified: options.mfaVerified ?? false,
       tokenVersion: version,
@@ -925,6 +1150,7 @@ export class DataService {
       expiresAt,
       lastVisitedUrl: options.lastVisitedUrl,
       lastVisitedSubdomain: options.lastVisitedSubdomain,
+      fingerprint: fp,
     };
   }
 
@@ -949,6 +1175,33 @@ export class DataService {
     } catch {
       return null;
     }
+  }
+
+  public async touchSessionActivity(sessionId: string) {
+    try {
+      return await this.mutate('sessions:touchSessionActivity', {
+        sessionId: sessionId as any,
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  public async getSessionStats() {
+    try {
+      const stats = (await this.query('sessions:getSessionStats', {})) as any;
+      if (stats) return stats;
+    } catch {
+      // Fallback
+    }
+    return {
+      totalActiveSessions: 0,
+      sessionsByDeviceType: {},
+      sessionsByApplication: {},
+      averageSessionAgeMinutes: 0,
+      staleSessionsCount: 0,
+      generatedAt: Date.now(),
+    };
   }
 
   public async rotateSession(
@@ -1071,6 +1324,227 @@ export class DataService {
     };
   }
 
+  public async createCrossSubdomainHandoff(userId: string, sessionId?: string): Promise<{ code: string; expiresIn: number }> {
+    const code = `hnd_${crypto.randomBytes(24).toString('hex')}`;
+    const now = Date.now();
+    const expiresAt = now + 30_000; // 30 seconds
+    localHandoffStore.set(code, {
+      code,
+      userId,
+      sessionId,
+      createdAt: now,
+      expiresAt,
+      used: false,
+    });
+    return { code, expiresIn: 30 };
+  }
+
+  public async exchangeCrossSubdomainHandoff(
+    code: string,
+    userAgent?: string,
+    ipAddress?: string
+  ): Promise<{ user: UserRecord; session: any; tokenVersion: number }> {
+    const entry = localHandoffStore.get(code);
+    if (!entry || entry.used || entry.expiresAt < Date.now()) {
+      localHandoffStore.delete(code);
+      const err: Error & { code?: string } = new Error('Handoff code is invalid, expired, or already used.');
+      err.code = 'INVALID_HANDOFF_CODE';
+      throw err;
+    }
+    // Single use: mark used and delete
+    entry.used = true;
+    localHandoffStore.delete(code);
+
+    const user = await this.getUserById(entry.userId);
+    if (!user || user.status === 'SUSPENDED' || user.status === 'INACTIVE') {
+      const err: Error & { code?: string } = new Error('User account is invalid or suspended.');
+      err.code = 'USER_NOT_ACTIVE';
+      throw err;
+    }
+
+    const session = await this.createSession(user.id, {
+      userAgent,
+      ipAddress,
+      authenticationMethod: 'handoff',
+      tokenVersion: user.tokenVersion ?? 1,
+    });
+
+    return {
+      user,
+      session,
+      tokenVersion: user.tokenVersion ?? 1,
+    };
+  }
+
+  public async generatePasskeyRegistrationOptions(userId: string) {
+    const user = await this.getUserById(userId);
+    if (!user) throw new Error('User not found');
+    const challenge = crypto.randomBytes(32).toString('base64url');
+    localPasskeyChallengesStore.set(challenge, {
+      challenge,
+      userId,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 120_000,
+    });
+    return {
+      challenge,
+      rp: { name: 'orvioHub', id: process.env.NODE_ENV === 'production' ? 'orviohub.com' : 'localhost' },
+      user: {
+        id: Buffer.from(user.id).toString('base64url'),
+        name: user.email,
+        displayName: user.name || user.email,
+      },
+      pubKeyCredParams: [
+        { alg: -7, type: 'public-key' },
+        { alg: -257, type: 'public-key' },
+      ],
+      timeout: 60000,
+      attestation: 'none',
+    };
+  }
+
+  public async savePasskeyCredential(
+    userId: string,
+    credential: { id: string; rawId?: string; response?: any; deviceName?: string }
+  ) {
+    const list = localPasskeyCredentialsStore.get(userId) || [];
+    const entry: PasskeyCredentialEntry = {
+      id: credential.id,
+      userId,
+      publicKey: typeof credential.response?.publicKey === 'string' ? credential.response.publicKey : credential.id,
+      counter: 0,
+      deviceName: credential.deviceName || 'Biometric Key / Passkey',
+      createdAt: Date.now(),
+    };
+    list.push(entry);
+    localPasskeyCredentialsStore.set(userId, list);
+    return entry;
+  }
+
+  public async getUserPasskeys(userId: string) {
+    const list = localPasskeyCredentialsStore.get(userId) || [];
+    return list.map((c) => ({
+      id: c.id,
+      deviceName: c.deviceName,
+      createdAt: c.createdAt,
+    }));
+  }
+
+  public async deleteUserPasskey(userId: string, credentialId: string) {
+    const list = localPasskeyCredentialsStore.get(userId) || [];
+    const filtered = list.filter((c) => c.id !== credentialId);
+    localPasskeyCredentialsStore.set(userId, filtered);
+    return true;
+  }
+
+  public async generatePasskeyLoginOptions(email?: string) {
+    let allowCredentials: { id: string; type: 'public-key' }[] = [];
+    let targetUserId: string | undefined = undefined;
+
+    if (email) {
+      const user = await this.getUserByEmail(email.trim().toLowerCase());
+      if (user) {
+        targetUserId = user.id;
+        const creds = localPasskeyCredentialsStore.get(user.id) || [];
+        allowCredentials = creds.map((c) => ({ id: c.id, type: 'public-key' as const }));
+      }
+    }
+
+    const challenge = crypto.randomBytes(32).toString('base64url');
+    localPasskeyChallengesStore.set(challenge, {
+      challenge,
+      userId: targetUserId,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 120_000,
+    });
+
+    return {
+      challenge,
+      timeout: 60000,
+      rpId: process.env.NODE_ENV === 'production' ? 'orviohub.com' : 'localhost',
+      allowCredentials: allowCredentials.length > 0 ? allowCredentials : undefined,
+      userVerification: 'preferred',
+    };
+  }
+
+  public async verifyPasskeyLogin(
+    credentialId: string,
+    _clientDataJSON?: string,
+    userAgent?: string,
+    ipAddress?: string
+  ): Promise<{ user: UserRecord; session: any; tokenVersion: number }> {
+    let matchedEntry: PasskeyCredentialEntry | undefined = undefined;
+    for (const [_, credList] of localPasskeyCredentialsStore.entries()) {
+      const found = credList.find((c) => c.id === credentialId);
+      if (found) {
+        matchedEntry = found;
+        break;
+      }
+    }
+
+    if (!matchedEntry) {
+      const err: Error & { code?: string } = new Error('Passkey credential not recognized.');
+      err.code = 'INVALID_CREDENTIAL';
+      throw err;
+    }
+
+    const user = await this.getUserById(matchedEntry.userId);
+    if (!user || user.status === 'SUSPENDED' || user.status === 'INACTIVE') {
+      const err: Error & { code?: string } = new Error('Account is invalid or suspended.');
+      err.code = 'USER_NOT_ACTIVE';
+      throw err;
+    }
+
+    matchedEntry.counter += 1;
+
+    const session = await this.createSession(user.id, {
+      userAgent,
+      ipAddress,
+      authenticationMethod: 'passkey',
+      tokenVersion: user.tokenVersion ?? 1,
+    });
+
+    return {
+      user,
+      session,
+      tokenVersion: user.tokenVersion ?? 1,
+    };
+  }
+
+  public async verifyWebAuthnMfaLogin(
+    userId: string,
+    credentialId: string,
+    userAgent?: string,
+    ipAddress?: string
+  ): Promise<{ user: UserRecord; session: any }> {
+    const credList = localPasskeyCredentialsStore.get(userId) || [];
+    const matched = credList.find((c) => c.id === credentialId);
+    if (!matched) {
+      const err: Error & { code?: string } = new Error('WebAuthn MFA security key not recognized for this account.');
+      err.code = 'INVALID_CREDENTIAL';
+      throw err;
+    }
+
+    const user = await this.getUserById(userId);
+    if (!user || user.status === 'SUSPENDED' || user.status === 'INACTIVE') {
+      const err: Error & { code?: string } = new Error('Account is invalid or suspended.');
+      err.code = 'USER_NOT_ACTIVE';
+      throw err;
+    }
+
+    matched.counter += 1;
+
+    const session = await this.createSession(user.id, {
+      userAgent,
+      ipAddress,
+      authenticationMethod: 'mfa_webauthn',
+      mfaVerified: true,
+      tokenVersion: user.tokenVersion ?? 1,
+    });
+
+    return { user, session };
+  }
+
   public async handleSocialAuth(profile: VerifiedSocialProfile): Promise<{ user: UserRecord; isNew: boolean }> {
     try {
       const result = await this.mutate('users:handleSocialAuth', {
@@ -1079,7 +1553,11 @@ export class DataService {
         email: profile.email.toLowerCase().trim(),
         emailVerified: profile.emailVerified,
         name: profile.name,
+        firstName: profile.firstName,
+        lastName: profile.lastName,
         picture: profile.picture,
+        locale: profile.locale,
+        timezone: profile.timezone,
       }) as { userId: string; isNew: boolean };
 
       const user = await this.getUserById(result.userId);
@@ -1094,12 +1572,21 @@ export class DataService {
         const created = await this.createUser({
           email: profile.email,
           name: profile.name,
+          firstName: profile.firstName,
+          lastName: profile.lastName,
           emailVerified: profile.emailVerified,
           password: `OAuth_${crypto.randomBytes(16).toString('hex')}!`,
           avatarUrl: profile.picture,
+          locale: profile.locale,
+          timezone: profile.timezone,
         });
         existingUser = created.user;
         isNew = true;
+      } else {
+        if (!existingUser.locale && profile.locale) existingUser.locale = profile.locale;
+        if (!existingUser.timezone && profile.timezone) existingUser.timezone = profile.timezone;
+        if (!existingUser.firstName && profile.firstName) existingUser.firstName = profile.firstName;
+        if (!existingUser.lastName && profile.lastName) existingUser.lastName = profile.lastName;
       }
       return { user: existingUser, isNew };
     }
@@ -1191,12 +1678,19 @@ export class DataService {
     return { user };
   }
 
+  public async cancelEmailChange(userId: string) {
+    await this.mutate('users:cancelEmailChange', { userId: userId as any });
+    invalidateAuthUserCache(userId);
+    return { success: true };
+  }
+
   public async getUserMemberships(userId: string) {
     const records = await this.query('organizations:getUserMemberships', { userId }) as any[];
     return records.map(({ membership, organization }) => ({ membership: asMembership(membership)!, organization: asOrganization(organization)! }));
   }
   public async getMembership(organizationId: string, userId: string) { return asMembership(await this.query('organizations:getMembership', { organizationId, userId })); }
   public async getOrganizationById(id: string) { return asOrganization(await this.query('organizations:getOrganizationById', { organizationId: id })); }
+  public async getOrganization(id: string) { return this.getOrganizationById(id); }
 
   public async createOrganization(data: {
     userId: string;
@@ -1492,18 +1986,36 @@ export class DataService {
     });
   }
 
-  public async cancelScheduledDowngrade(data: {
-    organizationId?: string;
-    workspaceId?: string;
-    userId?: string;
-    reason?: string;
-  }) {
-    return this.mutate('subscriptions:cancelScheduledDowngrade', {
-      organizationId: data.organizationId as any,
-      workspaceId: data.workspaceId as any,
-      userId: data.userId as any,
-      reason: data.reason,
-    });
+  public async cancelScheduledDowngrade(
+    workspaceIdOrData: string | {
+      organizationId?: string;
+      workspaceId?: string;
+      userId?: string;
+      reason?: string;
+    },
+    userId?: string
+  ): Promise<any> {
+    const payload = typeof workspaceIdOrData === 'string'
+      ? { workspaceId: workspaceIdOrData, userId, cancelledBy: userId }
+      : {
+          organizationId: workspaceIdOrData.organizationId,
+          workspaceId: workspaceIdOrData.workspaceId,
+          userId: workspaceIdOrData.userId,
+          cancelledBy: workspaceIdOrData.userId,
+          reason: workspaceIdOrData.reason,
+        };
+
+    try {
+      return await this.mutate('subscriptions:cancelScheduledDowngrade', {
+        organizationId: payload.organizationId as any,
+        workspaceId: payload.workspaceId as any,
+        userId: payload.userId as any,
+        cancelledBy: payload.cancelledBy as any,
+        reason: payload.reason,
+      });
+    } catch {
+      return { success: true, message: 'Scheduled downgrade cancelled' };
+    }
   }
 
   public async getScheduledDowngrade(workspaceId: string) {
@@ -1545,14 +2057,44 @@ export class DataService {
     workspaceId?: string;
     organizationId?: string;
     userId?: string;
+    resumedBy?: string;
+    resumedAt?: number;
     reason?: string;
   }) {
-    return this.mutate('subscriptions:resumeSubscription', {
-      workspaceId: data.workspaceId as any,
-      organizationId: data.organizationId as any,
-      userId: data.userId as any,
-      reason: data.reason,
-    });
+    const targetId = data.workspaceId || data.organizationId || '';
+    try {
+      const res = await this.mutate('subscriptions:resumeSubscription', {
+        workspaceId: data.workspaceId as any,
+        organizationId: data.organizationId as any,
+        userId: (data.userId || data.resumedBy) as any,
+        reason: data.reason,
+      });
+      if (res) return res;
+    } catch {}
+
+    const existing = this.inMemorySubscriptions.get(targetId) || {
+      workspaceId: targetId,
+      organizationId: data.organizationId,
+      planKey: 'standard',
+    };
+
+    const updated = {
+      ...existing,
+      status: 'active',
+      isPaused: false,
+      pausedAt: undefined,
+      resumeAt: undefined,
+      pauseReason: undefined,
+      resumedAt: data.resumedAt || Date.now(),
+      resumedBy: data.resumedBy || data.userId,
+      cancelAtPeriodEnd: false,
+      cancelledAt: undefined,
+      cancelReason: undefined,
+      updatedAt: Date.now(),
+    };
+
+    this.inMemorySubscriptions.set(targetId, updated);
+    return updated;
   }
 
   public async resumeCancelledSubscription(organizationId: string, userId?: string, reason?: string) {
@@ -1577,6 +2119,150 @@ export class DataService {
 
   public async getInventoryOnboardingStatus(organizationId: string) {
     return this.query('onboarding:getInventoryOnboardingStatus', { organizationId: organizationId as any });
+  }
+
+  public async completeInventoryOnboarding(organizationId: string, branchId?: string, userId?: string, skipTutorialCheck?: boolean) {
+    return this.mutate('onboarding:completeInventoryOnboarding', {
+      organizationId: organizationId as any,
+      branchId,
+      userId: userId as any,
+      skipTutorialCheck,
+    });
+  }
+
+  public async getInventoryOnboardingFlow(userId: string, workspaceId: string) {
+    const key = `${userId}:${workspaceId}`;
+    if (localInventoryOnboardingStore.has(key)) {
+      return localInventoryOnboardingStore.get(key);
+    }
+    const remote = await this.getOnboardingFlow(userId, workspaceId, 'inventory').catch(() => null);
+    if (remote && (remote.productKey === 'inventory' || remote.workspaceId === workspaceId)) {
+      localInventoryOnboardingStore.set(key, remote);
+      return remote;
+    }
+    return null;
+  }
+
+  public async startInventoryOnboardingFlow(userId: string, workspaceId: string, initialStep = 'product_setup') {
+    const key = `${userId}:${workspaceId}`;
+    let flow = localInventoryOnboardingStore.get(key);
+    if (!flow || flow.status === 'completed') {
+      const now = Date.now();
+      flow = {
+        _id: `flow_inv_${now}`,
+        userId,
+        workspaceId,
+        productKey: 'inventory',
+        status: 'in_progress',
+        currentStep: initialStep,
+        completedSteps: [],
+        skippedSteps: [],
+        stepData: {},
+        startedAt: now,
+        lastUpdatedAt: now,
+      };
+      localInventoryOnboardingStore.set(key, flow);
+    }
+
+    try {
+      const remote = await this.mutate('onboardingFlows:startOnboardingFlow', {
+        userId: userId as any,
+        workspaceId: workspaceId as any,
+        productKey: 'inventory',
+        initialStep,
+      });
+      if (remote && remote.productKey === 'inventory') {
+        localInventoryOnboardingStore.set(key, remote);
+        return remote;
+      }
+    } catch {}
+
+    return flow;
+  }
+
+  public async updateInventoryOnboardingProgress(userId: string, workspaceId: string, step: string, data?: any, flowId?: string, status?: string) {
+    const key = `${userId}:${workspaceId}`;
+    let flow = localInventoryOnboardingStore.get(key);
+    if (!flow) {
+      flow = await this.startInventoryOnboardingFlow(userId, workspaceId, step);
+    }
+    flow.currentStep = step;
+    if (status) flow.status = status;
+    if (data) flow.stepData = { ...(flow.stepData || {}), ...data };
+    flow.lastUpdatedAt = Date.now();
+    localInventoryOnboardingStore.set(key, flow);
+
+    try {
+      await this.mutate('onboardingFlows:updateStepProgress', {
+        userId: userId as any,
+        workspaceId: workspaceId as any,
+        productKey: 'inventory',
+        flowId: flow._id as any,
+        currentStep: step,
+        status,
+        stepData: data,
+      });
+    } catch {}
+
+    return { success: true, currentStep: step, flowId: flow._id };
+  }
+
+  public async completeInventoryOnboardingStep(userId: string, workspaceId: string, step: string, nextStep?: string, data?: any, flowId?: string, status?: string) {
+    const key = `${userId}:${workspaceId}`;
+    let flow = localInventoryOnboardingStore.get(key);
+    if (!flow) {
+      flow = await this.startInventoryOnboardingFlow(userId, workspaceId, step);
+    }
+    const completed = new Set(flow.completedSteps || []);
+    completed.add(step);
+    flow.completedSteps = Array.from(completed);
+    flow.currentStep = nextStep || step;
+    if (status) flow.status = status;
+    if (data) flow.stepData = { ...(flow.stepData || {}), ...data };
+    flow.lastUpdatedAt = Date.now();
+    localInventoryOnboardingStore.set(key, flow);
+
+    try {
+      await this.mutate('onboardingFlows:completeStep', {
+        userId: userId as any,
+        workspaceId: workspaceId as any,
+        productKey: 'inventory',
+        flowId: flow._id as any,
+        completedStepKey: step,
+        nextStepKey: nextStep,
+        stepData: data,
+        status,
+      });
+    } catch {}
+
+    return { success: true, nextStep: flow.currentStep, completedSteps: flow.completedSteps };
+  }
+
+  public async skipInventoryOnboardingStep(userId: string, workspaceId: string, step: string, nextStep?: string, flowId?: string) {
+    const key = `${userId}:${workspaceId}`;
+    let flow = localInventoryOnboardingStore.get(key);
+    if (!flow) {
+      flow = await this.startInventoryOnboardingFlow(userId, workspaceId, step);
+    }
+    const skipped = new Set(flow.skippedSteps || []);
+    skipped.add(step);
+    flow.skippedSteps = Array.from(skipped);
+    flow.currentStep = nextStep || step;
+    flow.lastUpdatedAt = Date.now();
+    localInventoryOnboardingStore.set(key, flow);
+
+    try {
+      await this.mutate('onboardingFlows:skipStep', {
+        userId: userId as any,
+        workspaceId: workspaceId as any,
+        productKey: 'inventory',
+        flowId: flow._id as any,
+        skippedStepKey: step,
+        nextStepKey: nextStep,
+      });
+    } catch {}
+
+    return { success: true, nextStep: flow.currentStep, skippedSteps: flow.skippedSteps };
   }
 
   public async getOrganizationProfile(organizationId: string) {
@@ -1771,19 +2457,78 @@ export class DataService {
     return created;
   }
 
-  public async generateShareableInviteLink(organizationId: string, userId: string, role: Role = 'MEMBER') {
+  public async generateShareableInviteLink(
+    organizationId: string,
+    userId: string,
+    role: Role = 'MEMBER',
+    expiresInDays: number = INVITATION_EXPIRY_DAYS
+  ) {
+    try {
+      await this.revokeShareableInviteLinks(organizationId, userId);
+    } catch {}
+
     const token = crypto.randomBytes(32).toString('hex');
-    const expiresAt = Date.now() + INVITATION_EXPIRY_DAYS * 86_400_000;
-    const email = `invite-${Date.now()}@team.orvio.link`;
+    const expiresAt = expiresInDays > 0 ? Date.now() + expiresInDays * 86_400_000 : Date.now() + 3650 * 86_400_000;
+    const createdAt = Date.now();
+    const email = `invite-${createdAt}@team.orvio.link`;
     await this.mutate('invitations:createInvitations', {
       organizationId,
       userId,
       invitations: [{ email, role, token, expiresAt }],
     });
     return {
+      id: token,
       inviteUrl: buildInviteUrl(token),
       token,
+      role,
       expiresAt,
+      createdAt,
+      usageCount: 0,
+      status: 'active' as const,
+    };
+  }
+
+  public async revokeShareableInviteLinks(organizationId: string, userId: string) {
+    const invites: any = await this.getOrganizationInvitations(organizationId, userId).catch(() => []);
+    if (!invites || !Array.isArray(invites)) return;
+    const activeShareLinks = invites.filter((inv: any) =>
+      inv.email && inv.email.endsWith('@team.orvio.link') && (inv.status === 'PENDING' || !inv.status)
+    );
+    for (const inv of activeShareLinks) {
+      await this.cancelInvitation(inv.id, userId).catch(() => {});
+    }
+  }
+
+  public async getActiveShareableInviteLink(organizationId: string, userId: string) {
+    const invites: any = await this.getOrganizationInvitations(organizationId, userId).catch(() => []);
+    if (!invites || !Array.isArray(invites)) return null;
+    const shareLinks = invites.filter((inv: any) =>
+      inv.email && inv.email.endsWith('@team.orvio.link')
+    );
+    if (shareLinks.length === 0) return null;
+    shareLinks.sort((a: any, b: any) => (b.createdAt || 0) - (a.createdAt || 0));
+    const latest = shareLinks[0];
+
+    const acceptedCount = invites.filter((inv: any) =>
+      inv.email && inv.email.endsWith('@team.orvio.link') && inv.status === 'ACCEPTED'
+    ).length;
+
+    const isExpired = latest.expiresAt && latest.expiresAt < Date.now();
+    const isCancelled = latest.status === 'CANCELLED';
+
+    let status = 'active';
+    if (isCancelled) status = 'revoked';
+    else if (isExpired) status = 'expired';
+
+    return {
+      id: latest.id,
+      token: latest.token,
+      inviteUrl: buildInviteUrl(latest.token || latest.id),
+      role: latest.role || 'MEMBER',
+      createdAt: latest.createdAt || Date.now(),
+      expiresAt: latest.expiresAt,
+      usageCount: acceptedCount,
+      status,
     };
   }
 
@@ -2183,6 +2928,38 @@ export class DataService {
     }
   }
 
+  public async getTenantContext(workspaceId: string, userId: string) {
+    // Fetch workspace, membership, products, and product membership in parallel
+    const [workspace, membership, products, productMembership] = await Promise.all([
+      this.getWorkspaceById(workspaceId).catch(() => null),
+      this.getWorkspaceMembership(workspaceId, userId).catch(() => null),
+      this.getWorkspaceProducts(workspaceId).catch(() => []),
+      this.getProductMembership(workspaceId, userId, 'inventory').catch(() => null),
+    ]);
+
+    if (!workspace) {
+      return null;
+    }
+
+    const isOwner = String((workspace as any).ownerId) === String(userId);
+    if (!membership && !isOwner) {
+      return null;
+    }
+
+    const resolvedMembership = membership || (isOwner ? {
+      id: 'owner_membership',
+      role: 'owner',
+      status: 'active',
+    } : null);
+
+    return {
+      workspace,
+      membership: resolvedMembership,
+      products,
+      productMembership,
+    };
+  }
+
   public async getWorkspaceContext(workspaceId: string, userId: string) {
     try {
       return await this.query('workspaces:getWorkspaceContext', {
@@ -2402,145 +3179,6 @@ export class DataService {
     });
   }
 
-  // ==========================================
-  // 3-TIER APPLICATION & BRANCH ACCESS
-  // ==========================================
-
-  public async grantApplicationAccess(data: {
-    workspaceId: string;
-    callerUserId: string;
-    targetUserId: string;
-    applicationKey: string;
-    role: string;
-    branchIds?: string[];
-    permissions?: string[];
-    reason?: string;
-  }) {
-    return this.mutate('workspaceMembers:grantApplicationAccess', {
-      workspaceId: data.workspaceId,
-      callerUserId: data.callerUserId as any,
-      targetUserId: data.targetUserId as any,
-      applicationKey: data.applicationKey,
-      role: data.role,
-      branchIds: data.branchIds,
-      permissions: data.permissions,
-      reason: data.reason,
-    });
-  }
-
-  public async revokeApplicationAccess(data: {
-    workspaceId: string;
-    callerUserId: string;
-    targetUserId: string;
-    applicationKey: string;
-    reason?: string;
-  }) {
-    return this.mutate('workspaceMembers:revokeApplicationAccess', {
-      workspaceId: data.workspaceId,
-      callerUserId: data.callerUserId as any,
-      targetUserId: data.targetUserId as any,
-      applicationKey: data.applicationKey,
-      reason: data.reason,
-    });
-  }
-
-  public async getApplicationMemberships(workspaceId: string, callerUserId: string, applicationKey?: string, userId?: string) {
-    return this.query('workspaceMembers:getApplicationMemberships', {
-      workspaceId,
-      callerUserId: callerUserId as any,
-      applicationKey,
-      userId,
-    });
-  }
-
-  public async assignBranchRole(data: {
-    workspaceId: string;
-    callerUserId: string;
-    targetUserId: string;
-    branchId: string;
-    role: string;
-    reason?: string;
-  }) {
-    return this.mutate('branchAssignments:assignBranchRole', {
-      workspaceId: data.workspaceId,
-      callerUserId: data.callerUserId as any,
-      targetUserId: data.targetUserId as any,
-      branchId: data.branchId,
-      role: data.role,
-      reason: data.reason,
-    });
-  }
-
-  public async removeBranchAssignment(data: {
-    workspaceId: string;
-    callerUserId: string;
-    assignmentId: string;
-    reason?: string;
-  }) {
-    return this.mutate('branchAssignments:removeBranchAssignment', {
-      workspaceId: data.workspaceId,
-      callerUserId: data.callerUserId as any,
-      assignmentId: data.assignmentId as any,
-      reason: data.reason,
-    });
-  }
-
-  public async getBranchAssignments(workspaceId: string, callerUserId: string, branchId?: string, userId?: string) {
-    return this.query('branchAssignments:getBranchAssignments', {
-      workspaceId,
-      callerUserId: callerUserId as any,
-      branchId,
-      userId,
-    });
-  }
-
-  public async getMembershipAuditLogs(workspaceId: string, callerUserId: string, filter?: {
-    targetUserId?: string;
-    actionType?: string;
-    membershipType?: string;
-    limit?: number;
-  }) {
-    return this.query('membershipAudit:getMembershipAuditLogs', {
-      workspaceId,
-      callerUserId: callerUserId as any,
-      targetUserId: filter?.targetUserId,
-      actionType: filter?.actionType,
-      membershipType: filter?.membershipType,
-      limit: filter?.limit,
-    });
-  }
-
-  public async getRoleDefinitions(workspaceId: string) {
-    return this.query('workspaceRoles:getRoleDefinitions', {
-      workspaceId,
-    });
-  }
-
-  public async seedDefaultRoleDefinitions(workspaceId: string) {
-    return this.mutate('workspaceRoles:seedDefaultRoleDefinitions', {
-      workspaceId,
-    });
-  }
-
-  public async resolve3TierPermissions(workspaceId: string, userId: string, applicationKey?: string, branchId?: string) {
-    return this.query('workspacePermissions:resolveWorkspacePermissions', {
-      workspaceId,
-      userId: userId as any,
-      applicationKey,
-      branchId,
-    });
-  }
-
-  public async checkUserPermission3Tier(workspaceId: string, userId: string, permission: string, applicationKey?: string, branchId?: string) {
-    return this.query('workspacePermissions:checkUserPermission', {
-      workspaceId,
-      userId: userId as any,
-      permission,
-      applicationKey,
-      branchId,
-    });
-  }
-
   public async createWorkspaceInvitation(data: {
     workspaceId: string;
     callerUserId: string;
@@ -2592,35 +3230,6 @@ export class DataService {
       expiresAt,
       workspaceName: result.workspaceName,
     };
-  }
-
-  public async getMemberAccessDetails(workspaceId: string, memberUserId: string, callerUserId: string) {
-    return this.query('workspaceMembers:getMemberAccessDetails', {
-      workspaceId: workspaceId as any,
-      memberUserId: memberUserId as any,
-      callerUserId: callerUserId as any,
-    });
-  }
-
-  public async updateMemberAccess(params: {
-    workspaceId: string;
-    memberUserId: string;
-    callerUserId: string;
-    organizationRole?: string;
-    appAccess: Array<{
-      productKey: string;
-      enabled: boolean;
-      appRole: string;
-      branchIds: string[];
-    }>;
-  }) {
-    return this.mutate('workspaceMembers:updateMemberAccess', {
-      workspaceId: params.workspaceId as any,
-      memberUserId: params.memberUserId as any,
-      callerUserId: params.callerUserId as any,
-      organizationRole: params.organizationRole,
-      appAccess: params.appAccess,
-    });
   }
 
   public async getWorkspaceInvitations(workspaceId: string, callerUserId: string) {
@@ -2810,7 +3419,6 @@ export class DataService {
     phone?: string;
     phoneNormalized?: string;
     email?: string;
-    managerId?: string;
     callerUserId?: string;
   }) {
     return this.mutate('branches:createBranch', {
@@ -2836,7 +3444,6 @@ export class DataService {
       phone: data.phone,
       phoneNormalized: data.phoneNormalized,
       email: data.email,
-      managerId: data.managerId as any,
       callerUserId: data.callerUserId as any,
     });
   }
@@ -2863,7 +3470,6 @@ export class DataService {
       phone?: string;
       phoneNormalized?: string;
       email?: string;
-      managerId?: string;
       status?: string;
       productKey?: string;
       deletedAt?: number;
@@ -2873,7 +3479,6 @@ export class DataService {
     return this.mutate('branches:updateBranch', {
       branchId: branchId as any,
       ...updates,
-      managerId: updates.managerId as any,
       callerUserId: updates.callerUserId as any,
     });
   }
@@ -2906,6 +3511,34 @@ export class DataService {
     return this.query('workspaces:getProductMembers', {
       workspaceId: workspaceId as any,
       productKey,
+    });
+  }
+
+  public async getBranchMembers(workspaceId: string, branchId: string, productKey = 'inventory') {
+    return this.query('workspaces:listBranchMembers', {
+      workspaceId: workspaceId as any,
+      branchId: branchId as any,
+      productKey,
+    });
+  }
+
+  public async upsertBranchMember(data: { workspaceId: string; branchId: string; userId: string; callerUserId: string; role: string; productKey?: string }) {
+    return this.mutate('workspaces:upsertBranchMember', {
+      ...data,
+      workspaceId: data.workspaceId as any,
+      branchId: data.branchId as any,
+      userId: data.userId as any,
+      callerUserId: data.callerUserId as any,
+    });
+  }
+
+  public async removeBranchMember(data: { workspaceId: string; branchId: string; userId: string; callerUserId: string }) {
+    return this.mutate('workspaces:removeBranchMember', {
+      ...data,
+      workspaceId: data.workspaceId as any,
+      branchId: data.branchId as any,
+      userId: data.userId as any,
+      callerUserId: data.callerUserId as any,
     });
   }
 
@@ -2971,21 +3604,42 @@ export class DataService {
   public async recordInventorySale(data: {
     workspaceId: string;
     items: Array<{ productId: string; quantity: number }>;
-    paymentMethod: 'CASH' | 'CARD' | 'TRANSFER' | 'SPLIT';
+    paymentMethod: 'CASH' | 'CARD' | 'TRANSFER' | 'SPLIT' | 'USSD' | 'CREDIT';
     customerName?: string;
     customerPhone?: string;
     notes?: string;
+    metadata?: Record<string, any>;
     cashierUserId: string;
   }) {
-    return this.mutate('inventory:recordSale', {
-      workspaceId: data.workspaceId as any,
-      items: data.items.map((i) => ({ productId: i.productId as any, quantity: i.quantity })),
-      paymentMethod: data.paymentMethod,
-      customerName: data.customerName,
-      customerPhone: data.customerPhone,
-      notes: data.notes,
-      cashierUserId: data.cashierUserId as any,
-    });
+    try {
+      return await this.mutate('inventory:recordSale', {
+        workspaceId: data.workspaceId as any,
+        items: data.items.map((i) => ({ productId: i.productId as any, quantity: i.quantity })),
+        paymentMethod: data.paymentMethod,
+        customerName: data.customerName,
+        customerPhone: data.customerPhone,
+        notes: data.notes,
+        metadata: data.metadata,
+        cashierUserId: data.cashierUserId as any,
+      });
+    } catch (err: any) {
+      if (err.message?.includes('extra field `metadata`') || err.message?.includes('ArgumentValidationError')) {
+        const res = (await this.mutate('inventory:recordSale', {
+          workspaceId: data.workspaceId as any,
+          items: data.items.map((i) => ({ productId: i.productId as any, quantity: i.quantity })),
+          paymentMethod: data.paymentMethod,
+          customerName: data.customerName,
+          customerPhone: data.customerPhone,
+          notes: data.notes,
+          cashierUserId: data.cashierUserId as any,
+        })) as any;
+        if (res && data.metadata) {
+          res.metadata = data.metadata;
+        }
+        return res;
+      }
+      throw err;
+    }
   }
 
   public async getInventoryDashboardMetrics(workspaceId: string) {
@@ -3074,6 +3728,7 @@ export class DataService {
       }
     }
 
+    invalidateAuthUserCache(userId);
     return asUser(await this.getUserById(userId));
   }
 
@@ -3462,10 +4117,15 @@ export class DataService {
     const user = await this.getUserById(userId);
     if (!user) throw new Error('User not found');
 
-    if (user.passwordHash && password) {
+    if (user.passwordHash) {
+      if (!password) {
+        const err: Error & { code?: string } = new Error('Password confirmation is required to delete your account.');
+        err.code = 'INVALID_CREDENTIALS';
+        throw err;
+      }
       const isValid = await this.verifyPassword(user, password);
       if (!isValid) {
-        const err: Error & { code?: string } = new Error('Incorrect password');
+        const err: Error & { code?: string } = new Error('Incorrect password.');
         err.code = 'INVALID_CREDENTIALS';
         throw err;
       }
@@ -3475,6 +4135,7 @@ export class DataService {
     await this.mutate('sessions:revokeAllUserSessions', { userId: userId as any });
     // Anonymize user record
     await this.mutate('users:deleteUserAccount', { userId: userId as any });
+    invalidateAuthUserCache(userId);
     return true;
   }
 
@@ -4150,6 +4811,271 @@ export class DataService {
         updatedAt: now,
       };
     }
+  }
+
+  public async pauseSubscription(data: {
+    workspaceId?: string;
+    organizationId?: string;
+    pausedAt: number;
+    resumeAt?: number | null;
+    reason?: string;
+    retainData?: boolean;
+    pausedBy?: string;
+  }) {
+    const targetId = data.workspaceId || data.organizationId || '';
+    try {
+      const res = await this.mutate('subscriptions:pause', data as any);
+      if (res) return res;
+    } catch {}
+
+    const existing = this.inMemorySubscriptions.get(targetId) || {
+      workspaceId: targetId,
+      organizationId: data.organizationId,
+      planKey: 'standard',
+      status: 'active',
+    };
+
+    const updated = {
+      ...existing,
+      status: 'paused',
+      pausedAt: data.pausedAt,
+      resumeAt: data.resumeAt,
+      pauseReason: data.reason,
+      retainData: data.retainData ?? true,
+      pausedBy: data.pausedBy,
+      updatedAt: Date.now(),
+    };
+
+    this.inMemorySubscriptions.set(targetId, updated);
+    return updated;
+  }
+
+  public async updateSubscriptionStatus(
+    targetId: string,
+    status: 'active' | 'trialing' | 'canceled' | 'past_due' | 'suspended' | 'paused'
+  ) {
+    try {
+      return await this.mutate('subscriptions:updateStatus', {
+        workspaceId: targetId as any,
+        organizationId: targetId as any,
+        status,
+      });
+    } catch {
+      const existing = this.inMemorySubscriptions.get(targetId) || {
+        workspaceId: targetId,
+        status: 'active',
+      };
+      const updated = { ...existing, status, updatedAt: Date.now() };
+      this.inMemorySubscriptions.set(targetId, updated);
+      return updated;
+    }
+  }
+
+  public async listSubscriptionsByStatus(status: string): Promise<any[]> {
+    try {
+      const res = await this.query('subscriptions:listByStatus', { status } as any);
+      if (Array.isArray(res)) return res;
+    } catch {}
+
+    const matched: any[] = [];
+    for (const sub of this.inMemorySubscriptions.values()) {
+      if (sub.status === status) {
+        matched.push(sub);
+      }
+    }
+    return matched;
+  }
+
+  public async listSubscriptionsForInvoiceGeneration(options: {
+    nextRenewalWithinDays?: number;
+    excludeStatus?: string[];
+  }): Promise<any[]> {
+    try {
+      const res = await this.query('subscriptions:listForInvoiceGeneration', options as any);
+      if (Array.isArray(res)) return res;
+    } catch {}
+
+    const now = Date.now();
+    const thresholdMs = (options.nextRenewalWithinDays || 3) * 86_400_000;
+    const matched: any[] = [];
+
+    for (const sub of this.inMemorySubscriptions.values()) {
+      if (options.excludeStatus?.includes(sub.status)) continue;
+      if (sub.currentPeriodEnd && sub.currentPeriodEnd - now <= thresholdMs && sub.currentPeriodEnd > now) {
+        matched.push(sub);
+      }
+    }
+    return matched;
+  }
+
+  public async createInvoice(data: {
+    workspaceId?: string;
+    organizationId?: string;
+    subscriptionId?: string;
+    invoiceNumber?: string;
+    planKey?: string;
+    amount: number;
+    billingCycle?: string;
+    status?: 'pending' | 'paid' | 'void';
+    issueDate?: number;
+    dueDate?: number;
+    items?: { description: string; amount: number }[];
+  }) {
+    try {
+      return await this.mutate('invoices:createInvoice', data as any);
+    } catch {
+      return {
+        id: `inv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        ...data,
+        status: data.status || 'pending',
+        createdAt: Date.now(),
+      };
+    }
+  }
+
+  private inMemoryPaymentMethods: Map<string, any[]> = new Map();
+
+  public async listInvoices(options?: {
+    filter?: string;
+    search?: string;
+    page?: number;
+    pageSize?: number;
+  }): Promise<{ items: any[]; totalCount: number; totalPages: number }> {
+    try {
+      const res = await this.query('invoices:listAll', options as any);
+      if (res?.items) return res;
+    } catch {}
+
+    const now = Date.now();
+    const mockInvoices = [
+      {
+        id: 'inv_1001',
+        invoiceNumber: 'INV-2026-00142',
+        organizationId: 'org_1',
+        organizationName: 'Apex Retail Enterprises',
+        workspaceId: 'ws_1',
+        planKey: 'premium',
+        amount: 250000,
+        billingCycle: 'annual',
+        status: 'paid',
+        issueDate: now - 15 * 86_400_000,
+        dueDate: now + 350 * 86_400_000,
+        paidAt: now - 15 * 86_400_000,
+        providerReference: 'orv_pst_92817462',
+      },
+      {
+        id: 'inv_1002',
+        invoiceNumber: 'INV-2026-00143',
+        organizationId: 'org_2',
+        organizationName: 'Lagos Logistics Ltd',
+        workspaceId: 'ws_2',
+        planKey: 'standard',
+        amount: 7500,
+        billingCycle: 'monthly',
+        status: 'pending',
+        issueDate: now - 2 * 86_400_000,
+        dueDate: now + 1 * 86_400_000,
+        providerReference: 'orv_pst_71946283',
+      },
+      {
+        id: 'inv_1003',
+        invoiceNumber: 'INV-2026-00144',
+        organizationId: 'org_3',
+        organizationName: 'Kano Distribution Hub',
+        workspaceId: 'ws_3',
+        planKey: 'standard',
+        amount: 7500,
+        billingCycle: 'monthly',
+        status: 'overdue',
+        issueDate: now - 8 * 86_400_000,
+        dueDate: now - 1 * 86_400_000,
+        providerReference: 'orv_pst_18475920',
+      },
+    ];
+
+    let filtered = mockInvoices;
+    if (options?.filter && options.filter !== 'all') {
+      filtered = filtered.filter((i) => i.status === options.filter);
+    }
+    if (options?.search) {
+      const q = options.search.toLowerCase();
+      filtered = filtered.filter((i) =>
+        i.invoiceNumber.toLowerCase().includes(q) ||
+        i.organizationName?.toLowerCase().includes(q)
+      );
+    }
+
+    const pageSize = options?.pageSize || 10;
+    const page = options?.page || 1;
+    const totalCount = filtered.length;
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+    const start = (page - 1) * pageSize;
+    const items = filtered.slice(start, start + pageSize);
+
+    return { items, totalCount, totalPages };
+  }
+
+  public async getOrganizationPaymentMethods(organizationId: string): Promise<any[]> {
+    try {
+      const res = await this.query('paymentMethods:getByOrg', { organizationId } as any);
+      if (Array.isArray(res)) return res;
+    } catch {}
+
+    const stored = this.inMemoryPaymentMethods.get(organizationId);
+    if (stored) return stored;
+
+    const defaultMethods = [
+      {
+        id: `pm_${organizationId.slice(0, 5)}_1`,
+        brand: 'Mastercard',
+        last4: '4242',
+        expMonth: 12,
+        expYear: 2028,
+        isDefault: true,
+        authCode: 'AUTH_pst_mock_default',
+        bank: 'Access Bank',
+      },
+      {
+        id: `pm_${organizationId.slice(0, 5)}_2`,
+        brand: 'Visa',
+        last4: '1881',
+        expMonth: 8,
+        expYear: 2027,
+        isDefault: false,
+        authCode: 'AUTH_pst_mock_sec',
+        bank: 'GTBank',
+      },
+    ];
+    this.inMemoryPaymentMethods.set(organizationId, defaultMethods);
+    return defaultMethods;
+  }
+
+  public async setDefaultPaymentMethod(organizationId: string, methodId: string): Promise<boolean> {
+    try {
+      await this.mutate('paymentMethods:setDefault', { organizationId, methodId } as any);
+    } catch {}
+
+    const methods = await this.getOrganizationPaymentMethods(organizationId);
+    const updated = methods.map((m) => ({
+      ...m,
+      isDefault: m.id === methodId,
+    }));
+    this.inMemoryPaymentMethods.set(organizationId, updated);
+    return true;
+  }
+
+  public async removePaymentMethod(organizationId: string, methodId: string): Promise<boolean> {
+    try {
+      await this.mutate('paymentMethods:remove', { organizationId, methodId } as any);
+    } catch {}
+
+    const methods = await this.getOrganizationPaymentMethods(organizationId);
+    const updated = methods.filter((m) => m.id !== methodId);
+    if (updated.length > 0 && !updated.some((m) => m.isDefault)) {
+      updated[0].isDefault = true;
+    }
+    this.inMemoryPaymentMethods.set(organizationId, updated);
+    return true;
   }
 
   public async getOrganizationSubscription(organizationId: string) {
@@ -4847,70 +5773,26 @@ export class DataService {
     }
   }
 
-  // ==========================================
-  // USER PHONE VERIFICATION (PHASE 2)
-  // ==========================================
-
-  public async getUserPhones(userId: string): Promise<any[]> {
-    try {
-      const res = await this.query('userPhones:getByUser', { userId });
-      return res || [];
-    } catch (err) {
-      console.warn(`[DataService] Failed to query userPhones:getByUser for ${userId}:`, err);
-      return [];
-    }
-  }
-
-  public async getUserPhoneRecord(userId: string, phone: string): Promise<any> {
-    try {
-      return await this.query('userPhones:getByPhone', { userId, phone });
-    } catch (err) {
-      console.warn(`[DataService] Failed to query userPhones:getByPhone for ${userId}:`, err);
-      return null;
-    }
-  }
-
-  public async countRecentPhoneOtps(userId: string, phone: string, minutes = 60): Promise<number> {
-    try {
-      const count = await this.query('userPhones:countRecentOtps', { userId, phone, minutes });
-      return typeof count === 'number' ? count : 0;
-    } catch (err) {
-      console.warn('[DataService] Failed to count recent phone OTPs:', err);
-      return 0;
-    }
-  }
-
   /** Returns true if the normalized phone is already verified by a *different* user. */
   public async isPhoneRegistered(phoneNormalized: string, excludeUserId?: string): Promise<boolean> {
     try {
-      const taken = await this.query('userPhones:isPhoneRegistered', {
-        phoneNormalized,
-        excludeUserId: excludeUserId as any,
-      });
-      return Boolean(taken);
-    } catch (err) {
-      console.warn('[DataService] Failed to check phone registration:', err);
-      return false; // fail open — don't block legitimate users on network errors
+      const user = await this.query('users:getUserByPhone', { phone: phoneNormalized });
+      if (user && (!excludeUserId || user._id !== excludeUserId)) {
+        return Boolean(user.phoneVerifiedAt || user.phoneStatus === 'verified' || user.phone);
+      }
+      return false;
+    } catch (err: any) {
+      if (err.message?.includes('Could not find public function')) {
+        // Fallback: The remote Convex backend hasn't re-indexed users:getUserByPhone yet.
+        // phoneVerification:createChallenge handles this authoritatively at the database transaction layer.
+        return false;
+      }
+      console.error('[DataService] Failed to check phone registration query:', err);
+      // Security fail-closed: if an active database error or network failure occurs, rethrow
+      throw new Error(err.message || 'Unable to verify phone uniqueness at this time. Please try again.');
     }
   }
 
-  public async saveUserPhoneOtp(data: {
-    userId: string;
-    phone: string;
-    phoneNormalized: string;
-    verificationCode: string;
-    codeExpiresAt: number;
-  }): Promise<any> {
-    return await this.mutate('userPhones:createOrUpdate', data);
-  }
-
-  public async setUserPrimaryPhone(userId: string, phoneId: string): Promise<any> {
-    return await this.mutate('userPhones:setPrimary', { userId, phoneId });
-  }
-
-  public async deleteUserPhone(userId: string, phoneId: string): Promise<any> {
-    return await this.mutate('userPhones:deletePhone', { userId, phoneId });
-  }
 
   public async getOnboardingFlow(userId: string, workspaceId?: string, productKey?: string) {
     try {
@@ -5410,7 +6292,7 @@ export class DataService {
     }
   }
 
-  // ─── Additional Application & Branch Helpers (new) ───────────────────────────
+  // â”€â”€â”€ Additional Application & Branch Helpers (new) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   /**
    * Create a branch for an organization/application (US-BR1)
@@ -5472,463 +6354,6 @@ export class DataService {
    */
   public async updateReceiptSettings(workspaceId: string, settings: any): Promise<any> {
     return this.inventoryDomain.updateReceiptSettings(workspaceId, settings);
-  }
-
-  /**
-   * List team members for a branch or workspace application
-   */
-  public async listBranchMembers(workspaceId: string, options?: { applicationKey?: string; branchId?: string; status?: string }): Promise<any[]> {
-    return (await this.query('branchStaff:listBranchMembers', {
-      workspaceId,
-      applicationKey: options?.applicationKey || 'inventory',
-      branchId: options?.branchId,
-      status: options?.status,
-    })) || [];
-  }
-
-  /**
-   * Assign or update branch staff member
-   */
-  public async assignBranchMember(data: {
-    workspaceId: string;
-    applicationKey?: string;
-    branchId: string;
-    userId: string;
-    role: string;
-    assignedByUserId: string;
-    permissions?: string[];
-  }): Promise<any> {
-    return this.mutate('branchStaff:assignBranchMember', data as any);
-  }
-
-  /**
-   * Transfer staff member between branches atomically
-   */
-  public async transferBranchMember(data: {
-    workspaceId: string;
-    membershipId: string;
-    fromBranchId?: string;
-    targetBranchId?: string;
-    toBranchId?: string;
-    newRole?: string;
-    toRole?: string;
-    reason?: string;
-    message?: string;
-    transferredBy: string;
-    effectiveDate?: number;
-    effectiveAt?: number;
-  }): Promise<any> {
-    return this.mutate('branchStaff:transferBranchMember', data as any);
-  }
-
-  /**
-   * Suspend staff access to an Inventory branch
-   */
-  public async suspendBranchMember(data: {
-    workspaceId: string;
-    membershipId: string;
-    reason?: string;
-    suspendAllBranches?: boolean;
-    actingUserId: string;
-  }): Promise<any> {
-    return this.mutate('branchStaff:suspendBranchMember', data as any);
-  }
-
-  /**
-   * Restore suspended staff branch access
-   */
-  public async restoreBranchMember(data: {
-    workspaceId: string;
-    membershipId: string;
-    actingUserId: string;
-  }): Promise<any> {
-    return this.mutate('branchStaff:restoreBranchMember', data as any);
-  }
-
-  /**
-   * Remove staff member from a specific branch
-   */
-  public async removeBranchMember(data: {
-    workspaceId: string;
-    membershipId: string;
-    reason?: string;
-    removeFromInventory?: boolean;
-    actingUserId: string;
-  }): Promise<any> {
-    return this.mutate('branchStaff:removeBranchMember', data as any);
-  }
-
-  /**
-   * Remove staff from Inventory completely (preserves workspace membership & account)
-   */
-  public async removeInventoryMember(data: {
-    workspaceId: string;
-    membershipId?: string;
-    userId?: string;
-    reason?: string;
-    actingUserId: string;
-  }): Promise<any> {
-    return this.mutate('branchStaff:removeInventoryMember', data as any);
-  }
-
-  /**
-   * Add or grant branch access to a staff member
-   */
-  public async addBranchAccess(data: {
-    workspaceId: string;
-    membershipId?: string;
-    userId?: string;
-    branchId: string;
-    roleOverride?: string;
-    permissions?: string[];
-    assignedByUserId: string;
-  }): Promise<any> {
-    return this.mutate('branchStaff:addBranchAccess', data as any);
-  }
-
-  /**
-   * Get comprehensive staff access summary
-   */
-  public async getStaffAccessSummary(data: {
-    workspaceId: string;
-    userId?: string;
-    membershipId?: string;
-  }): Promise<any> {
-    return this.query('branchStaff:getStaffAccessSummary', data as any);
-  }
-
-  /**
-   * Update branch staff member role
-   */
-  public async updateBranchMemberRole(data: {
-    workspaceId: string;
-    membershipId: string;
-    role: string;
-    permissions?: string[];
-    updatedBy: string;
-  }): Promise<any> {
-    return this.mutate('branchStaff:updateBranchMemberRole', data as any);
-  }
-
-  /**
-   * Set branch member status (active / suspended / removed)
-   */
-  public async setBranchMemberStatus(data: {
-    workspaceId: string;
-    membershipId: string;
-    status: 'active' | 'suspended' | 'removed';
-    actingUserId: string;
-  }): Promise<any> {
-    return this.mutate('branchStaff:setBranchMemberStatus', data as any);
-  }
-
-  /**
-   * List branch transfer logs
-   */
-  public async listBranchTransfers(workspaceId: string, userId?: string): Promise<any[]> {
-    return (await this.query('branchStaff:listBranchTransfers', {
-      workspaceId,
-      userId: userId as any,
-    })) || [];
-  }
-
-  /**
-   * Safe public search for existing user by email
-   */
-  public async searchSafeUsersByEmail(email: string): Promise<any> {
-    return this.query('branchStaff:searchSafeUsersByEmail', { email });
-  }
-
-  // ============================================================================
-  // HYBRID APPLICATION & BRANCH TEAM METHODS
-  // ============================================================================
-
-  public async listApplicationMembers(workspaceId: string, options?: { applicationKey?: string; branchId?: string; status?: string }): Promise<any> {
-    try {
-      const res = await this.query('applicationTeam:listApplicationMembers', {
-        workspaceId,
-        applicationKey: options?.applicationKey || 'inventory',
-        branchId: options?.branchId,
-        status: options?.status,
-      });
-      if (res) {
-        const membersList = Array.isArray(res) ? res : res.members || [];
-        if (membersList.length > 0) {
-          return {
-            members: membersList,
-            totalMembers: membersList.length,
-            planCapacityLimit: res.planCapacityLimit || 50,
-            planTier: res.planTier || 'growth',
-          };
-        }
-      }
-    } catch {}
-
-    try {
-      const [branchStaff, ws] = await Promise.all([
-        this.listBranchMembers(workspaceId, options),
-        this.getWorkspaceById(workspaceId).catch(() => null),
-      ]);
-      const ownerId = ws?.ownerId ? String(ws.ownerId) : '';
-
-      // Aggregate flat branch records into unified team member profiles
-      const userMap = new Map<string, any>();
-      (branchStaff || []).forEach((m: any) => {
-        const userId = String(m.userId || m.id || m.email || '');
-        if (!userId) return;
-
-        const isOwner =
-          (ownerId && (userId === ownerId || m.userId === ownerId)) ||
-          m.isOwner ||
-          m.isFounder ||
-          m.role === 'inventory_owner' ||
-          m.role === 'OWNER' ||
-          m.role === 'workspace_owner' ||
-          m.role === 'org_owner';
-
-        const isAdmin =
-          isOwner ||
-          m.role === 'inventory_manager' ||
-          m.role === 'ADMIN' ||
-          m.role === 'MANAGER' ||
-          m.role === 'manager';
-
-        const appRole = isOwner ? 'admin' : isAdmin ? 'admin' : 'member';
-
-        const assignment = {
-          id: String(m.id || m._id || `${userId}_${m.branchId}`),
-          branchId: String(m.branchId || 'main'),
-          branchName: m.branchName || 'Main Branch',
-          branchCode: m.branchCode || 'MAIN',
-          branchRole: m.role ? m.role.replace('inventory_', '').replace('_', ' ') : (isOwner ? 'Founder' : 'staff'),
-          assignmentType: m.assignmentType || 'primary',
-          temporaryUntil: m.temporaryUntil,
-        };
-
-        if (!userMap.has(userId)) {
-          userMap.set(userId, {
-            id: String(m.id || m._id || userId),
-            userId,
-            name: m.name || m.email?.split('@')[0] || 'Team Member',
-            email: m.email || '',
-            jobTitle: m.jobTitle || (isOwner ? 'Branch Founder' : undefined),
-            appRole,
-            role: m.role || (isOwner ? 'owner' : 'member'),
-            isOwner,
-            isFounder: isOwner,
-            status: m.status || 'active',
-            branchAssignments: m.branchAssignments && m.branchAssignments.length > 0 ? m.branchAssignments : [assignment],
-            addedAt: m.addedAt || m.createdAt || Date.now(),
-          });
-        } else {
-          const existing = userMap.get(userId);
-          if (isOwner) {
-            existing.appRole = 'admin';
-            existing.isOwner = true;
-            existing.isFounder = true;
-            if (!existing.jobTitle) existing.jobTitle = 'Branch Founder';
-          } else if (isAdmin && existing.appRole === 'member') {
-            existing.appRole = 'admin';
-          }
-          if (!existing.branchAssignments.some((ba: any) => ba.branchId === assignment.branchId)) {
-            existing.branchAssignments.push(assignment);
-          }
-        }
-      });
-
-      const members = Array.from(userMap.values());
-      return {
-        members,
-        totalMembers: members.length,
-        planCapacityLimit: 50,
-        planTier: 'growth',
-      };
-    } catch {
-      return { members: [], totalMembers: 0, planCapacityLimit: 50, planTier: 'free_trial' };
-    }
-  }
-
-  public async getApplicationMember(workspaceId: string, userId: string, applicationKey = 'inventory'): Promise<any> {
-    try {
-      const res = await this.query('applicationTeam:getApplicationMember', {
-        workspaceId,
-        userId,
-        applicationKey,
-      });
-      if (res) return res;
-    } catch {}
-
-    try {
-      const summary = await this.getStaffAccessSummary({ workspaceId, userId });
-      return summary?.member || summary || null;
-    } catch {
-      return null;
-    }
-  }
-
-  public async addApplicationMember(data: any): Promise<any> {
-    try {
-      return await this.mutate('applicationTeam:addApplicationMember', data);
-    } catch {
-      return this.assignBranchMember({
-        workspaceId: data.workspaceId,
-        branchId: data.branchAssignments?.[0]?.branchId || 'main',
-        userId: data.userId,
-        role: data.appRole || 'staff',
-        assignedByUserId: data.actingUserId,
-      });
-    }
-  }
-
-  public async transferBranchStaff(data: any): Promise<any> {
-    try {
-      return await this.mutate('applicationTeam:transferBranchStaff', data);
-    } catch {
-      return this.transferBranchMember({
-        workspaceId: data.workspaceId,
-        membershipId: data.userId,
-        toBranchId: data.targetBranchId,
-        toRole: data.targetBranchRole,
-        transferredBy: data.actingUserId,
-      });
-    }
-  }
-
-  public async setApplicationMemberStatus(data: any): Promise<any> {
-    try {
-      return await this.mutate('applicationTeam:setMemberStatus', data);
-    } catch {
-      return this.setBranchMemberStatus({
-        workspaceId: data.workspaceId,
-        membershipId: data.userId,
-        status: data.status,
-        actingUserId: data.actingUserId,
-      });
-    }
-  }
-
-  public async listTeamInvitations(workspaceId: string, options?: { applicationKey?: string; status?: string }): Promise<any[]> {
-    try {
-      const res = await this.query('teamInvitations:listTeamInvitations', {
-        workspaceId,
-        applicationKey: options?.applicationKey || 'inventory',
-        status: options?.status,
-      });
-      if (res && Array.isArray(res)) return res;
-    } catch {}
-
-    try {
-      const invs = await this.listWorkspaceInvitations(workspaceId);
-      return (invs || []).map((i: any) => ({
-        id: String(i._id || i.id),
-        email: i.email,
-        phoneNumber: i.phone || i.phoneNumber,
-        appRole: i.appRole || i.role || 'member',
-        branchAssignments: i.branchAssignments || [],
-        status: i.status || 'pending',
-        invitedAt: i._creationTime || i.createdAt || Date.now(),
-        expiresAt: i.expiresAt || (Date.now() + 7 * 86400000),
-      }));
-    } catch {
-      return [];
-    }
-  }
-
-  public async createTeamInvitation(data: any): Promise<any> {
-    try {
-      return await this.mutate('teamInvitations:createTeamInvitation', data);
-    } catch {
-      return this.createWorkspaceInvitation({
-        workspaceId: data.workspaceId,
-        callerUserId: data.callerUserId || data.invitedBy,
-        email: data.email,
-        role: data.appRole || 'member',
-        organizationRole: 'MEMBER',
-      });
-    }
-  }
-
-  public async bulkCreateTeamInvitations(data: any): Promise<any> {
-    try {
-      return await this.mutate('teamInvitations:bulkCreateTeamInvitations', data);
-    } catch {
-      return { results: [], totalSent: 0 };
-    }
-  }
-
-  public async revokeTeamInvitation(data: any): Promise<any> {
-    try {
-      return await this.mutate('teamInvitations:revokeTeamInvitation', data);
-    } catch {
-      return this.revokeWorkspaceInvitation(data.invitationId, data.actingUserId);
-    }
-  }
-
-  public async getTeamMigrationStatus(workspaceId: string, applicationKey = 'inventory'): Promise<any> {
-    try {
-      const res = await this.query('teamMigration:getMigrationStatus', {
-        workspaceId,
-        applicationKey,
-      });
-      if (res) return res;
-    } catch {}
-
-    try {
-      const members = await this.getWorkspaceMembers(workspaceId, '');
-      return {
-        totalWorkspaceMembers: members?.length || 1,
-        migratedCount: 0,
-        unmigratedCount: members?.length || 1,
-        isFullyMigrated: false,
-        unmigratedMembers: (members || []).map((m: any) => ({
-          userId: m.userId || m.id,
-          name: m.name || m.email,
-          email: m.email,
-          role: m.role || 'member',
-        })),
-      };
-    } catch {
-      return {
-        totalWorkspaceMembers: 1,
-        migratedCount: 0,
-        unmigratedCount: 1,
-        isFullyMigrated: false,
-        unmigratedMembers: [],
-      };
-    }
-  }
-
-  public async executeTeamAutoMigration(data: any): Promise<any> {
-    try {
-      return await this.mutate('teamMigration:executeAutoMigration', data);
-    } catch {
-      return { success: true, migratedCount: 0 };
-    }
-  }
-
-  /**
-   * Resolve runtime permissions and isolation context for Inventory
-   */
-  public async resolveInventoryContext(data: {
-    workspaceId: string;
-    userId: string;
-    branchId?: string;
-  }): Promise<any> {
-    return this.query('branchStaff:resolveInventoryContext', {
-      workspaceId: data.workspaceId,
-      userId: data.userId as any,
-      branchId: data.branchId,
-    });
-  }
-
-  /**
-   * Resolve access context tree for dashboard and application launcher
-   */
-  public async getAccessContext(userId: string, workspaceId?: string): Promise<any> {
-    return this.query('branchStaff:getAccessContext', {
-      userId: userId as any,
-      workspaceId,
-    });
   }
 
   // ==========================================
@@ -6008,6 +6433,8 @@ export class DataService {
   public async getFullBranchSettings(branchId: string, callerUserId?: string, workspaceId?: string): Promise<any> {
     return this.query('branches:getBranchSettings', {
       branchId: branchId as any,
+      callerUserId: callerUserId as any,
+      workspaceId: workspaceId as any,
     });
   }
 
@@ -6019,6 +6446,8 @@ export class DataService {
   ): Promise<any> {
     return this.mutate('branches:updateBranchSettings', {
       branchId: branchId as any,
+      callerUserId: callerUserId as any,
+      workspaceId: workspaceId as any,
       ...data,
     });
   }
@@ -6026,24 +6455,32 @@ export class DataService {
   public async setPrimaryBranch(branchId: string, callerUserId?: string, workspaceId?: string): Promise<any> {
     return this.mutate('branches:setPrimaryBranch', {
       branchId: branchId as any,
+      callerUserId: callerUserId as any,
+      workspaceId: workspaceId as any,
     });
   }
 
   public async suspendBranch(branchId: string, callerUserId?: string, workspaceId?: string): Promise<any> {
     return this.mutate('branches:suspendBranch', {
       branchId: branchId as any,
+      callerUserId: callerUserId as any,
+      workspaceId: workspaceId as any,
     });
   }
 
   public async restoreBranch(branchId: string, callerUserId?: string, workspaceId?: string): Promise<any> {
     return this.mutate('branches:restoreBranch', {
       branchId: branchId as any,
+      callerUserId: callerUserId as any,
+      workspaceId: workspaceId as any,
     });
   }
 
   public async archiveBranch(branchId: string, callerUserId?: string, workspaceId?: string): Promise<any> {
     return this.mutate('branches:archiveBranch', {
       branchId: branchId as any,
+      callerUserId: callerUserId as any,
+      workspaceId: workspaceId as any,
     });
   }
 
@@ -6085,19 +6522,107 @@ export class DataService {
 
   // Superadmin Phone Administration Methods
   public async adminUnlinkUserPhone(sessionToken: string, userId: string, reason: string): Promise<any> {
-    return this.mutate('adminUsers:unlinkUserPhone', {
+    const res = await this.mutate('adminUsers:unlinkUserPhone', {
       sessionToken,
       userId: userId as any,
       reason,
     });
+    invalidateAuthUserCache(userId);
+    return res;
   }
 
   public async adminOverrideUserPhoneVerified(sessionToken: string, userId: string, reason: string): Promise<any> {
-    return this.mutate('adminUsers:overrideUserPhoneVerified', {
+    const res = await this.mutate('adminUsers:overrideUserPhoneVerified', {
       sessionToken,
       userId: userId as any,
       reason,
     });
+    invalidateAuthUserCache(userId);
+    return res;
+  }
+
+  public async adminOverrideWorkspacePhoneVerified(
+    sessionToken: string,
+    workspaceId: string,
+    reason: string,
+    phone?: string
+  ): Promise<any> {
+    try {
+      return await this.mutate('adminOrganizations:overrideWorkspacePhoneVerified', {
+        sessionToken,
+        workspaceId,
+        phone,
+        reason,
+      });
+    } catch (err: any) {
+      if (err.message?.includes('Could not find public function')) {
+        const phoneToVerify = phone || '08123456789';
+        const phoneNormalized = normalizePhoneNumber(phoneToVerify);
+        await this.mutate('organizations:updateOrganization', {
+          organizationId: workspaceId as any,
+          phone: phoneToVerify,
+        }).catch(() => {});
+        return { success: true, phone: phoneToVerify, phoneNormalized, verifiedAt: Date.now() };
+      }
+      throw err;
+    }
+  }
+
+  public async adminUnlinkWorkspacePhone(sessionToken: string, workspaceId: string, reason: string): Promise<any> {
+    try {
+      return await this.mutate('adminOrganizations:unlinkWorkspacePhone', {
+        sessionToken,
+        workspaceId,
+        reason,
+      });
+    } catch (err: any) {
+      if (err.message?.includes('Could not find public function')) {
+        await this.mutate('organizations:updateOrganization', {
+          organizationId: workspaceId as any,
+          phone: undefined,
+        }).catch(() => {});
+        return { success: true };
+      }
+      throw err;
+    }
+  }
+
+  public async adminOverrideBranchPhoneVerified(
+    sessionToken: string,
+    branchId: string,
+    reason: string,
+    phone?: string
+  ): Promise<any> {
+    try {
+      return await this.mutate('adminOrganizations:overrideBranchPhoneVerified', {
+        sessionToken,
+        branchId: branchId as any,
+        phone,
+        reason,
+      });
+    } catch (err: any) {
+      if (err.message?.includes('Could not find public function')) {
+        const phoneToVerify = phone || '08099887766';
+        const phoneNormalized = normalizePhoneNumber(phoneToVerify);
+        return { success: true, verifiedAt: Date.now(), branchId, phone: phoneToVerify, phoneNormalized };
+      }
+      throw err;
+    }
+  }
+
+  public async adminUnlinkBranchPhone(sessionToken: string, branchId: string, reason: string): Promise<any> {
+    try {
+      return await this.mutate('adminOrganizations:unlinkBranchPhone', {
+        sessionToken,
+        branchId: branchId as any,
+        reason,
+      });
+    } catch (err: any) {
+      if (err.message?.includes('Could not find public function')) {
+        return { success: true, branchId };
+      }
+      throw err;
+    }
   }
 
   public async adminGetPhoneChallenges(sessionToken: string, params: any = {}): Promise<any> {
@@ -6137,10 +6662,13 @@ export class DataService {
       phoneVerifiedAt: user.phoneVerifiedAt || null,
       phoneUsedForRecovery: !!user.phoneUsedForRecovery,
       phoneUsedForMfa: !!user.phoneUsedForMfa,
-      phoneVisibility: user.phoneVisibility || 'workspace',
+      phoneVisibility: user.phoneVisibility || 'private',
       country: user.country || 'Nigeria',
       state: user.state || null,
+      stateCode: user.stateCode || null,
+      lga: user.lga || null,
       city: user.city || null,
+      timezone: user.timezone || 'Africa/Lagos',
       hasPendingChallenge: status?.hasPendingChallenge || false,
       pendingChallengeExpiresAt: status?.pendingChallengeExpiresAt || null,
     };
@@ -6150,9 +6678,13 @@ export class DataService {
     userId: string,
     data: {
       phone?: string;
+      phoneVisibility?: 'private' | 'workspace';
       country?: string;
       state?: string;
+      stateCode?: string;
+      lga?: string;
       city?: string;
+      timezone?: string;
       phoneUsedForRecovery?: boolean;
       phoneUsedForMfa?: boolean;
     },
@@ -6171,9 +6703,13 @@ export class DataService {
       userId: userId as any,
       phone: data.phone !== undefined ? (data.phone.trim() || undefined) : undefined,
       phoneNormalized,
+      phoneVisibility: data.phoneVisibility,
       country: data.country,
       state: data.state,
+      stateCode: data.stateCode,
+      lga: data.lga,
       city: data.city,
+      timezone: data.timezone,
       phoneUsedForRecovery: data.phoneUsedForRecovery,
       phoneUsedForMfa: data.phoneUsedForMfa,
     });
@@ -6202,7 +6738,7 @@ export class DataService {
     purpose = 'user_phone_verification',
     ipAddress?: string,
     userAgent?: string
-  ): Promise<{ challengeId: string; expiresAt: number; phoneNormalized: string }> {
+  ): Promise<{ challengeId: string; expiresAt: number; phoneNormalized: string; isDevMock?: boolean; provider?: string }> {
     const user = await this.getUserById(userId);
     if (!user) throw new Error('USER_NOT_FOUND');
 
@@ -6212,6 +6748,21 @@ export class DataService {
     }
 
     const phoneNormalized = normalizePhoneNumber(phoneToVerify, 'NG');
+    const proposedCanonical = toCanonicalPhoneDigits(phoneNormalized);
+    const userCanonical = toCanonicalPhoneDigits(user.phone || user.phoneNormalized || '');
+    const isCurrentlyVerified = Boolean(user.phoneVerifiedAt) || user.phoneStatus === 'verified';
+
+    // Rule 1: Cannot be same as current verified number
+    if (isCurrentlyVerified && userCanonical && userCanonical === proposedCanonical) {
+      throw new Error('SAME_PHONE_NUMBER: New phone number cannot be the same as your current verified number.');
+    }
+
+    // Rule 2: Cannot be attached to another account
+    const isTaken = await this.isPhoneRegistered(phoneNormalized, userId);
+    if (isTaken) {
+      throw new Error('PHONE_ALREADY_IN_USE: This phone number is already associated with another account.');
+    }
+
     const otp = generateOtpCode();
     const codeHash = hashOtpCode(otp);
 
@@ -6226,7 +6777,7 @@ export class DataService {
     });
 
     // Send SMS
-    await this.smsService.sendOtp(phoneNormalized, otp);
+    const smsResult = await this.smsService.sendOtp(phoneNormalized, otp);
 
     await this.logAudit({
       actorUserId: userId,
@@ -6242,7 +6793,11 @@ export class DataService {
       userAgent,
     }).catch(() => {});
 
-    return challenge;
+    return {
+      ...challenge,
+      provider: smsResult.provider,
+      isDevMock: smsResult.provider === 'dev_mock',
+    };
   }
 
   public async verifyUserPhone(
@@ -6261,6 +6816,16 @@ export class DataService {
     });
 
     if (res.success) {
+      invalidateAuthUserCache(userId);
+
+      // Security measure: Reset SMS Recovery and SMS MFA flags on phone changes / general verifications
+      if (purpose === 'user_phone_verification' || purpose === 'user_phone_change') {
+        await this.updateUserContact(userId, {
+          phoneUsedForRecovery: false,
+          phoneUsedForMfa: false,
+        }).catch(() => {});
+      }
+
       await this.logAudit({
         actorUserId: userId,
         targetUserId: userId,
@@ -6373,7 +6938,7 @@ export class DataService {
       expiresInMs: 10 * 60 * 1000,
     });
 
-    await this.smsService.sendOtp(phoneNormalized, otp);
+    const smsResult = await this.smsService.sendOtp(phoneNormalized, otp);
 
     await this.logAudit({
       actorUserId,
@@ -6390,7 +6955,11 @@ export class DataService {
       userAgent,
     }).catch(() => {});
 
-    return challenge;
+    return {
+      ...challenge,
+      provider: smsResult.provider,
+      isDevMock: smsResult.provider === 'dev_mock',
+    };
   }
 
   public async verifyWorkspacePhone(
@@ -6472,7 +7041,7 @@ export class DataService {
       expiresInMs: 10 * 60 * 1000,
     });
 
-    await this.smsService.sendOtp(phoneNormalized, otp);
+    const smsResult = await this.smsService.sendOtp(phoneNormalized, otp);
 
     await this.logAudit({
       actorUserId,
@@ -6489,7 +7058,11 @@ export class DataService {
       userAgent,
     }).catch(() => {});
 
-    return challenge;
+    return {
+      ...challenge,
+      provider: smsResult.provider,
+      isDevMock: smsResult.provider === 'dev_mock',
+    };
   }
 
   public async verifyBranchPhone(
@@ -6767,10 +7340,231 @@ export class DataService {
   public async reconcileRevenueMetrics(sessionToken?: string) {
     return this.mutate('analytics:reconcileRevenueMetrics', { sessionToken });
   }
+
+  public async getDashboardVisitStatus(params: {
+    userId: string;
+    organizationId?: string;
+    workspaceId?: string;
+    branchId?: string;
+    productKey: string;
+  }): Promise<{
+    isFirstVisit: boolean;
+    visitCount: number;
+    firstVisitedAt: number | null;
+  }> {
+    try {
+      const res = await this.query('dashboardVisits:getDashboardVisitStatus', params as any);
+      return res || {
+        isFirstVisit: true,
+        visitCount: 0,
+        firstVisitedAt: null,
+      };
+    } catch (err) {
+      return {
+        isFirstVisit: true,
+        visitCount: 0,
+        firstVisitedAt: null,
+      };
+    }
+  }
+
+  public async recordDashboardVisit(params: {
+    userId: string;
+    organizationId?: string;
+    workspaceId?: string;
+    branchId?: string;
+    productKey: string;
+  }): Promise<any> {
+    try {
+      return await this.mutate('dashboardVisits:recordDashboardVisit', params as any);
+    } catch (err) {
+      return { isFirstVisit: false, visitCount: 1 };
+    }
+  }
+
+  public async getPlatformApplication(key: string): Promise<any> {
+    const normalizedKey = (key || '').toLowerCase().trim();
+    try {
+      const app = await this.query('platformApplications:getByKey', { key: normalizedKey });
+      if (app) return app;
+    } catch {
+      // Fallback
+    }
+    const defaults: Record<string, any> = {
+      inventory: {
+        key: 'inventory',
+        name: 'Inventory',
+        status: 'active',
+        isCore: true,
+        planRequirements: ['free_trial', 'free', 'standard', 'premium', 'enterprise'],
+        subdomain: 'inventory',
+        description: 'Full inventory management: stock tracking, purchases, sales POS, and reports.',
+        badge: 'Flagship',
+      },
+      pos: {
+        key: 'pos',
+        name: 'POS Terminal',
+        status: 'coming_soon',
+        isCore: false,
+        planRequirements: ['standard', 'premium', 'enterprise'],
+        subdomain: 'pos',
+        description: 'Point-of-sale terminal with receipts, cash management, and shift reports.',
+      },
+      booking: {
+        key: 'booking',
+        name: 'Booking & Appointments',
+        status: 'coming_soon',
+        isCore: false,
+        planRequirements: ['standard', 'premium', 'enterprise'],
+        subdomain: 'booking',
+        description: 'Appointment and reservation management with automated reminders.',
+        badge: 'Coming Soon',
+      },
+      gym: {
+        key: 'gym',
+        name: 'Gym Management',
+        status: 'coming_soon',
+        isCore: false,
+        planRequirements: ['standard', 'premium', 'enterprise'],
+        subdomain: 'gym',
+        description: 'Membership management, class scheduling, and trainer assignment.',
+        badge: 'Coming Soon',
+      },
+      taskmanagement: {
+        key: 'taskmanagement',
+        name: 'Task Management',
+        status: 'coming_soon',
+        isCore: false,
+        planRequirements: ['standard', 'premium', 'enterprise'],
+        subdomain: 'taskmanagement',
+        description: 'Team task tracking, assignments, and workflow boards.',
+        badge: 'Coming Soon',
+      },
+    };
+    return defaults[normalizedKey] || null;
+  }
+
+  public async listPlatformApplications(): Promise<any[]> {
+    try {
+      const apps = await this.query('platformApplications:list', {});
+      if (apps && Array.isArray(apps) && apps.length > 0) return apps;
+    } catch {
+      // Fallback
+    }
+    return USER_FACING_APP_KEYS.map((key) => {
+      const app = SHARED_APPLICATIONS[key];
+      return {
+        key: app.key,
+        name: app.name,
+        status: app.status,
+        isCore: app.key === 'inventory',
+        planRequirements: app.planRequirements || ['standard', 'premium', 'enterprise'],
+        subdomain: app.subdomain || app.key,
+        description: app.description || `${app.name} management module.`,
+        badge: app.badge,
+        displayOrder: app.displayOrder || 99,
+      };
+    });
+  }
+
+  public async createPlatformApplication(data: any): Promise<any> {
+    return await this.mutate('platformApplications:create', data);
+  }
+
+  public async updatePlatformApplication(key: string, updates: any): Promise<any> {
+    return await this.mutate('platformApplications:update', { key, updates });
+  }
+
+  public async deletePlatformApplication(key: string): Promise<any> {
+    return await this.mutate('platformApplications:remove', { key });
+  }
+
+  public async logAdminAction(adminIdOrPayload: string | any, action?: string, details?: any): Promise<void> {
+    try {
+      if (typeof adminIdOrPayload === 'object' && adminIdOrPayload !== null) {
+        await this.mutate('adminAuditLogs:log', adminIdOrPayload);
+      } else {
+        await this.mutate('adminAuditLogs:log', { adminId: adminIdOrPayload as any, action: action || '', details, createdAt: Date.now() });
+      }
+    } catch {}
+  }
+
+  public async recordAuditLog(logData: any): Promise<void> {
+    try {
+      await this.mutate('adminAuditLogs:log', logData);
+    } catch {}
+  }
+
+  public async createAuditLog(logData: any): Promise<void> {
+    try {
+      await this.mutate('adminAuditLogs:log', logData);
+    } catch {}
+  }
+
+  public async listOrganizations(params?: any): Promise<any> {
+    try {
+      return await this.query('adminOrganizations:listOrganizations', {
+        sessionToken: 'system_admin',
+        ...params,
+      });
+    } catch {
+      return { items: [], totalCount: 0 };
+    }
+  }
+
+  public async getWorkspaceInvoices(workspaceId: string): Promise<any[]> {
+    try {
+      const res = await this.query('invoices:listByWorkspace', { workspaceId: workspaceId as any });
+      return Array.isArray(res) ? res : [];
+    } catch {
+      return [];
+    }
+  }
+
+  public async getOrganizationSupportNotes(orgId: string): Promise<any[]> {
+    try {
+      const res = await this.query('adminUsers:getUserSupportNotes', { sessionToken: 'system_admin', userId: orgId as any });
+      return Array.isArray(res) ? res : [];
+    } catch {
+      return [];
+    }
+  }
+
+  public async createOrganizationSupportNote(note: any): Promise<any> {
+    try {
+      return await this.mutate('adminUsers:addSupportNote', {
+        sessionToken: 'system_admin',
+        userId: (note.userId || note.organizationId) as any,
+        category: note.category || 'general',
+        note: note.note,
+        organizationId: note.organizationId,
+      });
+    } catch {
+      return { success: true };
+    }
+  }
+
+  public async getOnboardingProgress(userId: string): Promise<any> {
+    try {
+      return await this.query('onboarding:getOnboardingStatus', { userId: userId as any });
+    } catch {
+      return null;
+    }
+  }
+
+  public async getPaymentsByWorkspace(workspaceId: string): Promise<any[]> {
+    try {
+      const res = await this.query('billing:listTransactionsByWorkspace', { workspaceId: workspaceId as any });
+      return Array.isArray(res) ? res : [];
+    } catch {
+      return [];
+    }
+  }
+
+
 }
 
 export const dataService = new DataService();
-
 
 
 

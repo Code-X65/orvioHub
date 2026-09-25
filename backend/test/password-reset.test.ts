@@ -13,6 +13,15 @@ describe('Password Reset and Change Password Flow Test Suite', () => {
 
   beforeEach(async () => {
     app = await buildApp();
+    dataService.getUserById = async (id: string) => ({
+      id,
+      email: 'user@example.com',
+      name: 'Test User',
+      emailVerified: true,
+      tokenVersion: 1,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
   });
 
   afterEach(() => {
@@ -80,7 +89,7 @@ describe('Password Reset and Change Password Flow Test Suite', () => {
       url: '/api/v1/auth/reset-password',
       payload: {
         token: 'valid-reset-token-12345',
-        password: 'NewSecurePassword123!',
+        password: 'UniqueResetPass987!$',
       },
     });
 
@@ -89,7 +98,7 @@ describe('Password Reset and Change Password Flow Test Suite', () => {
     assert.equal(body.success, true);
     assert.equal(body.data.user.email, 'user@example.com');
     assert.equal(resetArgs?.token, 'valid-reset-token-12345');
-    assert.equal(resetArgs?.password, 'NewSecurePassword123!');
+    assert.equal(resetArgs?.password, 'UniqueResetPass987!$');
   });
 
   test('4. Reset password rejects invalid / non-existent token', async () => {
@@ -104,7 +113,7 @@ describe('Password Reset and Change Password Flow Test Suite', () => {
       url: '/api/v1/auth/reset-password',
       payload: {
         token: 'invalid-token-12345',
-        password: 'NewSecurePassword123!',
+        password: 'UniqueResetPass987!$',
       },
     });
 
@@ -126,7 +135,7 @@ describe('Password Reset and Change Password Flow Test Suite', () => {
       url: '/api/v1/auth/reset-password',
       payload: {
         token: 'expired-token-12345',
-        password: 'NewSecurePassword123!',
+        password: 'UniqueResetPass987!$',
       },
     });
 
@@ -239,5 +248,147 @@ describe('Password Reset and Change Password Flow Test Suite', () => {
     const body = JSON.parse(res.payload);
     assert.equal(body.success, false);
     assert.equal(body.error.code, ERROR_CODES.INVALID_CREDENTIALS);
+  });
+
+  test('10. Reset password rejects previously used password', async () => {
+    dataService.resetPassword = async () => {
+      const err: Error & { code?: string } = new Error('Your new password cannot be the same as your previous password.');
+      err.code = 'PASSWORD_REUSED';
+      throw err;
+    };
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/reset-password',
+      payload: {
+        token: 'valid-reset-token-12345',
+        password: 'SameOldPassword123!',
+      },
+    });
+
+    assert.equal(res.statusCode, 400);
+    const body = JSON.parse(res.payload);
+    assert.equal(body.success, false);
+    assert.equal(body.error.code, ERROR_CODES.PASSWORD_REUSED);
+  });
+
+  test('11. Change password rejects previously used password', async () => {
+    dataService.getUserById = async (id: string) => ({
+      id,
+      email: 'user@example.com',
+      name: 'Test User',
+      emailVerified: true,
+      status: 'ACTIVE',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+
+    dataService.changePassword = async () => {
+      const err: Error & { code?: string } = new Error('Your new password cannot be the same as your current password.');
+      err.code = 'PASSWORD_REUSED';
+      throw err;
+    };
+
+    const token = app.jwt.sign({ userId: 'user_mock_123', email: 'user@example.com' });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/change-password',
+      headers: {
+        authorization: `Bearer ${token}`,
+      },
+      payload: {
+        currentPassword: 'CurrentPassword123!',
+        newPassword: 'CurrentPassword123!',
+      },
+    });
+
+    assert.equal(res.statusCode, 400);
+    const body = JSON.parse(res.payload);
+    assert.equal(body.success, false);
+    assert.equal(body.error.code, ERROR_CODES.PASSWORD_REUSED);
+  });
+
+  test('12. Change password enforces step-up 2FA code verification', async () => {
+    dataService.getUserById = async (id: string) => ({
+      id,
+      email: 'user@example.com',
+      name: 'Test User',
+      emailVerified: true,
+      status: 'ACTIVE',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+
+    dataService.changePassword = async (_userId, _current, _newPass, _session, twoFactorCode) => {
+      if (!twoFactorCode) {
+        const err: Error & { code?: string } = new Error('Two-factor verification code is required to change password.');
+        err.code = 'STEP_UP_AUTH_REQUIRED';
+        throw err;
+      }
+      if (twoFactorCode !== '123456') {
+        const err: Error & { code?: string } = new Error('Invalid two-factor authentication code.');
+        err.code = 'INVALID_2FA_CODE';
+        throw err;
+      }
+      return { success: true };
+    };
+
+    const token = app.jwt.sign({ userId: 'user_mock_123', email: 'user@example.com' });
+
+    // Missing 2FA code
+    const resNo2fa = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/change-password',
+      headers: {
+        authorization: `Bearer ${token}`,
+      },
+      payload: {
+        currentPassword: 'CurrentPassword123!',
+        newPassword: 'BrandNewPassword123!',
+      },
+    });
+
+    assert.equal(resNo2fa.statusCode, 400);
+    const bodyNo2fa = JSON.parse(resNo2fa.payload);
+    assert.equal(bodyNo2fa.success, false);
+    assert.equal(bodyNo2fa.error.code, ERROR_CODES.STEP_UP_AUTH_REQUIRED);
+
+    // Invalid 2FA code
+    const resInvalid2fa = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/change-password',
+      headers: {
+        authorization: `Bearer ${token}`,
+      },
+      payload: {
+        currentPassword: 'CurrentPassword123!',
+        newPassword: 'BrandNewPassword123!',
+        twoFactorCode: '000000',
+      },
+    });
+
+    assert.equal(resInvalid2fa.statusCode, 400);
+    const bodyInvalid2fa = JSON.parse(resInvalid2fa.payload);
+    assert.equal(bodyInvalid2fa.success, false);
+    assert.equal(bodyInvalid2fa.error.code, ERROR_CODES.INVALID_2FA_CODE);
+
+    // Valid 2FA code
+    const resValid2fa = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/change-password',
+      headers: {
+        authorization: `Bearer ${token}`,
+      },
+      payload: {
+        currentPassword: 'CurrentPassword123!',
+        newPassword: 'BrandNewPassword123!',
+        twoFactorCode: '123456',
+      },
+    });
+
+    assert.equal(resValid2fa.statusCode, 200);
+    const bodyValid2fa = JSON.parse(resValid2fa.payload);
+    assert.equal(bodyValid2fa.success, true);
   });
 });

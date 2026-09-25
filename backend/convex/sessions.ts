@@ -500,3 +500,60 @@ export const getSessionById = query({
   },
 });
 
+export const getSessionStats = query({
+  args: {},
+  handler: async (ctx) => {
+    const now = Date.now();
+    const sessions = await ctx.db.query("sessions").collect();
+    const activeSessions = sessions.filter((s) => !s.revokedAt && s.expiresAt > now);
+
+    const totalActiveSessions = activeSessions.length;
+    const sessionsByDeviceType: Record<string, number> = {};
+    const sessionsByApplication: Record<string, number> = {};
+    let totalAgeMs = 0;
+    let staleSessionsCount = 0;
+    const twoHoursAgo = now - 2 * 60 * 60 * 1000;
+
+    for (const s of activeSessions) {
+      // Device classification
+      const ua = (s.userAgent || "").toLowerCase();
+      let device = "desktop";
+      if (ua.includes("mobile") || ua.includes("android") || ua.includes("iphone")) {
+        device = "mobile";
+      } else if (ua.includes("ipad") || ua.includes("tablet")) {
+        device = "tablet";
+      } else if (s.deviceName) {
+        device = s.deviceName.toLowerCase();
+      }
+      sessionsByDeviceType[device] = (sessionsByDeviceType[device] || 0) + 1;
+
+      // Application / subdomain classification
+      const app = s.lastVisitedSubdomain || "root";
+      sessionsByApplication[app] = (sessionsByApplication[app] || 0) + 1;
+
+      // Age calculation
+      const sessionStart = s.createdAt || (s as any)._creationTime || now;
+      totalAgeMs += Math.max(0, now - sessionStart);
+
+      // Stale sessions (no activity for > 2 hours)
+      const lastActive = s.lastActiveAt || sessionStart;
+      if (lastActive < twoHoursAgo) {
+        staleSessionsCount++;
+      }
+    }
+
+    const averageSessionAgeMinutes =
+      totalActiveSessions > 0 ? Math.round(totalAgeMs / (totalActiveSessions * 60 * 1000)) : 0;
+
+    return {
+      totalActiveSessions,
+      sessionsByDeviceType,
+      sessionsByApplication,
+      averageSessionAgeMinutes,
+      staleSessionsCount,
+      generatedAt: now,
+    };
+  },
+});
+
+

@@ -4,6 +4,7 @@ import { dataService } from '../services/dataService.js';
 import { entitlementService } from '../services/entitlementService.js';
 import { ERROR_CODES, ROLES } from '../config/constants.js';
 import { requireVerifiedEmail } from '../middleware/rbac.js';
+import { attachAutomaticCacheInvalidation } from '../utils/cacheHeaders.js';
 
 const createOrgSchema = z.object({
   name: z.string().min(2, 'Organization name must be at least 2 characters'),
@@ -94,6 +95,7 @@ const inviteTeamSchema = z.union([
 export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
   // All org routes require authentication
   fastify.addHook('preHandler', fastify.authenticate);
+  attachAutomaticCacheInvalidation(fastify, 'organizations');
 
   // GET /api/v1/organizations
   fastify.get(
@@ -273,6 +275,19 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
         await dataService.updateProfile(request.user.id, { personalOnboardingCompleted: true } as any);
       } catch {}
 
+      const createdOrgId = result.organization.id || (result.organization as any)._id;
+      await dataService.logAudit({
+        action: 'organization.created',
+        organizationId: createdOrgId,
+        userId: request.user.id,
+        details: {
+          name: parsed.data.name,
+          industry: effectiveIndustry,
+          country: parsed.data.country,
+          planId: parsed.data.planId,
+        },
+      }).catch(() => {});
+
       return reply.status(result.isDuplicate ? 200 : 201).send({
         success: true,
         data: {
@@ -363,6 +378,18 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
         try {
           await dataService.updateProfile(request.user.id, { personalOnboardingCompleted: true } as any);
         } catch {}
+
+        await dataService.logAudit({
+          action: 'organization.created',
+          organizationId: result.organizationId,
+          userId: request.user.id,
+          details: {
+            name: body.name,
+            category: body.category,
+            country: body.country || 'Nigeria',
+            businessType: body.businessType,
+          },
+        }).catch(() => {});
 
         return reply.status(201).send({
           success: true,
@@ -464,6 +491,18 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
           await dataService.updateProfile(request.user.id, { personalOnboardingCompleted: true } as any);
         } catch {}
 
+        await dataService.logAudit({
+          action: 'organization.created',
+          organizationId: result.organizationId,
+          userId: request.user.id,
+          details: {
+            name: body.name,
+            category: body.category,
+            country: body.country || 'Nigeria',
+            planKey,
+          },
+        }).catch(() => {});
+
         return reply.status(201).send({
           success: true,
           data: result,
@@ -503,14 +542,47 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
         tags: ['Organizations'],
         summary: 'Get all organizations for current user with onboarding status and branch counts',
         security: [{ bearerAuth: [] }],
+        querystring: {
+          type: 'object',
+          properties: {
+            includeApps: {
+              type: 'string',
+              enum: ['true', 'false'],
+              description: 'When true, augments each org with activeApplications[] and a corrected hasActiveApps field (one extra query per org).',
+            },
+          },
+        },
       },
     },
     async (request, reply) => {
       const orgs = await dataService.getMyOrganizations(request.user.id);
-      return reply.send({
-        success: true,
-        data: orgs,
-      });
+      const query = request.query as { includeApps?: string };
+
+      if (query.includeApps === 'true' && Array.isArray(orgs)) {
+        const enriched = await Promise.all(
+          orgs.map(async (org: any) => {
+            try {
+              const orgId: string = org._id || org.id;
+              const apps: any[] = await dataService.getOrganizationApps(orgId);
+              const activeApps = Array.isArray(apps)
+                ? apps.filter((a: any) => a.status === 'active' || a.isActivated === true)
+                : [];
+              const activeApplications = activeApps.map((a: any) => a.key || a.applicationKey).filter(Boolean);
+              return {
+                ...org,
+                activeApplications,
+                hasActiveApps: activeApplications.length > 0,
+              };
+            } catch {
+              // If enrichment fails for one org, return original rather than failing the whole request
+              return org;
+            }
+          })
+        );
+        return reply.send({ success: true, data: enriched });
+      }
+
+      return reply.send({ success: true, data: orgs });
     }
   );
 
@@ -577,6 +649,72 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
         needsMultiBranch: body.needsMultiBranch,
         teamComfortLevel: body.teamComfortLevel,
       });
+
+      return reply.send({
+        success: true,
+        data: result,
+      });
+    }
+  );
+
+  // POST /api/v1/organizations/:organizationId/inventory-onboarding/skip
+  fastify.post(
+    '/:organizationId/inventory-onboarding/skip',
+    {
+      schema: {
+        tags: ['Organizations'],
+        summary: 'Skip inventory onboarding questionnaire',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as { organizationId: string };
+      try {
+        await dataService.saveInventoryOnboarding({
+          organizationId,
+          userId: request.user.id,
+          previousTools: [],
+          painPoints: [],
+          priorityFeatures: [],
+          teamComfortLevel: 'somewhat',
+        });
+      } catch {}
+
+      return reply.send({
+        success: true,
+        message: 'Inventory onboarding skipped successfully.',
+      });
+    }
+  );
+
+  // POST /api/v1/organizations/:organizationId/inventory-onboarding/complete (US-2 / Gap 9)
+  fastify.post(
+    '/:organizationId/inventory-onboarding/complete',
+    {
+      schema: {
+        tags: ['Organizations'],
+        summary: 'Mark inventory onboarding and branch setup as completed (US-2 / Gap 9)',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as { organizationId: string };
+      const body = (request.body || {}) as { branchId?: string };
+
+      const result = await dataService.completeInventoryOnboarding(
+        organizationId,
+        body.branchId,
+        request.user?.id
+      );
+
+      await dataService.logAudit({
+        action: 'inventory.onboarding_completed',
+        organizationId,
+        userId: request.user?.id || 'system',
+        details: {
+          branchId: body.branchId,
+        },
+      }).catch(() => {});
 
       return reply.send({
         success: true,
@@ -688,7 +826,10 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
         paymentGateway?: string;
       };
 
-      if (applicationKey.toLowerCase() !== 'inventory') {
+      // Consult the shared application registry — isActivatable is the canonical gate.
+      // To enable a new app: set isActivatable: true in shared/src/applications.ts.
+      const appDef = await dataService.getPlatformApplication(applicationKey);
+      if (!appDef || appDef.status !== 'active') {
         return reply.status(404).send({
           success: false,
           error: {
@@ -698,16 +839,32 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
+      const requestedPlan = body.planKey || 'free_trial';
+      if (appDef.planRequirements?.length && !appDef.planRequirements.includes(requestedPlan)) {
+        return reply.status(403).send({ success: false, error: { code: 'APP_NOT_ALLOWED_ON_PLAN', message: `This application is not available on the ${requestedPlan} plan.` } });
+      }
+
       try {
         const result = await dataService.activateApplication({
           organizationId,
           applicationKey,
-          planKey: body.planKey || 'free_trial',
+          planKey: requestedPlan,
           billingCycle: body.billingCycle,
           paymentReference: body.paymentReference,
           paymentGateway: body.paymentGateway,
           userId: request.user?.id,
         });
+
+        await dataService.logAudit({
+          action: 'application.activated',
+          organizationId,
+          userId: request.user?.id || 'system',
+          details: {
+            applicationKey,
+            planKey: requestedPlan,
+            billingCycle: body.billingCycle,
+          },
+        }).catch(() => {});
 
         return reply.status(200).send({
           success: true,
@@ -788,6 +945,17 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
         organizationId: string;
         applicationKey: string;
       };
+
+      const app = await dataService.getPlatformApplication(applicationKey);
+      if (app?.isCore) {
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: 'CORE_APP_PROTECTED',
+            message: `${app.name} is a core application and cannot be deactivated.`,
+          },
+        });
+      }
 
       try {
         const result = await dataService.deactivateApplication({
@@ -949,6 +1117,25 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
       };
 
       const status = await dataService.isApplicationActiveForOrg(organizationId, applicationKey);
+
+      if (applicationKey.toLowerCase() === 'inventory') {
+        const [onboardRes, accessRes] = await Promise.all([
+          dataService.getInventoryOnboardingStatus(organizationId).catch(() => null),
+          dataService.checkUserAppAccess(organizationId, request.user.id, 'inventory').catch(() => null),
+        ]);
+        return reply.send({
+          success: true,
+          data: {
+            active: status?.active ?? false,
+            status: status?.status || (status?.active ? 'active' : 'inactive'),
+            onboardingCompleted: onboardRes?.completed ?? false,
+            access: {
+              allowed: accessRes?.allowed ?? true,
+              reason: accessRes?.reason,
+            },
+          },
+        });
+      }
 
       return reply.send({
         success: true,
@@ -1833,28 +2020,51 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
 
       const workspaces = await dataService.getOrganizationWorkspaces(id);
       let wsId: string | undefined = undefined;
-      if (workspaces && workspaces.length > 0) {
-        const primaryWs = workspaces[0];
-        const resolvedWsId: string = primaryWs._id || primaryWs.id;
-        wsId = resolvedWsId;
-        const entitlement = await entitlementService.checkBranchCreationEntitlement(
-          resolvedWsId,
-          request.user.id
-        );
+      if (!workspaces || workspaces.length === 0) {
+        // No workspace means no active subscription — block branch creation entirely
+        // rather than silently skipping the limit check.
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: 'BRANCH_LIMIT_REACHED',
+            message: 'No active subscription found for this organization. Please complete onboarding before creating branches.',
+            upgradeRequired: true,
+          },
+        });
+      }
+      const primaryWs = workspaces[0];
+      const resolvedWsId: string = primaryWs._id || primaryWs.id;
+      wsId = resolvedWsId;
+      const entitlement = await entitlementService.checkBranchCreationEntitlement(
+        resolvedWsId,
+        request.user.id
+      );
 
-        if (!entitlement.allowed) {
-          return reply.status(403).send({
-            success: false,
-            error: {
-              code: 'BRANCH_LIMIT_REACHED',
-              message: entitlement.error || 'You have reached the maximum branches allowed by your plan.',
-              current: entitlement.current,
-              limit: entitlement.limit,
-              planKey: entitlement.planKey,
-              upgradeRequired: true,
-            },
-          });
-        }
+      if (!entitlement.allowed) {
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: 'BRANCH_LIMIT_REACHED',
+            message: entitlement.error || 'You have reached the maximum branches allowed by your plan.',
+            current: entitlement.current,
+            limit: entitlement.limit,
+            planKey: entitlement.planKey,
+            upgradeRequired: true,
+          },
+        });
+      }
+
+
+      const appKey = (body.applicationKey || 'inventory').toLowerCase();
+      const appStatus = await dataService.isApplicationActiveForOrg(id, appKey).catch(() => null);
+      if (!appStatus || !appStatus.active) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: 'APPLICATION_NOT_ACTIVATED',
+            message: `Application "${appKey}" is not activated for this organization. Please activate the application first.`,
+          },
+        });
       }
 
       try {
@@ -1863,7 +2073,7 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
           branchResult = await dataService.createBranchForApplication({
             organizationId: id,
             applicationId: body.applicationId,
-            applicationKey: body.applicationKey,
+            applicationKey: appKey,
             name: body.name,
             code: body.code,
             address: body.address || body.formattedAddress,
@@ -1876,6 +2086,7 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
           branchResult = await dataService.createBranch({
             organizationId: id,
             workspaceId: wsId,
+            applicationKey: appKey,
             callerUserId: request.user.id,
             name: body.name,
             code: body.code,
@@ -1891,6 +2102,19 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
           typeof branchResult === 'string'
             ? branchResult
             : branchResult?.branchId || branchResult?._id || branchResult?.id;
+
+        await dataService.logAudit({
+          action: 'branch.created',
+          organizationId: id,
+          userId: request.user.id,
+          details: {
+            branchId: bId,
+            name: body.name,
+            code: body.code,
+            isPrimary: body.isPrimary,
+            applicationKey: appKey,
+          },
+        }).catch(() => {});
 
         return reply.status(201).send({
           success: true,
@@ -2668,6 +2892,132 @@ export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
             error: {
               code: ERROR_CODES.INVITATION_NOT_FOUND,
               message: 'Invitation not found.',
+            },
+          });
+        }
+        throw err;
+      }
+    }
+  );
+
+  // GET /api/v1/organizations/:id/share-link
+  fastify.get(
+    '/:id/share-link',
+    {
+      schema: {
+        tags: ['Organizations'],
+        summary: 'Get active shareable invite link for an organization',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      try {
+        const link = await dataService.getActiveShareableInviteLink(id, request.user.id);
+        return reply.send({
+          success: true,
+          data: link,
+        });
+      } catch (err: any) {
+        if (err.message === 'ORGANIZATION_ACCESS_DENIED') {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.ORGANIZATION_ACCESS_DENIED,
+              message: 'Only Organization Owners and Admins can view invite links.',
+            },
+          });
+        }
+        throw err;
+      }
+    }
+  );
+
+  // POST /api/v1/organizations/:id/share-link
+  fastify.post(
+    '/:id/share-link',
+    {
+      schema: {
+        tags: ['Organizations'],
+        summary: 'Generate or regenerate shareable invite link for an organization',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = (request.body as { role?: any; expiresInDays?: number; regenerate?: boolean }) || {};
+      try {
+        const result = await dataService.generateShareableInviteLink(
+          id,
+          request.user.id,
+          body.role || 'MEMBER',
+          body.expiresInDays
+        );
+        return reply.send({
+          success: true,
+          data: result,
+        });
+      } catch (err: any) {
+        if (err.message === 'ORGANIZATION_ACCESS_DENIED') {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.ORGANIZATION_ACCESS_DENIED,
+              message: 'Only Organization Owners and Admins can generate invite links.',
+            },
+          });
+        }
+        throw err;
+      }
+    }
+  );
+
+  // DELETE /api/v1/organizations/:id/share-link
+  fastify.delete(
+    '/:id/share-link',
+    {
+      schema: {
+        tags: ['Organizations'],
+        summary: 'Revoke active shareable invite link for an organization',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      try {
+        await dataService.revokeShareableInviteLinks(id, request.user.id);
+        return reply.send({
+          success: true,
+          message: 'Shareable invite link revoked successfully.',
+        });
+      } catch (err: any) {
+        if (err.message === 'ORGANIZATION_ACCESS_DENIED') {
+          return reply.status(403).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.ORGANIZATION_ACCESS_DENIED,
+              message: 'Only Organization Owners and Admins can revoke invite links.',
             },
           });
         }

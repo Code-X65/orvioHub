@@ -16,11 +16,15 @@ export interface JwtPayload {
   is2faPending?: boolean;
   accessLevel?: 'full' | 'verification_required';
   status?: string;
+  iss?: string;
+  aud?: string;
+  iat?: number;
 }
 
 declare module 'fastify' {
   interface FastifyInstance {
     authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    authenticateOptional: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
   }
   interface FastifyRequest {
     sessionId?: string;
@@ -78,8 +82,20 @@ const plugin: FastifyPluginAsync = async (fastify) => {
       // 7 days — matches the orvio_session cookie maxAge so the wildcard
       // cookie remains valid across all subdomains for the full session lifetime.
       expiresIn: '7d',
+      iss: 'orviohub',
+      aud: 'orviohub-app',
     },
   });
+
+  // Ensure any sign call automatically includes standard claims
+  const originalSign = fastify.jwt.sign.bind(fastify.jwt);
+  fastify.jwt.sign = ((payload: any, options?: any) => {
+    return originalSign(payload, {
+      iss: 'orviohub',
+      aud: 'orviohub-app',
+      ...options,
+    });
+  }) as typeof fastify.jwt.sign;
 
   fastify.decorate(
     'authenticate',
@@ -150,8 +166,10 @@ const plugin: FastifyPluginAsync = async (fastify) => {
           return reply.status(401).send({
             success: false,
             error: {
-              code: ERROR_CODES.UNAUTHENTICATED,
-              message: 'Session has been invalidated. Please sign in again.',
+              code: ERROR_CODES.TOKEN_VERSION_MISMATCH,
+              reason: 'PASSWORD_OR_SECURITY_RESET',
+              message: 'Your session was terminated because your password or security credentials were changed. Please sign in again.',
+              reauthenticateRequired: true,
             },
           });
         }
@@ -190,6 +208,29 @@ const plugin: FastifyPluginAsync = async (fastify) => {
                 },
               });
             }
+
+            // Anomaly & device risk evaluation
+            const risk = dataService.evaluateSessionRisk(session, request.headers['user-agent'], request.ip);
+            if (risk.anomalous) {
+              await dataService.logAudit({
+                actorUserId: user.id,
+                eventType: 'auth:session_anomaly_detected',
+                severity: 'warning',
+                ipAddress: request.ip,
+                userAgent: request.headers['user-agent'],
+                metadata: {
+                  sessionId: session.sessionId || decoded.sessionId,
+                  riskScore: risk.riskScore,
+                  reason: risk.reason,
+                },
+              });
+            }
+
+            // Update session activity (debounced at most once per 60s per session)
+            const targetSessionId = session.sessionId || (session as any)._id || decoded.sessionId;
+            if (targetSessionId) {
+              dataService.touchSessionActivity(String(targetSessionId)).catch(() => {});
+            }
           }
         }
 
@@ -208,6 +249,7 @@ const plugin: FastifyPluginAsync = async (fastify) => {
             cleanUrl.endsWith('/auth/session') ||
             cleanUrl.endsWith('/auth/me') ||
             cleanUrl.endsWith('/auth/logout') ||
+            cleanUrl.includes('/phone/verification/') ||
             cleanUrl.endsWith('/health');
 
           if (!isAllowedPendingRoute) {
@@ -236,6 +278,21 @@ const plugin: FastifyPluginAsync = async (fastify) => {
           },
         });
       }
+    }
+  );
+
+  fastify.decorate(
+    'authenticateOptional',
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const authHeader = request.headers.authorization;
+      const hasSessionCookie = Boolean(request.cookies?.session || request.cookies?.orvio_session);
+
+      if (!authHeader && !hasSessionCookie) {
+        // No credentials provided; allow unauthenticated access through
+        return;
+      }
+
+      return fastify.authenticate(request, reply);
     }
   );
 };
