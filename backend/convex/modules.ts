@@ -1,7 +1,9 @@
 import { query, mutation } from "./_generated/server.js";
 import { v } from "convex/values";
 
-export const AVAILABLE_MODULES = [
+// These are internal organization feature modules, not launchable products.
+// Product discovery/activation is exclusively backed by the products table.
+export const SUPPORTED_ORGANIZATION_MODULES = [
   "customers",
   "sales",
   "inventory",
@@ -10,12 +12,12 @@ export const AVAILABLE_MODULES = [
   "projects",
 ] as const;
 
-export type ModuleId = (typeof AVAILABLE_MODULES)[number];
+export type ModuleId = (typeof SUPPORTED_ORGANIZATION_MODULES)[number];
 
 export const getAvailableModules = query({
   args: {},
   handler: async () => {
-    return AVAILABLE_MODULES.map((id) => ({
+    return SUPPORTED_ORGANIZATION_MODULES.map((id) => ({
       id,
       name: id.charAt(0).toUpperCase() + id.slice(1),
       description: `${id.charAt(0).toUpperCase() + id.slice(1)} management module`,
@@ -56,7 +58,7 @@ export const selectModules = mutation({
 
     // 2. Validate modules against whitelist
     const invalidModules = args.modules.filter(
-      (mod: string) => !AVAILABLE_MODULES.includes(mod as ModuleId)
+      (mod: string) => !SUPPORTED_ORGANIZATION_MODULES.includes(mod as ModuleId)
     );
     if (invalidModules.length > 0) {
       throw new Error("INVALID_MODULE");

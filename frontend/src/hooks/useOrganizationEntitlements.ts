@@ -1,5 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { handleApiError } from '@/lib/error-handler';
+import { createQueryKey } from '@/lib/react-query-adapter';
 
 export interface MetricItem {
   current: number;
@@ -32,37 +34,31 @@ export interface OrganizationUsageSummary {
   subscription?: any;
 }
 
+export const createOrgUsageQueryKey = (organizationId?: string | null) =>
+  createQueryKey('/organizations/usage/summary', { organizationId: organizationId || '' });
+
 export function useOrganizationEntitlements(organizationId?: string | null) {
-  const [summary, setSummary] = useState<OrganizationUsageSummary | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(Boolean(organizationId));
-  const [error, setError] = useState<string | null>(null);
+  const queryKey = createOrgUsageQueryKey(organizationId);
 
-  const fetchUsage = useCallback(async (bypassCache = false) => {
-    if (!organizationId) {
-      setSummary(null);
-      setIsLoading(false);
-      return;
-    }
-
-    try {
-      const res = await api.get<{ success: boolean; data: OrganizationUsageSummary }>(
-        `/organizations/${organizationId}/usage/summary`,
-        { bypassCache, cacheTtlMs: 15000 }
-      );
-      if (res?.data) {
-        setSummary(res.data);
+  const query = useQuery({
+    queryKey,
+    queryFn: async () => {
+      if (!organizationId) return null;
+      try {
+        return await api.get<OrganizationUsageSummary>(
+          `/organizations/${organizationId}/usage/summary`,
+          { cacheTtlMs: 15000 }
+        );
+      } catch (err) {
+        handleApiError(err, 'fetch organization usage summary', { showError: false });
+        throw err;
       }
-    } catch (err: any) {
-      setError(err?.message || 'Failed to fetch usage quotas.');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [organizationId]);
+    },
+    enabled: Boolean(organizationId),
+    staleTime: 1000 * 30, // 30 seconds
+  });
 
-  useEffect(() => {
-    fetchUsage();
-  }, [fetchUsage]);
-
+  const summary = query.data || null;
   const planKey = (summary?.subscription?.activePlan || summary?.planKey || 'free_trial').toLowerCase();
   const isTrial = planKey === 'free' || planKey === 'free_trial' || planKey === 'trial';
   const isStandard = planKey === 'standard';
@@ -81,9 +77,8 @@ export function useOrganizationEntitlements(organizationId?: string | null) {
     warningMessage: summary?.warningMessage,
     hasApproachingLimits: Boolean(summary?.hasApproachingLimits),
     hasExceededLimits: Boolean(summary?.hasExceededLimits),
-    isLoading,
-    error,
-    refetch: () => fetchUsage(true),
+    isLoading: Boolean(organizationId) && query.isLoading,
+    error: query.error ? (query.error as Error).message : null,
+    refetch: () => query.refetch(),
   };
 }
-

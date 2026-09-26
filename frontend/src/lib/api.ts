@@ -1,13 +1,8 @@
-import { getApiUrl, getLoginUrl, type Environment } from "@orviohub/shared";
-import type { APIResponse } from "./types";
+import { API_ORIGIN, API_BASE_URL } from "./config";
+import { authManager } from "./auth-manager";
+import { LRUCache } from "./lru-cache";
 
-const defaultEnv: Environment = import.meta.env?.PROD ? "production" : "development";
-const rawApiUrl =
-  (import.meta.env?.VITE_API_URL as string) ||
-  (import.meta.env?.PROD ? getApiUrl(defaultEnv) : "");
-
-export const API_ORIGIN = rawApiUrl.replace(/\/$/, "");
-export const API_BASE_URL = `${API_ORIGIN}/api/v1`;
+export { API_ORIGIN, API_BASE_URL };
 
 export class ApiError extends Error {
   public code: string;
@@ -36,73 +31,56 @@ export async function toApiError(res: Response): Promise<ApiError> {
   }
 }
 
-/**
- * Creates an environment-aware API client.
- */
-export function createApiClient(environment: Environment) {
-  const base = getApiUrl(environment).replace(/\/$/, "");
+let queryInvalidator: ((pattern?: string | RegExp) => void) | null = null;
 
-  return async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const cleanPath = path.startsWith("/") ? path : `/${path}`;
-    const fullUrl = `${base}${cleanPath.startsWith("/api") ? cleanPath : `/api/v1${cleanPath}`}`;
-
-    const res = await fetch(fullUrl, {
-      ...init,
-      credentials: "include", // required for session cookies across subdomains
-      headers: { "Content-Type": "application/json", ...init.headers },
-    });
-
-    if (res.status === 401) {
-      // Redirect to central auth, preserving the current location.
-      window.location.assign(getLoginUrl(window.location.href, environment));
-      throw new Error("Unauthenticated");
-    }
-
-    if (!res.ok) throw await toApiError(res);
-    return res.json() as Promise<T>;
-  };
-}
-
-let refreshPromise: Promise<string | null> | null = null;
-
-async function executeTokenRefresh(): Promise<string | null> {
-  const refreshToken = localStorage.getItem("orvio_refresh_token");
-  if (!refreshToken) return null;
-
-  try {
-    const res = await fetch(`${API_ORIGIN}/api/v1/auth/refresh`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refreshToken }),
-    });
-
-    const data: APIResponse<{ token: string; refreshToken: string }> = await res.json();
-    if (!res.ok || !data.success || !data.data) {
-      return null;
-    }
-
-    localStorage.setItem("orvio_auth_token", data.data.token);
-    localStorage.setItem("orvio_refresh_token", data.data.refreshToken);
-    return data.data.token;
-  } catch {
-    return null;
-  } finally {
-    refreshPromise = null;
-  }
+export function registerQueryInvalidator(fn: (pattern?: string | RegExp) => void) {
+  queryInvalidator = fn;
 }
 
 export interface ApiRequestOptions extends RequestInit {
   bypassCache?: boolean;
   cacheTtlMs?: number;
+  /** Explicit tenancy context wins over persisted UI selection. */
+  workspaceId?: string;
+  branchId?: string;
+  timeoutMs?: number;
+  retries?: number;
 }
 
-const inFlightGetRequests = new Map<string, Promise<any>>();
+const inFlightGetRequests = new LRUCache<string, Promise<any>>(200, 30_000);
 const getResponseCache = new Map<string, { data: any; expiresAt: number }>();
+const MAX_CACHE_ENTRIES = 200;
+
+export type ApiTelemetryEvent = {
+  endpoint: string; method: string; status?: number; durationMs: number;
+  outcome: 'success' | 'error' | 'aborted' | 'retry';
+};
+let telemetryHandler: ((event: ApiTelemetryEvent) => void) | null = null;
+
+/** Attach Sentry/Logtail instrumentation without coupling the transport to a vendor. */
+export function setApiTelemetryHandler(handler: ((event: ApiTelemetryEvent) => void) | null) {
+  telemetryHandler = handler;
+}
+
+function emitTelemetry(event: ApiTelemetryEvent) {
+  telemetryHandler?.(event);
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent<ApiTelemetryEvent>('orvio:api', { detail: event }));
+}
+
+function cacheResponse(key: string, data: any, ttl: number) {
+  getResponseCache.delete(key); // Map insertion order gives us a tiny LRU.
+  getResponseCache.set(key, { data, expiresAt: Date.now() + ttl });
+  while (getResponseCache.size > MAX_CACHE_ENTRIES) {
+    const oldest = getResponseCache.keys().next().value;
+    if (!oldest) break;
+    getResponseCache.delete(oldest);
+  }
+}
 
 export function invalidateApiCache(pattern?: string | RegExp) {
   if (!pattern) {
     getResponseCache.clear();
+    queryInvalidator?.();
     return;
   }
   for (const key of getResponseCache.keys()) {
@@ -112,6 +90,33 @@ export function invalidateApiCache(pattern?: string | RegExp) {
       getResponseCache.delete(key);
     }
   }
+  queryInvalidator?.(pattern);
+}
+
+/** Invalidate only data for the affected tenant/context after a successful mutation. */
+export function invalidateApiContextCache(workspaceId?: string | null, branchId?: string | null) {
+  if (!workspaceId && !branchId) return;
+  for (const key of getResponseCache.keys()) {
+    const [, cachedWorkspace, cachedBranch] = key.split('::');
+    if (workspaceId && cachedWorkspace !== workspaceId) continue;
+    if (branchId && cachedBranch !== branchId) continue;
+    getResponseCache.delete(key);
+  }
+}
+
+function requestedBranchFromEndpoint(endpoint: string): string | undefined {
+  try {
+    return new URL(endpoint, 'https://api.local').searchParams.get('branchId') || undefined;
+  } catch { return undefined; }
+}
+
+function createRequestSignal(parent: AbortSignal | null | undefined, timeoutMs: number) {
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(parent?.reason);
+  if (parent?.aborted) controller.abort(parent.reason);
+  else if (parent) parent.addEventListener('abort', onAbort, { once: true });
+  const timer = globalThis.setTimeout(() => controller.abort(new DOMException('Request timed out', 'TimeoutError')), timeoutMs);
+  return { signal: controller.signal, dispose: () => { globalThis.clearTimeout(timer); parent?.removeEventListener('abort', onAbort); } };
 }
 
 async function fetcher<T>(
@@ -120,9 +125,12 @@ async function fetcher<T>(
   isRetry = false
 ): Promise<T> {
   const method = (options.method || "GET").toUpperCase();
-  const token = localStorage.getItem("orvio_auth_token");
-  const activeWorkspaceId = localStorage.getItem("orvio_active_workspace_id");
-  const activeBranchId = localStorage.getItem("orvio_active_branch_id");
+  const activeWorkspaceId = options.workspaceId || localStorage.getItem("orvio_active_workspace_id");
+  // A branch in the URL is an explicit user request and must never be
+  // overridden by the persisted active-branch header.
+  const endpointBranchId = requestedBranchFromEndpoint(endpoint);
+  const explicitBranchId = options.branchId || endpointBranchId;
+  const activeBranchId = explicitBranchId || localStorage.getItem("orvio_active_branch_id");
 
   // Format endpoint
   const cleanEndpoint = endpoint.startsWith("/v1")
@@ -131,14 +139,12 @@ async function fetcher<T>(
     ? endpoint
     : `/api/v1${endpoint.startsWith("/") ? endpoint : `/${endpoint}`}`;
 
-  // Invalidate cache when state-mutating requests occur
-  if (method !== "GET") {
-    invalidateApiCache();
-  }
-
   // Deduplicate and cache GET requests
   const isGet = method === "GET";
-  const cacheKey = `${token || "anon"}::${activeWorkspaceId || ""}::${activeBranchId || ""}::${cleanEndpoint}`;
+  const optionHeaders = new Headers(options.headers);
+  const requestWorkspaceId = optionHeaders.get('x-workspace-id') || activeWorkspaceId || '';
+  const requestBranchId = optionHeaders.get('x-branch-id') || activeBranchId || '';
+  const cacheKey = `session::${requestWorkspaceId}::${requestBranchId}::${cleanEndpoint}`;
 
   if (isGet && !options.bypassCache) {
     const cached = getResponseCache.get(cacheKey);
@@ -158,30 +164,57 @@ async function fetcher<T>(
       headers.set("Content-Type", "application/json");
     }
 
-    if (token) {
-      headers.set("Authorization", `Bearer ${token}`);
+    // Mutating requests are authenticated by the HttpOnly session cookie and
+    // carry a session-bound CSRF header.  A missing token is valid for public
+    // endpoints such as login/signup.
+    if (!isGet && !headers.has('X-CSRF-Token')) {
+      const csrfToken = await authManager.getCsrfToken();
+      if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
     }
 
-    if (activeWorkspaceId && !headers.has("x-workspace-id")) {
-      headers.set("x-workspace-id", activeWorkspaceId);
+    if (requestWorkspaceId && !headers.has("x-workspace-id")) {
+      headers.set("x-workspace-id", requestWorkspaceId);
     }
-    if (activeBranchId && !headers.has("x-branch-id")) {
-      headers.set("x-branch-id", activeBranchId);
+    if (requestBranchId && !headers.has("x-branch-id") && !endpointBranchId) {
+      headers.set("x-branch-id", requestBranchId);
     }
 
     const fullUrl = `${API_ORIGIN}${cleanEndpoint}`;
-
-    const response = await fetch(fullUrl, {
-      ...options,
-      credentials: "include",
-      headers,
-    });
+    const retries = isGet ? Math.max(0, options.retries ?? 2) : 0;
+    let response: Response | undefined;
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const startedAt = performance.now();
+      const controlled = createRequestSignal(options.signal, options.timeoutMs ?? 15_000);
+      try {
+        response = await fetch(fullUrl, { ...options, credentials: "include", headers, signal: controlled.signal });
+        const retryable = response.status >= 500 || response.status === 429;
+        if (retryable && attempt < retries) {
+          emitTelemetry({ endpoint: cleanEndpoint, method, status: response.status, durationMs: performance.now() - startedAt, outcome: 'retry' });
+          await new Promise((resolve) => globalThis.setTimeout(resolve, 250 * 2 ** attempt + Math.random() * 100));
+          continue;
+        }
+        emitTelemetry({ endpoint: cleanEndpoint, method, status: response.status, durationMs: performance.now() - startedAt, outcome: response.ok ? 'success' : 'error' });
+        break;
+      } catch (error: any) {
+        lastError = error;
+        const aborted = error?.name === 'AbortError' || error?.name === 'TimeoutError';
+        emitTelemetry({ endpoint: cleanEndpoint, method, durationMs: performance.now() - startedAt, outcome: aborted ? 'aborted' : 'error' });
+        if (aborted || attempt === retries) throw error;
+        emitTelemetry({ endpoint: cleanEndpoint, method, durationMs: 0, outcome: 'retry' });
+        await new Promise((resolve) => globalThis.setTimeout(resolve, 250 * 2 ** attempt + Math.random() * 100));
+      } finally {
+        controlled.dispose();
+      }
+    }
+    if (!response) throw lastError || new ApiError('Request failed', 'NETWORK_ERROR');
 
     let data: any;
-    try {
-      data = await response.json();
-    } catch {
-      throw new ApiError("Failed to parse API response", "PARSE_ERROR");
+    if (response.status === 204 || response.headers.get('content-length') === '0') {
+      data = {};
+    } else {
+      try { data = await response.json(); }
+      catch { throw new ApiError("Failed to parse API response", "PARSE_ERROR", undefined, undefined, response.status); }
     }
 
     if (!response.ok || (data && typeof data.success === "boolean" && !data.success)) {
@@ -193,23 +226,13 @@ async function fetcher<T>(
         endpoint.includes("/auth/verify-email") ||
         endpoint.includes("/invitations/");
 
-      if (response.status === 401 && !isRetry && !isAuthProbeEndpoint) {
-        if (!refreshPromise) {
-          refreshPromise = executeTokenRefresh();
+      const code = data?.error?.code || data?.code;
+      if (response.status === 401 && !isAuthProbeEndpoint) {
+        authManager.logoutAndRedirect();
+      } else if (response.status === 403) {
+        if (code === 'ACCOUNT_SUSPENDED' || code === 'SESSION_INVALIDATED' || code === 'UNAUTHENTICATED') {
+          authManager.logoutAndRedirect();
         }
-
-        const newToken = await refreshPromise;
-        if (newToken) {
-          return fetcher<T>(endpoint, options, true);
-        } else {
-          localStorage.removeItem("orvio_auth_token");
-          localStorage.removeItem("orvio_refresh_token");
-          window.dispatchEvent(new Event("auth:unauthorized"));
-        }
-      } else if (response.status === 401 && !isAuthProbeEndpoint) {
-        localStorage.removeItem("orvio_auth_token");
-        localStorage.removeItem("orvio_refresh_token");
-        window.dispatchEvent(new Event("auth:unauthorized"));
       }
 
       const errorMessage = data?.error?.message || data?.message || "An unexpected error occurred.";
@@ -227,11 +250,16 @@ async function fetcher<T>(
     if (isGet && !options.bypassCache) {
       const ttl = typeof options.cacheTtlMs === "number" ? options.cacheTtlMs : 5000;
       if (ttl > 0) {
-        getResponseCache.set(cacheKey, {
-          data: result,
-          expiresAt: Date.now() + ttl,
-        });
+        cacheResponse(cacheKey, result, ttl);
       }
+    }
+
+    if (!isGet) {
+      invalidateApiContextCache(requestWorkspaceId || undefined, explicitBranchId || undefined);
+      // Workspace-level mutations also change workspace-list/entitlement views.
+      if (cleanEndpoint.includes('/workspaces/')) invalidateApiCache('/workspaces');
+      if (cleanEndpoint.includes('/organizations/')) invalidateApiCache('/organizations');
+      queryInvalidator?.(cleanEndpoint);
     }
 
     return result;

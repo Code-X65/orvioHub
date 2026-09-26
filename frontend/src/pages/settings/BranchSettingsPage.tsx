@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
@@ -27,7 +27,6 @@ import {
   PowerOff,
   Star,
   Phone,
-  Plus,
   X,
 } from 'lucide-react';
 
@@ -50,6 +49,7 @@ export const BranchSettingsPage: React.FC = () => {
   const [selectedBranchId, setSelectedBranchId] = useState<string>(urlBranchId || '');
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const branchDetailsGeneration = useRef(0);
 
   // Branch Profile State
   const [profileForm, setProfileForm] = useState({
@@ -108,10 +108,10 @@ export const BranchSettingsPage: React.FC = () => {
   const fetchBranches = useCallback(async () => {
     if (!workspaceId) return;
     try {
-      const res = await api.get<{ data?: { branches: any[] }; branches?: any[] }>(
+      const res = await api.get<{ branches?: any[] }>(
         `/workspaces/${workspaceId}/branches`
       );
-      const bList = res.data?.branches || res.branches || [];
+      const bList = res.branches || [];
       const mapped: BranchOption[] = bList.map((b: any) => ({
         id: b._id || b.id,
         name: b.name,
@@ -187,12 +187,14 @@ export const BranchSettingsPage: React.FC = () => {
   // Fetch Selected Branch Details
   const fetchBranchDetails = useCallback(async () => {
     if (!workspaceId || !selectedBranchId) return;
+    const generation = ++branchDetailsGeneration.current;
     setIsLoading(true);
     try {
-      const res = await api.get<{ data: { branch: any } }>(
-        `/workspaces/${workspaceId}/branches/${selectedBranchId}/settings`
+      const res = await api.get<{ branch: any }>(
+        `/workspaces/${workspaceId}/branches/${selectedBranchId}/settings`, { workspaceId, branchId: selectedBranchId }
       );
-      const b = res.data?.branch;
+      const b = res.branch;
+      if (generation !== branchDetailsGeneration.current) return;
       if (b) {
         setProfileForm({
           name: b.name || '',
@@ -223,9 +225,10 @@ export const BranchSettingsPage: React.FC = () => {
         });
       }
     } catch (err: any) {
+      if (generation !== branchDetailsGeneration.current || err?.name === 'AbortError') return;
       toast.error('Failed to load branch details: ' + err.message);
     } finally {
-      setIsLoading(false);
+      if (generation === branchDetailsGeneration.current) setIsLoading(false);
     }
   }, [workspaceId, selectedBranchId]);
 
@@ -237,6 +240,7 @@ export const BranchSettingsPage: React.FC = () => {
     if (selectedBranchId) {
       fetchBranchDetails();
     }
+    return () => { branchDetailsGeneration.current++; };
   }, [selectedBranchId, fetchBranchDetails]);
 
   // Save Handlers

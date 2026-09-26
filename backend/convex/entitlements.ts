@@ -3,7 +3,7 @@ import { v } from "convex/values";
 import { DEFAULT_PLANS } from "./plans.js";
 import { resolveOrganization } from "./applications.js";
 
-function getEntitlementsFromPlan(plan: any, isTrial: boolean) {
+export function getEntitlementsFromPlan(plan: any, isTrial: boolean) {
   const limits = plan?.limits || {};
   const maxApps = limits.maxAppsPerOrganization ?? limits.maxAppsPerWorkspace ?? limits.apps ?? 1;
   const maxBranches = limits.maxBranchesPerApp ?? limits.branches ?? 1;
@@ -38,7 +38,7 @@ function getEntitlementsFromPlan(plan: any, isTrial: boolean) {
 /**
  * Authoritative helper to fetch organization subscription and plan
  */
-async function getSubscriptionForWorkspaceOrOrg(ctx: any, rawId: string) {
+export async function getSubscriptionForWorkspaceOrOrg(ctx: any, rawId: string) {
   const { org, orgId, workspace, workspaceId } = await resolveOrganization(ctx, rawId);
   const targetOrgId = orgId || org?._id;
   const targetWsId = workspaceId || workspace?._id;
@@ -97,6 +97,18 @@ async function getSubscriptionForWorkspaceOrOrg(ctx: any, rawId: string) {
     targetOrgId,
     targetWsId,
   };
+}
+
+/** Canonical seat check. Pending invitations do not consume seats. */
+export async function evaluateMemberInvitation(ctx: any, workspaceId: any) {
+  const { plan, isTrial, targetWsId } = await getSubscriptionForWorkspaceOrOrg(ctx, workspaceId);
+  const entitlements = getEntitlementsFromPlan(plan, isTrial);
+  const members = targetWsId
+    ? await ctx.db.query("workspaceMemberships").withIndex("by_workspace", (q: any) => q.eq("workspaceId", targetWsId))
+      .filter((q: any) => q.eq(q.field("status"), "active")).collect()
+    : [];
+  const max = Number(entitlements.maxMembersPerWorkspace) || (isTrial ? 2 : 10);
+  return { allowed: members.length < max, current: members.length, max, remaining: Math.max(0, max - members.length), planKey: entitlements.planKey };
 }
 
 /**
@@ -552,36 +564,7 @@ export const canInviteMember = query({
     workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
   },
   handler: async (ctx, args) => {
-    const { plan, isTrial, targetOrgId, targetWsId } =
-      await getSubscriptionForWorkspaceOrOrg(ctx, args.workspaceId);
-
-    const entitlements = getEntitlementsFromPlan(plan, isTrial);
-
-    let currentCount = 0;
-    if (targetOrgId) {
-      const members = await ctx.db
-        .query("organizationMemberships")
-        .withIndex("by_organizationId", (q: any) => q.eq("organizationId", targetOrgId))
-        .filter((q: any) => q.eq(q.field("status"), "ACTIVE"))
-        .collect();
-      currentCount = members.length;
-    } else if (targetWsId) {
-      const members = await ctx.db
-        .query("workspaceMemberships")
-        .withIndex("by_workspace", (q: any) => q.eq("workspaceId", targetWsId))
-        .filter((q: any) => q.eq(q.field("status"), "active"))
-        .collect();
-      currentCount = members.length;
-    }
-
-    const max = Number(entitlements.maxMembersPerOrganization) || (isTrial ? 2 : 10);
-    return {
-      allowed: currentCount < max,
-      current: currentCount,
-      max,
-      remaining: Math.max(0, max - currentCount),
-      planKey: entitlements.planKey,
-    };
+    return evaluateMemberInvitation(ctx, args.workspaceId);
   },
 });
 
@@ -594,7 +577,7 @@ export const getOrganizationContext = query({
     userId: v.id("users"),
   },
   handler: async (ctx, args) => {
-    const { org, orgId, workspace, workspaceId, sub } = await resolveOrganization(ctx, args.workspaceId);
+    const { org, orgId, workspace, workspaceId } = await resolveOrganization(ctx, args.workspaceId);
     const targetOrgId = orgId || org?._id;
     const targetWsId = workspaceId || workspace?._id;
 

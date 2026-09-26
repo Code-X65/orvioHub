@@ -372,6 +372,11 @@ export const acceptInvitation = mutation({
     }
 
     if (targetWorkspaceId) {
+      // Legacy invitations store branch scope in allowedBranches/primaryBranchId.
+      // Omitted scope means all branches; a non-empty list is explicit.
+      const invitationBranchIds = invite.allowedBranches?.length
+        ? invite.allowedBranches
+        : invite.primaryBranchId ? [invite.primaryBranchId] : undefined;
       const existingWsMem = await ctx.db
         .query("workspaceMemberships")
         .withIndex("by_workspace_user", (q: any) =>
@@ -382,6 +387,7 @@ export const acceptInvitation = mutation({
         await ctx.db.patch(existingWsMem._id, {
           role: invite.role,
           status: "active",
+          branchIds: invitationBranchIds,
           acceptedAt: now,
           updatedAt: now,
         });
@@ -391,12 +397,36 @@ export const acceptInvitation = mutation({
           userId: user._id,
           role: invite.role,
           status: "active",
+          branchIds: invitationBranchIds,
           invitedBy: invite.invitedBy,
           invitedAt: invite.createdAt,
           acceptedAt: now,
           createdAt: now,
           updatedAt: now,
         });
+      }
+
+      // Preserve the same scope on legacy product invitations. Legacy records
+      // may use either productKey or allowedApplications.
+      const productKeys = Array.from(new Set([
+        ...(invite.productKey ? [invite.productKey] : []),
+        ...(invite.allowedApplications || []),
+      ]));
+      for (const productKey of productKeys) {
+        const existingProductMembership = await ctx.db
+          .query("productMemberships")
+          .withIndex("by_workspace_product_user", (q: any) =>
+            q.eq("workspaceId", targetWorkspaceId).eq("productKey", productKey).eq("userId", user._id)
+          )
+          .first();
+        if (existingProductMembership) {
+          await ctx.db.patch(existingProductMembership._id, { role: invite.role, branchIds: invitationBranchIds, status: "active", updatedAt: now });
+        } else {
+          await ctx.db.insert("productMemberships", {
+            workspaceId: targetWorkspaceId, userId: user._id, productKey, role: invite.role,
+            permissions: [], branchIds: invitationBranchIds, status: "active", createdAt: now, updatedAt: now,
+          });
+        }
       }
     }
 
@@ -476,7 +506,7 @@ export const acceptInvitation = mutation({
       organizationId: invite.organizationId,
       action: "invitation.accepted",
       resource: `invitation:${invite._id}`,
-      metadata: { role: invite.role },
+      metadata: { role: invite.role, workspaceId: targetWorkspaceId, branchIds: invite.allowedBranches?.length ? invite.allowedBranches : invite.primaryBranchId ? [invite.primaryBranchId] : undefined, productKey: invite.productKey },
       timestamp: now,
     });
 

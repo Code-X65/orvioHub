@@ -19,8 +19,8 @@ describe('Branch-Level Team Invitations & RBAC Test Suite', () => {
   const originalGetUserById = dataService.getUserById;
   const originalListBranchMembers = dataService.listBranchMembers;
   const originalCreateWorkspaceInvitation = dataService.createWorkspaceInvitation;
-  const originalTransferBranchMember = dataService.transferBranchMember;
   const originalUpdateBranchMemberRole = dataService.updateBranchMemberRole;
+  const originalTransferBranchMember = dataService.transferBranchMember;
   const originalSetBranchMemberStatus = dataService.setBranchMemberStatus;
   const originalListBranchTransfers = dataService.listBranchTransfers;
   const originalSearchSafeUsersByEmail = dataService.searchSafeUsersByEmail;
@@ -51,8 +51,8 @@ describe('Branch-Level Team Invitations & RBAC Test Suite', () => {
     dataService.getUserById = originalGetUserById;
     dataService.listBranchMembers = originalListBranchMembers;
     dataService.createWorkspaceInvitation = originalCreateWorkspaceInvitation;
-    dataService.transferBranchMember = originalTransferBranchMember;
     dataService.updateBranchMemberRole = originalUpdateBranchMemberRole;
+    dataService.transferBranchMember = originalTransferBranchMember;
     dataService.setBranchMemberStatus = originalSetBranchMemberStatus;
     dataService.listBranchTransfers = originalListBranchTransfers;
     dataService.searchSafeUsersByEmail = originalSearchSafeUsersByEmail;
@@ -168,6 +168,35 @@ describe('Branch-Level Team Invitations & RBAC Test Suite', () => {
     assert.strictEqual(capturedArgs.workspaceId, testWorkspaceId);
     assert.strictEqual(capturedArgs.branchIds[0], testBranchIdA);
   });
+
+  test('POST branch invite returns a clear upgrade response when the seat limit is reached', async () => {
+    dataService.createWorkspaceInvitation = async () => {
+      throw new Error('member_limit_exceeded');
+    };
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/workspaces/${testWorkspaceId}/applications/inventory/team/invite`,
+      headers: getAuthHeaders(ownerUserId),
+      payload: { email: 'limit@company.com', role: 'cashier', branchId: testBranchIdA },
+    });
+
+    assert.strictEqual(res.statusCode, 403);
+    assert.strictEqual(JSON.parse(res.payload).error.code, 'member_limit_exceeded');
+  });
+
+  test('role mutation surfaces branch authorization errors to the UI', async () => {
+    dataService.updateBranchMemberRole = async () => { throw new Error('branch_access_denied'); };
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/workspaces/${testWorkspaceId}/applications/inventory/members/${testMembershipId}/role`,
+      headers: getAuthHeaders(ownerUserId),
+      payload: { role: 'cashier' },
+    });
+    assert.strictEqual(res.statusCode, 403);
+    assert.strictEqual(res.json().error.code, 'branch_access_denied');
+  });
+
 
   // 4. Atomic Branch Transfer
   test('POST /api/v1/workspaces/:workspaceId/applications/inventory/team/transfer records transfer and moves member', async () => {
@@ -329,20 +358,14 @@ describe('Branch-Level Team Invitations & RBAC Test Suite', () => {
     assert.strictEqual(body.data.user.hashedPassword, undefined);
   });
 
-  // 9. Symmetric Organization Routes
-  test('GET /api/v1/organizations/:organizationId/applications/inventory/team functions symmetrically', async () => {
-    dataService.listBranchMembers = async () => [];
-
+  // 9. Workspace is the only branch-team tenancy boundary.
+  test('organization aliases are not exposed for branch-team operations', async () => {
     const res = await app.inject({
       method: 'GET',
       url: `/api/v1/organizations/${testWorkspaceId}/applications/inventory/team`,
       headers: getAuthHeaders(ownerUserId),
     });
-
-    assert.strictEqual(res.statusCode, 200);
-    const body = JSON.parse(res.payload);
-    assert.strictEqual(body.success, true);
-    assert.deepStrictEqual(body.data.members, []);
+    assert.strictEqual(res.statusCode, 404);
   });
 
   // 10. Access Context Resolution (/me/access-context)

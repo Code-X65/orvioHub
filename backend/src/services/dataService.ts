@@ -10,10 +10,19 @@ import {
   getVerifyEmailUrl,
   getResetPasswordUrl,
   getConfirmEmailChangeUrl,
+  CreateSessionContractSchema,
+  RotateSessionContractSchema,
+  ValidateSessionContractSchema,
+  RevokeSessionContractSchema,
+  RevokeAllUserSessionsContractSchema,
+  SESSION_LIFETIMES,
+  type CreateSessionContractInput,
+  type RotateSessionContractInput,
   type Environment,
 } from '@orviohub/shared';
 import type { VerifiedSocialProfile } from './oauth.js';
 import { totpService } from './totp.js';
+import { decryptTotpSecret, encryptTotpSecret } from '../utils/totpSecretEncryption.js';
 import { emailService } from './email.js';
 import { ApplicationRepository } from '../repositories/applicationRepository.js';
 import { AuditNotificationRepository } from '../repositories/auditNotificationRepository.js';
@@ -33,6 +42,12 @@ import {
   hashOtpCode,
 } from '../utils/phoneUtils.js';
 import { SmsService } from './smsService.js';
+
+const redactSensitiveArgs = (args: Record<string, unknown>) => Object.fromEntries(
+  Object.entries(args).map(([key, value]) =>
+    /token|secret|password|authorization/i.test(key) ? [key, '[REDACTED]'] : [key, value]
+  )
+);
 
 function getAppEnv(): Environment {
   return env.NODE_ENV === 'production' ? 'production' : 'development';
@@ -210,12 +225,64 @@ export class DataService {
     emailService.clearSentEmails();
   }
 
-  public async query(path: string, args: Record<string, unknown>) {
-    try { return await this.client.query((anyApi as any)[path.split(':')[0]][path.split(':')[1]], args); } catch (error) { serviceError(error); }
+  public async query<T = any>(path: string, args: Record<string, unknown> = {}): Promise<T> {
+    const startedAt = Date.now();
+    try {
+      const [module, functionName] = path.split(':');
+      return (await this.client.query((anyApi as any)[module][functionName], args)) as T;
+    } catch (error: any) {
+      const durationMs = Date.now() - startedAt;
+      if (env.NODE_ENV !== 'test') {
+        console.error('[Convex Query Error]', {
+          path,
+          error: error?.message || String(error),
+          code: error?.code,
+          args: redactSensitiveArgs(args),
+          durationMs,
+        });
+      }
+      serviceError(error);
+    }
   }
 
-  public async mutate(path: string, args: Record<string, unknown>) {
-    try { return await this.client.mutation((anyApi as any)[path.split(':')[0]][path.split(':')[1]], args); } catch (error) { serviceError(error); }
+  public async safeQuery<T = any>(path: string, args: Record<string, unknown> = {}): Promise<T | null> {
+    const startedAt = Date.now();
+    try {
+      const [module, functionName] = path.split(':');
+      return (await this.client.query((anyApi as any)[module][functionName], args)) as T;
+    } catch (error: any) {
+      const durationMs = Date.now() - startedAt;
+      if (env.NODE_ENV !== 'test') {
+        console.warn('[Convex SafeQuery Error]', {
+          path,
+          error: error?.message || String(error),
+          code: error?.code,
+          args: redactSensitiveArgs(args),
+          durationMs,
+        });
+      }
+      return null;
+    }
+  }
+
+  public async mutate<T = any>(path: string, args: Record<string, unknown> = {}): Promise<T> {
+    const startedAt = Date.now();
+    try {
+      const [module, functionName] = path.split(':');
+      return (await this.client.mutation((anyApi as any)[module][functionName], args)) as T;
+    } catch (error: any) {
+      const durationMs = Date.now() - startedAt;
+      if (env.NODE_ENV !== 'test') {
+        console.error('[Convex Mutation Error]', {
+          path,
+          error: error?.message || String(error),
+          code: error?.code,
+          args,
+          durationMs,
+        });
+      }
+      serviceError(error);
+    }
   }
 
   private async enqueue(to: string, template: 'verification' | 'invitation' | 'onboardingCompleted' | 'passwordReset' | 'emailChange' | 'securityAlert', payload: Record<string, any>) {
@@ -326,7 +393,7 @@ export class DataService {
   }) {
     const email = data.email.toLowerCase().trim();
     const token = crypto.randomBytes(32).toString('hex');
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const code = crypto.randomInt(100000, 1_000_000).toString();
     const passwordHash = await bcrypt.hash(data.password, 12);
     const fullName = data.name || `${data.firstName || ''} ${data.lastName || ''}`.trim() || email.split('@')[0];
     
@@ -433,7 +500,10 @@ export class DataService {
     const user = await this.getUserById(result.userId);
     if (!user) throw new Error('User not found.');
     // Invalidate all active sessions for security after password reset
-    await this.mutate('sessions:revokeAllUserSessions', { userId: user.id });
+    await this.mutate(
+      'sessions:revokeAllUserSessions',
+      RevokeAllUserSessionsContractSchema.parse({ userId: user.id, reason: 'PASSWORD_RESET' }),
+    );
     return { user };
   }
 
@@ -468,17 +538,21 @@ export class DataService {
     await this.mutate('sessions:logout', {
       sessionId: sessionId as any,
       sessionHash,
-      refreshToken,
       userId: userId as any,
       ipAddress: meta?.ipAddress,
       userAgent: meta?.userAgent,
     });
+    if (userId) invalidateAuthUserCache(userId);
     return { success: true };
   }
 
   public async validateSession(identifiers: { sessionId?: string; sessionHash?: string; refreshToken?: string }) {
     try {
-      return (await this.query('sessions:validateSession', identifiers as any)) as {
+      const validationPayload = ValidateSessionContractSchema.parse({
+        sessionId: identifiers.sessionId as any,
+        sessionHash: identifiers.refreshToken ? hashSessionToken(identifiers.refreshToken) : identifiers.sessionHash,
+      });
+      return (await this.query('sessions:validateSession', validationPayload)) as {
         valid: boolean;
         error?: string;
         session?: { id: string; userId: string; email: string; tokenVersion: number };
@@ -489,8 +563,10 @@ export class DataService {
   }
 
   public async logoutAllSessions(userId: string) {
+    invalidateAuthUserCache(userId);
     await this.mutate('users:invalidateUserSessions', { userId });
-    await this.mutate('sessions:revokeAllUserSessions', { userId });
+    const revocationPayload = RevokeAllUserSessionsContractSchema.parse({ userId });
+    await this.mutate('sessions:revokeAllUserSessions', revocationPayload);
     return { success: true };
   }
 
@@ -505,6 +581,7 @@ export class DataService {
           deviceName?: string;
           authenticationMethod?: string;
           mfaVerified?: boolean;
+          rememberMe?: boolean;
           tokenVersion?: number;
           lastVisitedUrl?: string;
           lastVisitedSubdomain?: string;
@@ -519,6 +596,7 @@ export class DataService {
       deviceName?: string;
       authenticationMethod?: string;
       mfaVerified?: boolean;
+      rememberMe?: boolean;
       tokenVersion?: number;
       lastVisitedUrl?: string;
       lastVisitedSubdomain?: string;
@@ -541,27 +619,30 @@ export class DataService {
     }
     const refreshToken = crypto.randomBytes(40).toString('hex');
     const sessionHash = hashSessionToken(refreshToken);
-    const expiresAt = Date.now() + 7 * 86_400_000; // 7 days
-    const sessionId = await this.mutate('sessions:createSession', {
+    const expiresAt = Date.now() + (options.rememberMe ? SESSION_LIFETIMES.REMEMBER_ME_MS : SESSION_LIFETIMES.NORMAL_MS);
+    const sessionPayload: CreateSessionContractInput = CreateSessionContractSchema.parse({
       userId,
       sessionHash,
-      refreshToken,
       deviceId: options.deviceId,
       deviceName: options.deviceName,
       authenticationMethod: options.authenticationMethod || 'password',
       mfaVerified: options.mfaVerified ?? false,
+      rememberMe: options.rememberMe ?? false,
       tokenVersion: version,
       expiresAt,
+      absoluteExpiresAt: expiresAt,
       userAgent: options.userAgent,
       ipAddress: options.ipAddress,
       lastVisitedUrl: options.lastVisitedUrl,
       lastVisitedSubdomain: options.lastVisitedSubdomain,
       lastVisitedAt: (options.lastVisitedUrl || options.lastVisitedSubdomain) ? Date.now() : undefined,
     });
+    const sessionId = await this.mutate('sessions:createSession', sessionPayload);
     return {
       sessionId: String(sessionId),
       refreshToken,
       expiresAt,
+      rememberMe: options.rememberMe ?? false,
       lastVisitedUrl: options.lastVisitedUrl,
       lastVisitedSubdomain: options.lastVisitedSubdomain,
     };
@@ -590,6 +671,18 @@ export class DataService {
     }
   }
 
+  /** Resolve an opaque browser session secret without ever persisting it raw. */
+  public async getSessionBySecret(sessionSecret: string) {
+    if (!sessionSecret) return null;
+    try {
+      return (await this.query('sessions:getSessionBySessionHash', {
+        sessionHash: hashSessionToken(sessionSecret),
+      })) as any;
+    } catch {
+      return null;
+    }
+  }
+
   public async rotateSession(
     oldRefreshToken: string,
     optionsOrUserAgent?: string | { userAgent?: string; ipAddress?: string; deviceName?: string },
@@ -605,32 +698,62 @@ export class DataService {
     const oldSessionHash = hashSessionToken(oldRefreshToken);
     const newRefreshToken = crypto.randomBytes(40).toString('hex');
     const newSessionHash = hashSessionToken(newRefreshToken);
-    const newExpiresAt = Date.now() + 7 * 86_400_000; // 7 days
-    const result = (await this.mutate('sessions:rotateSession', {
+    const rotationPayload: RotateSessionContractInput = RotateSessionContractSchema.parse({
       oldSessionHash,
-      oldRefreshToken,
       newSessionHash,
-      newRefreshToken,
-      newExpiresAt,
+      // Convex caps this requested value at the session's immutable absolute
+      // expiry. Request the longest supported window so a remembered session
+      // cannot be shortened to seven days during a normal token rotation.
+      newExpiresAt: Date.now() + SESSION_LIFETIMES.REMEMBER_ME_MS,
       userAgent: options.userAgent,
       ipAddress: options.ipAddress,
       deviceName: options.deviceName,
-    })) as { sessionId: string; userId: string; email: string; name: string; tokenVersion: number };
+    });
+    type RotationResult =
+      | { sessionId: string; userId: string; email: string; name: string; tokenVersion: number; expiresAt?: number; absoluteExpiresAt?: number; rememberMe?: boolean }
+      | { concurrentRefresh: true; replacementSessionId: string };
+    const result = (await this.mutate('sessions:rotateSession', rotationPayload)) as RotationResult;
 
-    const user = await this.getUserById(result.userId);
-    if (!user) throw new Error('User not found.');
+    if ('concurrentRefresh' in result) {
+      return result;
+    }
+
+    let user = await this.getUserById(result.userId);
+    if (!user) {
+      user = {
+        id: result.userId,
+        email: result.email,
+        name: result.name,
+        tokenVersion: result.tokenVersion ?? 0,
+        emailVerified: true,
+        status: 'ACTIVE' as const,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      } as any;
+    }
 
     return {
       sessionId: result.sessionId,
       user,
       refreshToken: newRefreshToken,
-      expiresAt: newExpiresAt,
+      expiresAt: result.expiresAt ?? (Date.now() + SESSION_LIFETIMES.NORMAL_MS),
+      absoluteExpiresAt: result.absoluteExpiresAt,
+      rememberMe: result.rememberMe ?? false,
     };
   }
 
   public async revokeSession(refreshToken: string) {
     const sessionHash = hashSessionToken(refreshToken);
-    return this.mutate('sessions:revokeSession', { sessionHash, refreshToken });
+    const revocationPayload = RevokeSessionContractSchema.parse({ sessionHash });
+    return this.mutate('sessions:revokeSession', revocationPayload);
+  }
+
+  public async touchSessionActivity(sessionId: string) {
+    try {
+      await this.mutate('sessions:touchSessionActivity', { sessionId: sessionId as any });
+    } catch {
+      // Activity telemetry must not make a valid authenticated request fail.
+    }
   }
 
   public async generateSSOAuthorizationCode(data: {
@@ -835,6 +958,50 @@ export class DataService {
     return records.map(({ membership, organization }) => ({ membership: asMembership(membership)!, organization: asOrganization(organization)! }));
   }
   public async getMembership(organizationId: string, userId: string) { return asMembership(await this.query('organizations:getMembership', { organizationId, userId })); }
+  public async userBelongsToOrganization(userId: string, organizationId: string): Promise<boolean> {
+    try {
+      const membership = await this.getMembership(organizationId, userId);
+      if (membership && (membership as any).status !== 'SUSPENDED' && (membership as any).status !== 'DEACTIVATED') {
+        return true;
+      }
+      const org = await this.getOrganizationById(organizationId);
+      if (org && (org as any).ownerId === userId) {
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  public async userBelongsToWorkspace(userId: string, workspaceId: string, preloadedWorkspace?: any): Promise<boolean> {
+    try {
+      const workspace = preloadedWorkspace || ((await this.getWorkspaceById(workspaceId)) as any);
+      if (!workspace) return false;
+
+      // 1. Direct workspace owner
+      if (workspace.ownerId === userId) return true;
+
+      // 2. Direct active workspace membership
+      const wsMem = (await this.getWorkspaceMembership(workspaceId, userId)) as any;
+      const wsStatus = wsMem?.status?.toLowerCase();
+      if (wsMem && wsStatus === 'active') return true;
+
+      // 3. Organization membership or owner if workspace is attached to an organization
+      if (workspace.organizationId) {
+        const orgMem = await this.getMembership(workspace.organizationId, userId);
+        const orgStatus = orgMem?.status?.toLowerCase();
+        if (orgMem && orgStatus === 'active') return true;
+
+        const org = await this.getOrganizationById(workspace.organizationId);
+        if (org && (org as any).ownerId === userId) return true;
+      }
+
+      return false;
+    } catch {
+      return false;
+    }
+  }
   public async getOrganizationById(id: string) { return asOrganization(await this.query('organizations:getOrganizationById', { organizationId: id })); }
 
   public async createOrganization(data: {
@@ -1196,7 +1363,20 @@ export class DataService {
   public async initializeWorkspace(organizationId: string, userId: string) { return this.mutate('modules:initializeWorkspace', { organizationId, userId }); }
 
   public async getOrganizationMembers(organizationId: string, userId: string) {
-    return this.query('organizations:getOrganizationMembers', { organizationId, userId }) as Promise<any[]>;
+    // The deployed function may still require an organizations-table ID. Resolve
+    // a workspace ID before calling it so both old and current validators work.
+    let resolvedOrganizationId = organizationId;
+    try {
+      const workspace = await this.getWorkspaceById(organizationId) as any;
+      if (workspace?.organizationId) resolvedOrganizationId = String(workspace.organizationId);
+    } catch {
+      // The identifier is already an organization ID (or will be rejected by
+      // Convex with its normal not-found/access error).
+    }
+    return this.query('organizations:getOrganizationMembers', {
+      organizationId: resolvedOrganizationId,
+      userId,
+    }) as Promise<any[]>;
   }
 
   public async updateMemberRole(organizationId: string, callerUserId: string, targetUserId: string, newRole: string) {
@@ -1423,7 +1603,7 @@ export class DataService {
     if (!user) throw new Error('User not found.');
     const secret = totpService.generateBase32Secret(20);
     const otpauthUrl = totpService.generateOtpAuthUri(user.email, secret);
-    await this.mutate('users:setTwoFactorPendingSecret', { userId, secret });
+    await this.mutate('users:setTwoFactorPendingSecret', { userId, secret: encryptTotpSecret(secret) });
     return {
       secret,
       otpauthUrl,
@@ -1438,7 +1618,8 @@ export class DataService {
       throw err;
     }
 
-    const isValid = totpService.verifyTotpCode(code.trim(), user.twoFactorPendingSecret);
+    const pendingSecret = decryptTotpSecret(user.twoFactorPendingSecret);
+    const isValid = totpService.verifyTotpCode(code.trim(), pendingSecret);
     if (!isValid) {
       const err: Error & { code?: string } = new Error('Invalid verification code.');
       err.code = 'INVALID_2FA_CODE';
@@ -1446,10 +1627,13 @@ export class DataService {
     }
 
     const backupCodes = totpService.generateBackupCodes(8);
+    const backupCodeHashes = await Promise.all(
+      backupCodes.map((backupCode) => bcrypt.hash(backupCode.replace('-', '').toUpperCase(), 12))
+    );
     await this.mutate('users:enableTwoFactor', {
       userId,
-      secret: user.twoFactorPendingSecret,
-      backupCodes,
+      secret: encryptTotpSecret(pendingSecret),
+      backupCodes: backupCodeHashes,
     });
 
     return {
@@ -1491,7 +1675,7 @@ export class DataService {
     const cleanCode = code.trim();
     // Check TOTP 6-digit code
     if (/^\d{6}$/.test(cleanCode)) {
-      const isValid = totpService.verifyTotpCode(cleanCode, user.twoFactorSecret);
+      const isValid = totpService.verifyTotpCode(cleanCode, decryptTotpSecret(user.twoFactorSecret));
       if (isValid) {
         return { user };
       }
@@ -1499,13 +1683,11 @@ export class DataService {
 
     // Check backup codes (e.g. XXXX-XXXX or XXXXXXXX)
     if (user.twoFactorBackupCodes && user.twoFactorBackupCodes.length > 0) {
-      const normalized = cleanCode.toUpperCase();
-      const matched = user.twoFactorBackupCodes.some(
-        (c) => c.toUpperCase() === normalized || c.replace('-', '').toUpperCase() === normalized.replace('-', '')
-      );
-      if (matched) {
+      try {
         await this.mutate('users:consumeBackupCode', { userId, code: cleanCode });
         return { user, usedBackupCode: true };
+      } catch (error: any) {
+        if (!String(error?.message || error).includes('INVALID_BACKUP_CODE')) throw error;
       }
     }
 
@@ -1547,7 +1729,10 @@ export class DataService {
     }
 
     const backupCodes = totpService.generateBackupCodes(8);
-    await this.mutate('users:setBackupCodes', { userId: userId as any, backupCodes });
+    const backupCodeHashes = await Promise.all(
+      backupCodes.map((backupCode) => bcrypt.hash(backupCode.replace('-', '').toUpperCase(), 12))
+    );
+    await this.mutate('users:setBackupCodes', { userId: userId as any, backupCodes: backupCodeHashes });
     return { backupCodes };
   }
 
@@ -1567,6 +1752,8 @@ export class DataService {
     ownerId?: string;
     country?: string;
     state?: string;
+    stateCode?: string;
+    lga?: string;
     city?: string;
     timezone?: string;
     currency?: string;
@@ -1583,6 +1770,8 @@ export class DataService {
       ownerId: data.ownerId as any,
       country: data.country,
       state: data.state,
+      stateCode: data.stateCode,
+      lga: data.lga,
       city: data.city,
       timezone: data.timezone,
       currency: data.currency,
@@ -1851,6 +2040,7 @@ export class DataService {
     productRole?: string;
     productKey?: string;
     branchIds?: string[];
+    catalogScope?: string[];
   }) {
     return this.mutate('workspaceMembers:updateWorkspaceMemberRole', {
       workspaceId: data.workspaceId as any,
@@ -1860,6 +2050,7 @@ export class DataService {
       productRole: data.productRole,
       productKey: data.productKey,
       branchIds: data.branchIds as any,
+      catalogScope: data.catalogScope,
     });
   }
 
@@ -1899,9 +2090,11 @@ export class DataService {
       productKey: string;
       appRole: string;
       branchIds: string[];
+      catalogScope?: string[];
     }>;
     productKey?: string;
     branchIds?: string[];
+    catalogScope?: string[];
     message?: string;
   }) {
     const rawToken = crypto.randomBytes(32).toString('hex');
@@ -1918,6 +2111,7 @@ export class DataService {
       appAccess: data.appAccess,
       productKey: data.productKey,
       branchIds: data.branchIds as any,
+      catalogScope: data.catalogScope,
       tokenHash,
       expiresAt,
     });
@@ -1960,6 +2154,7 @@ export class DataService {
       enabled: boolean;
       appRole: string;
       branchIds: string[];
+      catalogScope?: string[];
     }>;
   }) {
     return this.mutate('workspaceMembers:updateMemberAccess', {
@@ -2261,10 +2456,28 @@ export class DataService {
 
   // Inventory Management Product Methods
   public async getInventoryProducts(workspaceId: string, category?: string) {
-    return this.query('inventory:getProducts', {
+    const products = (await this.query('inventory:getProducts', {
       workspaceId: workspaceId as any,
       category,
-    });
+    })) || [];
+
+    const wsMovements = this.inMemoryStockMovements?.get(workspaceId);
+    if (wsMovements && Array.isArray(products)) {
+      return products.map((p: any) => {
+        const pId = p._id || p.id;
+        const mov = wsMovements.find((m) => m.productId === pId);
+        if (mov && mov.balanceAfter !== undefined) {
+          return {
+            ...p,
+            stockQuantity: mov.balanceAfter,
+            costPrice: mov.unitCost || p.costPrice,
+          };
+        }
+        return p;
+      });
+    }
+
+    return products;
   }
 
   public async createInventoryProduct(data: {
@@ -2329,10 +2542,233 @@ export class DataService {
     });
   }
 
-  public async getInventoryDashboardMetrics(workspaceId: string) {
+  public async getInventoryDashboardMetrics(workspaceId: string, branchId?: string, allowedBranchIds?: string[]) {
     return this.query('inventory:getDashboardMetrics', {
       workspaceId: workspaceId as any,
+      branchId: branchId as any,
+      allowedBranchIds,
     });
+  }
+
+  private inMemoryStockMovements: Map<string, any[]> = new Map();
+
+  public async recordOpeningStock(data: {
+    workspaceId: string;
+    branchId?: string;
+    entries: Array<{
+      productId: string;
+      quantity: number;
+      unitCost?: number;
+      totalCost?: number;
+      notes?: string;
+    }>;
+    notes?: string;
+    referenceType?: string;
+    referenceId?: string;
+    actorUserId: string;
+  }) {
+    try {
+      return await this.mutate('inventory:recordOpeningStock', {
+        workspaceId: data.workspaceId as any,
+        branchId: data.branchId as any,
+        entries: data.entries as any,
+        notes: data.notes,
+        referenceType: data.referenceType || 'onboarding',
+        referenceId: data.referenceId,
+        actorUserId: data.actorUserId as any,
+        userId: data.actorUserId as any,
+      });
+    } catch (err: any) {
+      if (
+        err?.message?.includes('Could not find public function') ||
+        err?.message?.includes('inventory:recordOpeningStock')
+      ) {
+        const now = Date.now();
+        const wsMovements = this.inMemoryStockMovements.get(data.workspaceId) || [];
+        const movementIds: string[] = [];
+        let totalQuantity = 0;
+        let totalValuation = 0;
+
+        const products = (await this.getInventoryProducts(data.workspaceId)) || [];
+
+        for (const entry of data.entries) {
+          const product = products.find((p: any) => (p._id || p.id) === entry.productId);
+          const currentStock = product?.stockQuantity || 0;
+          const unitCost = entry.unitCost !== undefined ? entry.unitCost : (product?.costPrice || 0);
+          const totalCost = entry.totalCost !== undefined ? entry.totalCost : unitCost * entry.quantity;
+
+          if (product) {
+            product.stockQuantity = entry.quantity;
+            if (unitCost > 0) product.costPrice = unitCost;
+          }
+
+          const movId = `mov_opening_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          const movement = {
+            _id: movId,
+            id: movId,
+            workspaceId: data.workspaceId,
+            branchId: data.branchId,
+            productId: entry.productId,
+            quantity: entry.quantity,
+            unitCost,
+            totalCost,
+            balanceBefore: currentStock,
+            balanceAfter: entry.quantity,
+            type: 'OPENING_STOCK',
+            movementType: 'opening_stock',
+            reason: 'Opening Stock Entry',
+            notes: entry.notes || data.notes,
+            referenceType: data.referenceType || 'onboarding',
+            referenceId: data.referenceId,
+            actorUserId: data.actorUserId,
+            userId: data.actorUserId,
+            productName: product?.name || 'Unknown Product',
+            sku: product?.sku || 'N/A',
+            unit: product?.unit || 'pcs',
+            createdAt: now,
+          };
+
+          wsMovements.unshift(movement);
+          movementIds.push(movId);
+          totalQuantity += entry.quantity;
+          totalValuation += totalCost;
+        }
+
+        this.inMemoryStockMovements.set(data.workspaceId, wsMovements);
+
+        return {
+          success: true,
+          recordedCount: movementIds.length,
+          totalQuantity,
+          totalValuation,
+          movementIds,
+        };
+      }
+      throw err;
+    }
+  }
+
+  public async getStockMovements(params: {
+    workspaceId: string;
+    branchId?: string;
+    productId?: string;
+    movementType?: string;
+    limit?: number;
+    allowedBranchIds?: string[];
+  }) {
+    try {
+      return await this.query('inventory:getStockMovements', {
+        workspaceId: params.workspaceId as any,
+        branchId: params.branchId as any,
+        productId: params.productId as any,
+        movementType: params.movementType,
+        limit: params.limit,
+        allowedBranchIds: params.allowedBranchIds,
+      });
+    } catch (err: any) {
+      if (
+        err?.message?.includes('Could not find public function') ||
+        err?.message?.includes('inventory:getStockMovements')
+      ) {
+        let wsMovements = this.inMemoryStockMovements.get(params.workspaceId) || [];
+        if (params.branchId && params.branchId !== 'undefined') {
+          wsMovements = wsMovements.filter((m) => m.branchId === params.branchId);
+        } else if (params.allowedBranchIds) {
+          wsMovements = wsMovements.filter((m) => m.branchId && params.allowedBranchIds!.includes(String(m.branchId)));
+        }
+        if (params.productId) {
+          wsMovements = wsMovements.filter((m) => m.productId === params.productId);
+        }
+        if (params.movementType) {
+          const target = params.movementType.toLowerCase();
+          wsMovements = wsMovements.filter(
+            (m) =>
+              (m.movementType && m.movementType.toLowerCase() === target) ||
+              (m.type && m.type.toLowerCase() === target)
+          );
+        }
+        if (params.limit) {
+          wsMovements = wsMovements.slice(0, params.limit);
+        }
+        return wsMovements;
+      }
+      throw err;
+    }
+  }
+
+  public async getOpeningStock(workspaceId: string, branchId?: string, allowedBranchIds?: string[]) {
+    try {
+      return await this.query('inventory:getOpeningStock', {
+        workspaceId: workspaceId as any,
+        branchId: branchId as any,
+        allowedBranchIds,
+      });
+    } catch (err: any) {
+      if (
+        err?.message?.includes('Could not find public function') ||
+        err?.message?.includes('inventory:getOpeningStock')
+      ) {
+        const products = (await this.getInventoryProducts(workspaceId)) || [];
+        const wsMovements = this.inMemoryStockMovements.get(workspaceId) || [];
+        const scopedMovements = branchId
+          ? wsMovements.filter((m) => m.branchId === branchId)
+          : allowedBranchIds
+            ? wsMovements.filter((m) => m.branchId && allowedBranchIds.includes(String(m.branchId)))
+            : wsMovements;
+        const openingMovements = scopedMovements.filter(
+          (m) => m.movementType === 'opening_stock' || m.type === 'OPENING_STOCK'
+        );
+        const openingMap = new Map<string, any>();
+        for (const mov of openingMovements) {
+          openingMap.set(mov.productId, mov);
+        }
+
+        const balances = new Map<string, number>();
+        if (branchId || allowedBranchIds) {
+          for (const movement of scopedMovements.sort((a, b) => a.createdAt - b.createdAt)) {
+            const key = `${String(movement.branchId)}:${String(movement.productId)}`;
+            balances.set(key, movement.balanceAfter ?? ((balances.get(key) || 0) + movement.quantity));
+          }
+        }
+        const stockByProduct = new Map<string, number>();
+        for (const [key, balance] of balances) {
+          const productId = key.slice(key.indexOf(':') + 1);
+          stockByProduct.set(productId, (stockByProduct.get(productId) || 0) + balance);
+        }
+        const visibleProducts = (branchId || allowedBranchIds)
+          ? products.filter((p: any) => stockByProduct.has(String(p._id || p.id)))
+          : products;
+
+        const items = visibleProducts.map((p: any) => {
+          const pId = p._id || p.id;
+          const mov = openingMap.get(pId);
+          const currentStock = stockByProduct.has(String(pId)) ? stockByProduct.get(String(pId))! : (p.stockQuantity || 0);
+          return {
+            productId: pId,
+            name: p.name,
+            sku: p.sku,
+            category: p.category,
+            costPrice: p.costPrice,
+            sellingPrice: p.sellingPrice,
+            unit: p.unit,
+            currentStock,
+            openingQuantity: mov ? mov.quantity : currentStock,
+            unitCost: mov?.unitCost !== undefined ? mov.unitCost : (p.costPrice || 0),
+            totalCost: mov?.totalCost !== undefined ? mov.totalCost : ((p.costPrice || 0) * currentStock),
+            hasOpeningStock: !!mov,
+            recordedAt: mov?.createdAt,
+          };
+        });
+
+        return {
+          products: items,
+          totalProducts: visibleProducts.length,
+          recordedCount: openingMap.size,
+          isFullyRecorded: visibleProducts.length > 0 && openingMap.size >= visibleProducts.length,
+        };
+      }
+      throw err;
+    }
   }
 
   // ==========================================
@@ -2490,8 +2926,11 @@ export class DataService {
     return asUser(await this.getUserById(userId));
   }
 
-  public async getUserSessions(userId: string) {
-    return this.query('sessions:getUserSessions', { userId: userId as any }) as Promise<any[]>;
+  public async getUserSessions(userId: string, currentSessionId?: string) {
+    return this.query('sessions:getUserSessions', {
+      userId: userId as any,
+      currentSessionId: currentSessionId as any,
+    }) as Promise<any[]>;
   }
 
   public async revokeSessionById(sessionId: string, userId: string) {
@@ -2812,7 +3251,10 @@ export class DataService {
     }
 
     // Invalidate sessions
-    await this.mutate('sessions:revokeAllUserSessions', { userId: userId as any });
+    await this.mutate(
+      'sessions:revokeAllUserSessions',
+      RevokeAllUserSessionsContractSchema.parse({ userId, reason: 'ACCOUNT_DELETED' }),
+    );
     // Anonymize user record
     await this.mutate('users:deleteUserAccount', { userId: userId as any });
     return true;
@@ -3053,38 +3495,15 @@ export class DataService {
   private inMemoryNotifyList: any[] = [];
 
   public async listAllProducts() {
-    try {
-      const res = await this.query('products:listAll', {});
-      if (res && (res as any[]).length > 0) return res;
-    } catch {
-      // Fallback to local memory catalog
-    }
-    return this.inMemoryProducts;
+    return this.query('products:listAll', {});
   }
 
   public async listVisibleProducts() {
-    try {
-      const res = await this.query('products:listVisible', {});
-      if (res && (res as any[]).length > 0) return res;
-    } catch {
-      // Fallback to local memory catalog
-    }
-    return this.inMemoryProducts.filter((p) => p.isVisibleToUsers === true || p.key === 'inventory');
+    return this.query('products:listVisible', {});
   }
 
   public async getProductByKey(productKey: string) {
-    const normKey = productKey.toLowerCase();
-    try {
-      const res = await this.query('products:getByKey', { productKey });
-      if (res) return res;
-    } catch {
-      // Fallback
-    }
-    const found = this.inMemoryProducts.find((p) => p.key.toLowerCase() === normKey);
-    if (!found || found.isVisibleToUsers === false) {
-      throw new Error('PRODUCT_NOT_AVAILABLE');
-    }
-    return found;
+    return this.query('products:getByKey', { productKey: productKey.toLowerCase() });
   }
 
   public async getProductUsageStats(productKey: string) {
@@ -3101,15 +3520,7 @@ export class DataService {
   }
 
   public async getAvailableProductsForWorkspace(workspaceId: string) {
-    try {
-      const res = await this.query('products:getAvailableForWorkspace', { workspaceId: workspaceId as any });
-      if (res) return res;
-    } catch {
-      // Fallback
-    }
-    return this.inMemoryProducts
-      .filter((p) => p.isVisibleToUsers === true || p.key === 'inventory')
-      .map((p) => ({ ...p, isActivated: p.key === 'inventory' }));
+    return this.query('products:getAvailableForWorkspace', { workspaceId: workspaceId as any });
   }
 
   public async listApplicationWorkspaces(sessionToken: string, appKey: string, filters?: { status?: string; planKey?: string; search?: string }) {
@@ -3157,25 +3568,17 @@ export class DataService {
     isBeta?: boolean;
     isFeatured?: boolean;
     iconUrl?: string;
+    requiredPlan?: string;
+    isActive?: boolean;
+    isListed?: boolean;
+    orderIndex?: number;
+    metadata?: any;
     documentationUrl?: string;
     supportEmail?: string;
     key?: string;
     subdomain?: string;
   }) {
-    try {
-      return await this.mutate('products:create', data);
-    } catch {
-      const key = data.key || data.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      const newProd = {
-        ...data,
-        key,
-        subdomain: data.subdomain || `${key}.orviohub.com`,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      };
-      this.inMemoryProducts.push(newProd);
-      return newProd;
-    }
+    return this.mutate('products:create', data);
   }
 
   public async updateProduct(
@@ -3188,50 +3591,25 @@ export class DataService {
       isFeatured?: boolean;
       displayOrder?: number;
       iconUrl?: string;
+      requiredPlan?: string;
+      isActive?: boolean;
+      isListed?: boolean;
+      orderIndex?: number;
+      metadata?: any;
       documentationUrl?: string;
       supportEmail?: string;
       subdomain?: string;
-    }
+    }, auditAction?: string
   ) {
-    try {
-      return await this.mutate('products:update', { productKey, updates });
-    } catch {
-      const idx = this.inMemoryProducts.findIndex((p) => p.key === productKey);
-      if (idx === -1) throw new Error('Product not found');
-      this.inMemoryProducts[idx] = {
-        ...this.inMemoryProducts[idx],
-        ...updates,
-        updatedAt: Date.now(),
-      };
-      return this.inMemoryProducts[idx];
-    }
+    return this.mutate('products:update', { productKey, updates, auditAction });
   }
 
   public async archiveProduct(productKey: string) {
-    try {
-      return await this.mutate('products:archive', { productKey });
-    } catch {
-      const idx = this.inMemoryProducts.findIndex((p) => p.key === productKey);
-      if (idx !== -1) {
-        this.inMemoryProducts[idx].status = 'draft';
-        this.inMemoryProducts[idx].updatedAt = Date.now();
-      }
-      return { success: true };
-    }
+    return this.mutate('products:archive', { productKey });
   }
 
   public async deleteProduct(productKey: string) {
-    try {
-      return await this.mutate('products:deleteProduct', { productKey });
-    } catch {
-      const idx = this.inMemoryProducts.findIndex((p) => p.key === productKey);
-      if (idx === -1) throw new Error('Product not found');
-      if (this.inMemoryProducts[idx].status !== 'draft') {
-        throw new Error('Only draft products can be deleted');
-      }
-      this.inMemoryProducts.splice(idx, 1);
-      return { success: true };
-    }
+    return this.mutate('products:deleteProduct', { productKey });
   }
 
   public async getNotifyList(productKey: string) {
@@ -4327,6 +4705,18 @@ export class DataService {
     }
   }
 
+  public async listWebhookEndpoints(workspaceId: string) {
+    return this.query('outboundWebhooks:listEndpoints', { workspaceId: workspaceId as any });
+  }
+
+  public async createWebhookEndpoint(data: { workspaceId: string; url: string; secret: string; eventTypes: string[]; userId: string }) {
+    return this.mutate('outboundWebhooks:createEndpoint', { ...data, workspaceId: data.workspaceId as any, userId: data.userId as any });
+  }
+
+  public async removeWebhookEndpoint(workspaceId: string, endpointId: string) {
+    return this.mutate('outboundWebhooks:removeEndpoint', { workspaceId: workspaceId as any, endpointId: endpointId as any });
+  }
+
   public async acceptInviteFromNotification(inviteId: string, userId: string, notificationId?: string) {
     return await this.mutate('inviteNotifications:acceptInviteFromNotification', {
       inviteId: inviteId as any,
@@ -4635,10 +5025,12 @@ export class DataService {
   /**
    * List branch transfer logs
    */
-  public async listBranchTransfers(workspaceId: string, userId?: string): Promise<any[]> {
+  /** List transfer history, optionally limited to one user or one branch. */
+  public async listBranchTransfers(workspaceId: string, userId?: string, branchId?: string): Promise<any[]> {
     return (await this.query('branchStaff:listBranchTransfers', {
       workspaceId,
       userId: userId as any,
+      branchId,
     })) || [];
   }
 
@@ -4883,6 +5275,8 @@ export class DataService {
       phoneVisibility: user.phoneVisibility || 'workspace',
       country: user.country || 'Nigeria',
       state: user.state || null,
+      stateCode: user.stateCode || null,
+      lga: user.lga || null,
       city: user.city || null,
       hasPendingChallenge: status?.hasPendingChallenge || false,
       pendingChallengeExpiresAt: status?.pendingChallengeExpiresAt || null,
@@ -4893,9 +5287,13 @@ export class DataService {
     userId: string,
     data: {
       phone?: string;
+      phoneVisibility?: 'private' | 'workspace';
       country?: string;
       state?: string;
+      stateCode?: string;
+      lga?: string;
       city?: string;
+      timezone?: string;
       phoneUsedForRecovery?: boolean;
       phoneUsedForMfa?: boolean;
     },
@@ -4916,7 +5314,11 @@ export class DataService {
       phoneNormalized,
       country: data.country,
       state: data.state,
+      stateCode: data.stateCode,
+      lga: data.lga,
       city: data.city,
+      phoneVisibility: data.phoneVisibility,
+      timezone: data.timezone,
       phoneUsedForRecovery: data.phoneUsedForRecovery,
       phoneUsedForMfa: data.phoneUsedForMfa,
     });
@@ -5294,8 +5696,3 @@ export class DataService {
 }
 
 export const dataService = new DataService();
-
-
-
-
-

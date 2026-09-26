@@ -599,11 +599,7 @@ export const getAccessibleBranches = query({
     };
 
     const role = (membership.role || membership.defaultRole || "member").toLowerCase();
-    if (role === "owner" || role === "admin") {
-      return activeBranches.sort(sortFn);
-    }
-
-    // Staff member: resolve branch access from product memberships
+    // Product membership is the most specific branch scope.
     const productMemberships = await ctx.db
       .query("productMemberships")
       .withIndex("by_workspace_user", (q) =>
@@ -624,11 +620,18 @@ export const getAccessibleBranches = query({
       }
     }
 
-    if (allowedBranchIds.size === 0) {
-      return [];
+    if (allowedBranchIds.size > 0) return activeBranches.filter((b) => allowedBranchIds.has(b._id)).sort(sortFn);
+
+    // With no product scope, respect a workspace scope for every role.
+    if (membership.branchIds?.length) {
+      const workspaceAllowed = new Set(membership.branchIds);
+      return activeBranches.filter((b) => workspaceAllowed.has(b._id)).sort(sortFn);
     }
 
-    return activeBranches.filter((b) => allowedBranchIds.has(b._id)).sort(sortFn);
+    // Only owners/admins get the deliberate all-branches default.
+    if (role === "owner" || role === "admin") return activeBranches.sort(sortFn);
+
+    return [];
   },
 });
 

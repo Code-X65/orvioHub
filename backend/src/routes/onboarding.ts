@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { dataService } from '../services/dataService.js';
-import { ERROR_CODES, AVAILABLE_MODULES } from '../config/constants.js';
+import { ERROR_CODES } from '../config/constants.js';
 
 const selectModulesSchema = z.object({
   organizationId: z.string().optional(),
@@ -824,4 +824,138 @@ export const onboardingRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
   );
+
+  // POST /api/v1/onboarding/inventory/complete-step (Direct product onboarding step completion)
+  fastify.post(
+    '/inventory/complete-step',
+    {
+      schema: {
+        tags: ['Onboarding'],
+        summary: 'Mark an Inventory onboarding step completed with metadata',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['step'],
+          properties: {
+            step: { type: 'string' },
+            metadata: { type: 'object' },
+            workspaceId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = request.body as {
+        step: string;
+        metadata?: { productsCount?: number; totalQuantity?: number; branchId?: string };
+        workspaceId?: string;
+      };
+
+      const workspaceId =
+        body.workspaceId ||
+        (request.headers['x-workspace-id'] as string) ||
+        (await dataService.getOnboardingStatus(request.user.id))?.organization?.id;
+
+      let flow = await dataService.getOnboardingFlow(request.user.id, workspaceId, 'inventory');
+      if (!flow && workspaceId) {
+        flow = await dataService.startOnboardingFlow(request.user.id, workspaceId, 'inventory', body.step);
+      }
+
+      if (flow) {
+        await dataService.completeOnboardingStep(
+          (flow as any)._id || (flow as any).id,
+          body.step,
+          body.step === 'opening_stock_entry' ? 'staff_invitation' : undefined,
+          body.metadata
+        );
+      }
+
+      // Audit Log
+      if (workspaceId) {
+        await dataService.logAudit({
+          actorUserId: request.user.id,
+          workspaceId,
+          productKey: 'inventory',
+          eventType: `onboarding.${body.step}_completed`,
+          resource: 'onboardingFlows',
+          ipAddress: request.ip,
+          userAgent: request.headers['user-agent'],
+          metadata: body.metadata || {},
+        }).catch(() => {});
+      }
+
+      return reply.send({
+        success: true,
+        message: `Step ${body.step} completed successfully.`,
+        data: {
+          step: body.step,
+          completed: true,
+          metadata: body.metadata,
+        },
+      });
+    }
+  );
+
+  // POST /api/v1/onboarding/inventory/skip-step (Skip an Inventory onboarding step)
+  fastify.post(
+    '/inventory/skip-step',
+    {
+      schema: {
+        tags: ['Onboarding'],
+        summary: 'Skip an optional Inventory onboarding step',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['step'],
+          properties: {
+            step: { type: 'string' },
+            workspaceId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = request.body as {
+        step: string;
+        workspaceId?: string;
+      };
+
+      const workspaceId =
+        body.workspaceId ||
+        (request.headers['x-workspace-id'] as string) ||
+        (await dataService.getOnboardingStatus(request.user.id))?.organization?.id;
+
+      let flow = await dataService.getOnboardingFlow(request.user.id, workspaceId, 'inventory');
+      if (flow) {
+        await dataService.skipOnboardingStep(
+          (flow as any)._id || (flow as any).id,
+          body.step,
+          body.step === 'opening_stock_entry' ? 'staff_invitation' : undefined
+        );
+      }
+
+      if (workspaceId) {
+        await dataService.logAudit({
+          actorUserId: request.user.id,
+          workspaceId,
+          productKey: 'inventory',
+          eventType: `onboarding.${body.step}_skipped`,
+          resource: 'onboardingFlows',
+          ipAddress: request.ip,
+          userAgent: request.headers['user-agent'],
+          metadata: { step: body.step },
+        }).catch(() => {});
+      }
+
+      return reply.send({
+        success: true,
+        message: `Step ${body.step} skipped.`,
+        data: {
+          step: body.step,
+          skipped: true,
+        },
+      });
+    }
+  );
 };
+

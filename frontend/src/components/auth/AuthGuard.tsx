@@ -62,20 +62,16 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({
     const urlParams = new URLSearchParams(location.search);
     const isExplicitLogout = urlParams.has('logged_out') || urlParams.has('logout');
     if (isExplicitLogout) {
-      // User explicitly initiated a logout handoff -> purge local tokens on this subdomain
-      useAuthStore.getState().logout();
+      // The originating surface already revoked the session. Let the login
+      // page consume the one-time URL marker rather than logging out again,
+      // which could otherwise revoke a session that was just created here.
       return <>{children}</>;
     }
 
     const returnTo = urlParams.get('redirect') || urlParams.get('returnTo') || urlParams.get('return_to');
-    const token = localStorage.getItem('orvio_auth_token');
-    const refreshToken = localStorage.getItem('orvio_refresh_token');
-
     if (returnTo && isAllowedReturnTo(returnTo, host.environment)) {
       try {
         const targetUrl = new URL(returnTo, window.location.origin);
-        if (token) targetUrl.searchParams.set('auth_token', token);
-        if (refreshToken) targetUrl.searchParams.set('refresh_token', refreshToken);
         window.location.href = targetUrl.toString();
         return null;
       } catch {

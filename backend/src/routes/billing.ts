@@ -71,8 +71,10 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const { workspaceId } = request.params as { workspaceId: string };
       try {
-        const usage = await dataService.getWorkspaceUsage(workspaceId);
-        const subscription = await dataService.getWorkspaceSubscription(workspaceId);
+        const [usage, subscription] = await Promise.all([
+          dataService.getWorkspaceUsage(workspaceId),
+          dataService.getWorkspaceSubscription(workspaceId),
+        ]);
         const plan = await dataService.getPlanByKey(subscription.planKey || 'free');
 
         return reply.send({
@@ -886,9 +888,6 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
           const authHeader = request.headers.authorization;
           if (authHeader && authHeader.startsWith('Bearer ')) {
             request.user = await request.jwtVerify();
-          } else if (request.cookies?.session || request.cookies?.orvio_session) {
-            const sessionCookie = request.cookies.session || request.cookies.orvio_session;
-            request.user = fastify.jwt.verify(sessionCookie);
           }
         } catch {
           // Allow guest/onboarding checkout

@@ -4,9 +4,9 @@ import { Header } from '@/components/landing/Header';
 import { Button } from '@/components/ui/button';
 import { CheckCircle2, XCircle, Loader2, ArrowRight, ShieldCheck } from 'lucide-react';
 import { useHost } from '@/host/useHost';
-import { getApiUrl } from '@orviohub/shared';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
+import { api } from '@/lib/api';
 
 export const BillingCallbackPage: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -41,21 +41,11 @@ export const BillingCallbackPage: React.FC = () => {
       }
 
       try {
-        const apiUrl = getApiUrl(env).replace(/\/$/, '');
-        const res = await fetch(
-          `${apiUrl}/api/v1/billing/verify?reference=${encodeURIComponent(reference)}&gateway=${gateway}`,
-          {
-            headers: {
-              ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            },
-          }
-        );
-
-        const data = await res.json().catch(() => ({}));
+        const data: any = await api.get(`/billing/verify?reference=${encodeURIComponent(reference)}&gateway=${encodeURIComponent(gateway)}`, { bypassCache: true });
 
         if (!isMounted) return;
 
-        if (res.ok && data.success) {
+        if (data.success !== false) {
           setStatus('success');
           const verifiedPlan = data.data?.planKey || data.planKey || 'standard';
           setPlanKey(verifiedPlan);

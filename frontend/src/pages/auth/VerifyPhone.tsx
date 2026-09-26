@@ -83,11 +83,11 @@ export const VerifyPhone: React.FC = () => {
         phone: rawNumber,
       });
 
-      setNormalizedPhone(res.data?.normalizedPhone || rawNumber);
+      setNormalizedPhone(res.normalizedPhone || rawNumber);
       setStep('ENTER_OTP');
       setCooldown(60);
       setOtpDigits(['', '', '', '', '', '']);
-      toast.success(`Verification code sent to ${res.data?.normalizedPhone || rawNumber}`);
+      toast.success(`Verification code sent to ${res.normalizedPhone || rawNumber}`);
     } catch (err: any) {
       toast.error(err.message || 'Failed to send verification SMS. Please try again.');
     } finally {

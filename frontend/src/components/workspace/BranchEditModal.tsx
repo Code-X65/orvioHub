@@ -1,107 +1,15 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { useBranchStore, type Branch } from '@/stores/useBranchStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
-import { useLocationStore } from '@/stores/useLocationStore';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
+import { StateSelector } from '@/components/location/StateSelector';
+import { LgaSelector } from '@/components/location/LgaSelector';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
-import { Building2, Tag, X, Edit2, Mail, MapPin, Copy, Phone, ChevronDown, Check, Search } from 'lucide-react';
-import { cn } from '@/lib/utils';
-
-// Helper custom searchable select
-const CustomSelect: React.FC<{
-  value: string;
-  onChange: (val: string) => void;
-  options: { label: string; value: string }[];
-  placeholder?: string;
-  disabled?: boolean;
-}> = ({ value, onChange, options, placeholder = 'Select...', disabled }) => {
-  const [isOpen, setIsOpen] = useState(false);
-  const [search, setSearch] = useState('');
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const filtered = options.filter((o) =>
-    o.label.toLowerCase().includes(search.toLowerCase())
-  );
-
-  const selectedOption = options.find((o) => o.value === value);
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => setIsOpen(!isOpen)}
-        className={cn(
-          'w-full flex items-center justify-between px-3 h-10 rounded-xl bg-[#160f14] border border-white/10 text-xs text-left transition-all',
-          disabled ? 'opacity-50 cursor-not-allowed' : 'hover:border-white/20 focus:border-[#714b67]',
-          selectedOption ? 'text-white' : 'text-slate-500'
-        )}
-      >
-        <span className="truncate">{selectedOption ? selectedOption.label : placeholder}</span>
-        <ChevronDown className={cn('w-3.5 h-3.5 text-slate-400 transition-transform', isOpen && 'rotate-180')} />
-      </button>
-
-      {isOpen && (
-        <div className="absolute left-0 right-0 top-full mt-1.5 z-50 bg-[#160f14] border border-white/15 rounded-xl shadow-2xl overflow-hidden animate-in fade-in duration-100">
-          <div className="p-2 border-b border-white/10">
-            <div className="relative">
-              <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                placeholder="Search..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="w-full bg-black/50 border border-white/10 rounded-lg pl-8 pr-2.5 py-1 text-xs text-white focus:outline-none focus:border-[#714b67]"
-                autoFocus
-              />
-            </div>
-          </div>
-          <div className="max-h-48 overflow-y-auto p-1 divide-y divide-white/5">
-            {filtered.length === 0 ? (
-              <div className="p-2.5 text-center text-xs text-slate-500">No options found</div>
-            ) : (
-              filtered.map((opt) => {
-                const isSelected = opt.value === value;
-                return (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onClick={() => {
-                      onChange(opt.value);
-                      setIsOpen(false);
-                      setSearch('');
-                    }}
-                    className={cn(
-                      'w-full flex items-center justify-between px-3 py-2 text-xs rounded-lg text-left transition-colors cursor-pointer',
-                      isSelected ? 'bg-[#714b67]/30 text-white font-semibold' : 'text-slate-300 hover:bg-white/5'
-                    )}
-                  >
-                    <span>{opt.label}</span>
-                    {isSelected && <Check className="w-3.5 h-3.5 text-[#d4a8c9]" />}
-                  </button>
-                );
-              })
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
+import { Building2, Tag, X, Edit2, Mail, MapPin, Copy, Phone } from 'lucide-react';
 
 interface BranchEditModalProps {
   isOpen: boolean;
@@ -118,7 +26,6 @@ export const BranchEditModal: React.FC<BranchEditModalProps> = ({
 }) => {
   const { currentWorkspace } = useWorkspaceStore();
   const { updateBranch } = useBranchStore();
-  const { states, fetchStates } = useLocationStore();
 
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
@@ -130,11 +37,9 @@ export const BranchEditModal: React.FC<BranchEditModalProps> = ({
   const [street, setStreet] = useState('');
   const [city, setCity] = useState('');
   const [stateName, setStateName] = useState('Lagos');
+  const [stateCode, setStateCode] = useState('LA');
+  const [lga, setLga] = useState('');
   const country = 'Nigeria';
-
-  useEffect(() => {
-    fetchStates();
-  }, [fetchStates]);
 
   const cleanPhone = (val: string) => {
     let raw = val.replace(/\s+/g, '');
@@ -159,6 +64,8 @@ export const BranchEditModal: React.FC<BranchEditModalProps> = ({
       setStreet(branch.street || (typeof branch.address === 'string' && branch.address ? branch.address.split(',')[0] : ''));
       setCity(branch.city || '');
       setStateName(branch.state || 'Lagos');
+      setStateCode(branch.stateCode || 'LA');
+      setLga(branch.lga || '');
     }
   }, [branch]);
 
@@ -171,10 +78,10 @@ export const BranchEditModal: React.FC<BranchEditModalProps> = ({
       let orgState = ws?.state || meta.state || '';
       let orgPhone = ws?.phone || meta.phone || '';
 
-      const orgId = ws?.id || (branch as any)?.organizationId || (branch as any)?.workspaceId;
+      const orgId = ws?.id || (branch as any)?.workspaceId;
       if (!orgStreet && !orgPhone && orgId) {
-        const res = await api.get<any>(`/organizations/${orgId}`).catch(() => null);
-        const orgData = res?.organization || res?.data?.organization || res;
+        const res = await api.get<any>(`/workspaces/${orgId}`).catch(() => null);
+        const orgData = res?.workspace || res;
         if (orgData) {
           orgStreet = orgData.street || orgData.address || '';
           orgCity = orgData.city || '';
@@ -209,7 +116,7 @@ export const BranchEditModal: React.FC<BranchEditModalProps> = ({
     setIsSubmitting(true);
     try {
       const formattedPhone = phoneDigits.trim() ? `+234${cleanPhone(phoneDigits)}` : undefined;
-      const addressParts = [street.trim(), city.trim(), stateName.trim(), country].filter(Boolean);
+      const addressParts = [street.trim(), city.trim(), lga.trim(), stateName.trim(), country].filter(Boolean);
       const formattedAddress = addressParts.length > 0 ? addressParts.join(', ') : undefined;
 
       const updated = await updateBranch(branchId, {
@@ -217,6 +124,8 @@ export const BranchEditModal: React.FC<BranchEditModalProps> = ({
         code: code.trim().toUpperCase(),
         country: 'Nigeria',
         state: stateName.trim() || undefined,
+        stateCode: stateCode || undefined,
+        lga: lga.trim() || undefined,
         city: city.trim() || undefined,
         street: street.trim() || undefined,
         address: formattedAddress,
@@ -234,8 +143,6 @@ export const BranchEditModal: React.FC<BranchEditModalProps> = ({
       setIsSubmitting(false);
     }
   };
-
-  const stateOptions = states.map((s) => ({ label: s.name, value: s.name }));
 
   return createPortal(
     <div
@@ -365,34 +272,9 @@ export const BranchEditModal: React.FC<BranchEditModalProps> = ({
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="space-y-1.5">
-                <Label className="text-xs text-slate-300 font-medium">City / Town</Label>
-                <Input
-                  value={city}
-                  onChange={(e) => setCity(e.target.value)}
-                  placeholder="e.g. Ikeja"
-                  className="bg-black/60 border-white/15 text-xs text-white rounded-xl h-10"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className="text-xs text-slate-300 font-medium">State</Label>
-                <CustomSelect
-                  value={stateName}
-                  onChange={setStateName}
-                  options={stateOptions}
-                  placeholder="Select State"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className="text-xs text-slate-300 font-medium">Country</Label>
-                <Input
-                  value={country}
-                  disabled
-                  className="bg-white/5 border-white/10 text-slate-400 cursor-not-allowed text-xs rounded-xl h-10"
-                />
-              </div>
+              <StateSelector value={stateCode || stateName} onChange={(code, name) => { setStateCode(code); setStateName(name); setLga(''); }} label="State" />
+              <LgaSelector stateCode={stateCode || stateName} value={lga} onChange={setLga} label="LGA" />
+              <div className="space-y-1.5"><Label className="text-xs text-slate-300 font-medium">City / Area</Label><Input value={city} onChange={(e) => setCity(e.target.value)} placeholder="e.g. Ikeja" className="bg-black/60 border-white/15 text-xs text-white rounded-xl h-10" /></div>
             </div>
           </div>
 

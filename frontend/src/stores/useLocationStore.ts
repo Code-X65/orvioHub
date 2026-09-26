@@ -1,18 +1,15 @@
 import { create } from 'zustand';
-import { api } from '../lib/api';
+import { queryClient } from '../lib/react-query-adapter';
+import {
+  fetchNigerianStates,
+  fetchNigerianLgas,
+  STATES_QUERY_KEY,
+  createLgasQueryKey,
+  type NigerianState,
+  type NigerianLga,
+} from '../hooks/useLocations';
 
-export interface NigerianState {
-  _id?: string;
-  name: string;
-  code: string;
-  stateCode: string;
-}
-
-export interface NigerianLga {
-  _id?: string;
-  name: string;
-  stateCode: string;
-}
+export type { NigerianState, NigerianLga };
 
 interface LocationStoreState {
   states: NigerianState[];
@@ -41,11 +38,11 @@ export const useLocationStore = create<LocationStoreState>((set, get) => ({
 
     set({ isLoadingStates: true, error: null });
     try {
-      const response = await api.get<{ states?: NigerianState[]; data?: { states: NigerianState[] } }>(
-        '/locations/states'
-      );
-      const states = response.data?.states || response.states || [];
-      const sorted = [...states].sort((a, b) => a.name.localeCompare(b.name));
+      const sorted = await queryClient.fetchQuery({
+        queryKey: STATES_QUERY_KEY,
+        queryFn: fetchNigerianStates,
+        staleTime: 1000 * 60 * 60 * 24,
+      });
       set({ states: sorted, isLoadingStates: false });
       return sorted;
     } catch (err: any) {
@@ -68,11 +65,11 @@ export const useLocationStore = create<LocationStoreState>((set, get) => ({
     }));
 
     try {
-      const response = await api.get<{ lgas?: NigerianLga[]; data?: { lgas: NigerianLga[] } }>(
-        `/locations/states/${normalized}/lgas`
-      );
-      const lgas = response.data?.lgas || response.lgas || [];
-      const sorted = [...lgas].sort((a, b) => a.name.localeCompare(b.name));
+      const sorted = await queryClient.fetchQuery({
+        queryKey: createLgasQueryKey(normalized),
+        queryFn: () => fetchNigerianLgas(normalized),
+        staleTime: 1000 * 60 * 60 * 24,
+      });
 
       set((state) => ({
         lgasByState: { ...state.lgasByState, [normalized]: sorted },

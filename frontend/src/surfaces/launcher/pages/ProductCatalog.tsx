@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { Search, Sparkles, AlertCircle, Layers, Users, Store } from 'lucide-react';
+import { Search, Sparkles, AlertCircle, Users, Store } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useHost } from '@/host/useHost';
 import { getCrossSubdomainUrl } from '@/lib/domain';
@@ -10,29 +10,9 @@ import { useAuthStore } from '@/stores/useAuthStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { WorkspaceSwitcher } from '@/components/workspace/WorkspaceSwitcher';
 import { ProductCard, ProductCardData } from '../components/ProductCard';
-import { ProductActivationModal } from '../components/ProductActivationModal';
 import { BranchSelectorModal, BranchOption } from '../components/BranchSelectorModal';
 import { ApplicationKey } from '@orviohub/shared';
 import { toast } from 'sonner';
-
-const FALLBACK_VISIBLE_PRODUCTS: ProductCardData[] = [
-  {
-    key: 'inventory',
-    name: 'Inventory',
-    headline: 'Multi-branch stock, barcode POS checkout, sales telemetry & warehouse operations.',
-    description: 'Real-time multi-branch warehouse stock, barcode POS checkout, receipts, sales history & telemetry.',
-    status: 'active',
-    isFeatured: true,
-    isBeta: false,
-    displayOrder: 1,
-    features: [
-      'Real-time stock & transfer sync',
-      'Barcode scanner & instant POS terminal',
-      'Multi-branch and staff access',
-      'Supplier POs & automated reorders',
-    ],
-  },
-];
 
 import { UpgradeModal } from '@/components/billing/UpgradeModal';
 
@@ -47,26 +27,26 @@ export const ProductCatalog: React.FC = () => {
   const host = useHost();
   const env = host.environment;
   const { user: _user, isAuthenticated } = useAuthStore();
-  const { currentWorkspace, products: activatedProducts, workspaces, fetchWorkspaces } = useWorkspaceStore();
+  const { currentWorkspace, workspaces, fetchWorkspaces } = useWorkspaceStore();
 
-  const [products, setProducts] = useState<ProductCardData[]>(FALLBACK_VISIBLE_PRODUCTS);
+  const [products, setProducts] = useState<ProductCardData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
 
   // Modals state
-  const [selectedActivationProduct, setSelectedActivationProduct] = useState<ProductCardData | null>(null);
   const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
   const [upgradeReason, setUpgradeReason] = useState<string | undefined>(undefined);
 
   const fetchProducts = async () => {
     setIsLoading(true);
     try {
-      const res = await api.get<{ products: ProductCardData[] }>('/products');
-      if (res?.products && res.products.length > 0) {
-        setProducts(res.products);
-      }
+      const endpoint = currentWorkspace?.id
+        ? `/workspaces/${currentWorkspace.id}/products/available`
+        : '/products';
+      const res = await api.get<{ products: ProductCardData[] }>(endpoint);
+      setProducts(res?.products || []);
     } catch {
-      // Keep fallback catalog on error
+      setProducts([]);
     } finally {
       setIsLoading(false);
     }
@@ -77,31 +57,15 @@ export const ProductCatalog: React.FC = () => {
     if (isAuthenticated && workspaces.length === 0) {
       fetchWorkspaces().catch(() => {});
     }
-  }, [isAuthenticated, fetchWorkspaces, workspaces.length]);
+  }, [isAuthenticated, fetchWorkspaces, workspaces.length, currentWorkspace?.id]);
 
   // Determine current active plan key & limits
   const activePlanKey = (currentWorkspace?.planKey || currentWorkspace?.planId || 'free').toLowerCase();
   const planInfo = PLAN_LIMITS[activePlanKey] || PLAN_LIMITS.free;
 
-  // Set of active product keys in workspace
-  const activeProductKeys = useMemo(() => {
-    const keys = new Set<string>();
-    if (currentWorkspace?.enabledModules && Array.isArray(currentWorkspace.enabledModules)) {
-      currentWorkspace.enabledModules.forEach((k: string) => keys.add(k.toLowerCase()));
-    }
-    if (activatedProducts) {
-      activatedProducts
-        .filter((p) => (p.status || '').toLowerCase() === 'active' || (p.status || '').toLowerCase() === 'trial')
-        .forEach((p) => keys.add(p.key.toLowerCase()));
-    }
-    return keys;
-  }, [currentWorkspace, activatedProducts]);
-
-  // Filter out draft products and sort by displayOrder
+  // The API already applies canonical active/listed registry rules.
   const visibleProducts = useMemo(() => {
-    return products.filter(
-      (p) => p.key.toLowerCase() === 'inventory' && (p.status || '').toLowerCase() !== 'disabled'
-    );
+    return products;
   }, [products]);
 
   const filteredProducts = useMemo(() => {
@@ -116,31 +80,7 @@ export const ProductCatalog: React.FC = () => {
     );
   }, [visibleProducts, searchQuery]);
 
-  const activeCatalogProducts = useMemo(
-    () => filteredProducts.filter((p) => p.key.toLowerCase() === 'inventory'),
-    [filteredProducts]
-  );
-
-  const handleOpenActivation = (product: ProductCardData) => {
-    const maxApps = typeof planInfo.maxApps === 'number' ? planInfo.maxApps : 999;
-    const isAlreadyActive = activeProductKeys.has(product.key.toLowerCase());
-    const appKey = product.key.toLowerCase();
-    const isAllowedOnPlan = planInfo.allowedApps.includes(appKey);
-
-    if (!isAllowedOnPlan) {
-      setUpgradeReason('app_limit');
-      setUpgradeModalOpen(true);
-      return;
-    }
-
-    if (!isAlreadyActive && activeProductKeys.size >= maxApps) {
-      setUpgradeReason('app_limit');
-      setUpgradeModalOpen(true);
-      return;
-    }
-
-    setSelectedActivationProduct(product);
-  };
+  const activeCatalogProducts = filteredProducts;
 
   const [branchModalProduct, setBranchModalProduct] = useState<ProductCardData | null>(null);
   const [branchOptions, setBranchOptions] = useState<BranchOption[]>([]);
@@ -210,16 +150,6 @@ export const ProductCatalog: React.FC = () => {
 
           {/* Usage & Limits Quick Counters */}
           <div className="flex flex-wrap items-center gap-4 sm:gap-6 text-xs text-slate-300 bg-black/40 border border-white/5 px-4 py-2.5 rounded-xl">
-            <div className="flex items-center gap-2">
-              <Layers className="w-3.5 h-3.5 text-[#FDB02F]" />
-              <span>
-                Apps:{' '}
-                <strong className="text-white">
-                  {activeProductKeys.size} / {planInfo.maxApps}
-                </strong>
-              </span>
-            </div>
-
             <div className="flex items-center gap-2">
               <Users className="w-3.5 h-3.5 text-blue-400" />
               <span>
@@ -324,18 +254,12 @@ export const ProductCatalog: React.FC = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {/* Active Catalog Products */}
           {activeCatalogProducts.map((product) => {
-            const isActivatedInWorkspace = activeProductKeys.has(product.key.toLowerCase());
             const ctaHref = getCrossSubdomainUrl(
               product.key as ApplicationKey,
-              isActivatedInWorkspace ? '/dashboard' : '',
+              '/dashboard',
               true,
               env
             );
-            const appKey = product.key.toLowerCase();
-            const isAllowedOnPlan = planInfo.allowedApps.includes(appKey);
-            const maxApps = typeof planInfo.maxApps === 'number' ? planInfo.maxApps : 999;
-            const isAtAppLimit = !isActivatedInWorkspace && activeProductKeys.size >= maxApps;
-            const needsUpgrade = !isAllowedOnPlan || isAtAppLimit;
 
             // If user is authenticated with active workspace:
             if (isAuthenticated && currentWorkspace) {
@@ -343,26 +267,10 @@ export const ProductCatalog: React.FC = () => {
                 <ProductCard
                   key={product.key}
                   product={product}
-                  type={isActivatedInWorkspace ? 'active' : 'available'}
-                  isActivated={isActivatedInWorkspace}
-                  ctaText={
-                    isActivatedInWorkspace
-                      ? 'Open Inventory'
-                      : needsUpgrade
-                      ? 'Upgrade or resolve billing'
-                      : 'Activate Inventory'
-                  }
-                  ctaHref={isActivatedInWorkspace ? ctaHref : undefined}
-                  onCtaClick={
-                    isActivatedInWorkspace
-                      ? () => handleLaunchApp(product)
-                      : needsUpgrade
-                      ? () => {
-                          setUpgradeReason('app_limit');
-                          setUpgradeModalOpen(true);
-                        }
-                      : () => handleOpenActivation(product)
-                  }
+                  type="active"
+                  ctaText={`Open ${product.name}`}
+                  ctaHref={ctaHref}
+                  onCtaClick={() => handleLaunchApp(product)}
                 />
               );
             }
@@ -373,7 +281,7 @@ export const ProductCatalog: React.FC = () => {
                 key={product.key}
                 product={product}
                 type="active"
-                ctaText="Explore Inventory"
+                ctaText={`Explore ${product.name}`}
                 ctaHref={ctaHref}
               />
             );
@@ -397,18 +305,6 @@ export const ProductCatalog: React.FC = () => {
             window.location.href = `${ctaHref}?branchId=${branch.id}`;
           }}
           onClose={() => setBranchModalProduct(null)}
-        />
-      )}
-
-      {/* Product Activation Modal */}
-      {selectedActivationProduct && (
-        <ProductActivationModal
-          product={selectedActivationProduct}
-          isOpen={Boolean(selectedActivationProduct)}
-          onClose={() => setSelectedActivationProduct(null)}
-          onActivated={() => {
-            fetchWorkspaces();
-          }}
         />
       )}
 

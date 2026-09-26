@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
+import { safeFetch, handleApiError } from '@/lib/error-handler';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { useBranchStore } from '@/stores/useBranchStore';
 import { useLocationStore } from '@/stores/useLocationStore';
@@ -187,7 +188,11 @@ export const SingleBranchConfirmation: React.FC = () => {
 
       // 2. Fallback to API get organization details
       if (!orgStreet && !orgPhone && activeOrgId) {
-        const res = await api.get<any>(`/organizations/${activeOrgId}`).catch(() => null);
+        const res = await safeFetch(api.get<any>(`/organizations/${activeOrgId}`), {
+          context: 'prefill organization address',
+          fallback: null,
+          showError: false,
+        });
         const orgData = res?.organization || res?.data?.organization || res;
         if (orgData) {
           orgStreet = orgData.street || orgData.address || '';
@@ -254,17 +259,21 @@ export const SingleBranchConfirmation: React.FC = () => {
         const addressParts = [street.trim(), city.trim(), stateName.trim(), country].filter(Boolean);
         const formattedAddress = addressParts.length > 0 ? addressParts.join(', ') : undefined;
 
-        finalBranch = await updateBranch(branchId, {
-          name: branchName.trim(),
-          code: branchCode.trim() || undefined,
-          street: street.trim() || undefined,
-          city: city.trim() || undefined,
-          state: stateName.trim() || undefined,
-          country: 'Nigeria',
-          address: formattedAddress,
-          formattedAddress,
-          phone: formattedPhone,
-        }).catch(() => null);
+        try {
+          finalBranch = await updateBranch(branchId, {
+            name: branchName.trim(),
+            code: branchCode.trim() || undefined,
+            street: street.trim() || undefined,
+            city: city.trim() || undefined,
+            state: stateName.trim() || undefined,
+            country: 'Nigeria',
+            address: formattedAddress,
+            formattedAddress,
+            phone: formattedPhone,
+          });
+        } catch (updateErr) {
+          handleApiError(updateErr, 'update default branch');
+        }
       }
 
       let targetBranchId = branchId;
@@ -281,9 +290,9 @@ export const SingleBranchConfirmation: React.FC = () => {
       }
 
       toast.success(`Welcome to ${activeOrgName} Inventory!`);
-      navigate(`/dashboard?org=${activeOrgId}${targetBranchId ? `&branchId=${targetBranchId}` : ''}`);
+      navigate(`/onboard/opening-stock?org=${activeOrgId}${targetBranchId ? `&branchId=${targetBranchId}` : ''}`);
     } catch {
-      navigate(`/dashboard?org=${activeOrgId}${branchId ? `&branchId=${branchId}` : ''}`);
+      navigate(`/onboard/opening-stock?org=${activeOrgId}${branchId ? `&branchId=${branchId}` : ''}`);
     } finally {
       setIsSaving(false);
     }
@@ -551,7 +560,7 @@ export const SingleBranchConfirmation: React.FC = () => {
             onClick={handleContinue}
             className="w-full py-2.5 text-xs text-slate-400 hover:text-white cursor-pointer"
           >
-            <span>Skip to Inventory Dashboard</span>
+            <span>Skip to Opening Stock Entry</span>
           </Button>
         </div>
       </main>
@@ -563,11 +572,11 @@ export const SingleBranchConfirmation: React.FC = () => {
         orgName={activeOrgName}
         onComplete={() => {
           setIsCatalogModalOpen(false);
-          handleContinue();
+          navigate(`/onboard/opening-stock?org=${activeOrgId}${branchId ? `&branchId=${branchId}` : ''}`);
         }}
         onSkip={() => {
           setIsCatalogModalOpen(false);
-          handleContinue();
+          navigate(`/onboard/opening-stock?org=${activeOrgId}${branchId ? `&branchId=${branchId}` : ''}`);
         }}
       />
     </div>

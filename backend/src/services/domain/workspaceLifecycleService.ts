@@ -2,6 +2,7 @@ import { ConvexHttpClient } from 'convex/browser';
 import { BaseRepository } from '../../repositories/baseRepository.js';
 import { AuditNotificationRepository } from '../../repositories/auditNotificationRepository.js';
 import { entitlementService } from '../entitlementService.js';
+import { fireAndForget } from '../../utils/asyncUtils.js';
 import { AUDIT_EVENTS, ERROR_CODES } from '../../config/constants.js';
 
 export interface CreateWorkspaceParams {
@@ -92,15 +93,18 @@ export class WorkspaceLifecycleService extends BaseRepository {
 
     // 4. Audit Log
     if (this.auditRepo) {
-      await this.auditRepo.logAudit({
-        organizationId: params.organizationId,
-        workspaceId,
-        actorUserId: params.ownerId,
-        eventType: AUDIT_EVENTS.WORKSPACE_CREATED,
-        resource: 'workspaces',
-        entityId: workspaceId,
-        metadata: { name: params.name, slug, initialProduct },
-      }).catch(() => {});
+      fireAndForget(
+        this.auditRepo.logAudit({
+          organizationId: params.organizationId,
+          workspaceId,
+          actorUserId: params.ownerId,
+          eventType: AUDIT_EVENTS.WORKSPACE_CREATED,
+          resource: 'workspaces',
+          entityId: workspaceId,
+          metadata: { name: params.name, slug, initialProduct },
+        }),
+        'Audit log for workspace creation'
+      );
     }
 
     return { workspaceId, slug };
@@ -125,14 +129,17 @@ export class WorkspaceLifecycleService extends BaseRepository {
     });
 
     if (this.auditRepo) {
-      await this.auditRepo.logAudit({
-        workspaceId,
-        actorUserId: userId,
-        eventType: AUDIT_EVENTS.WORKSPACE_UPDATED,
-        resource: 'workspaces',
-        entityId: workspaceId,
-        metadata: { updatedFields: Object.keys(data) },
-      }).catch(() => {});
+      fireAndForget(
+        this.auditRepo.logAudit({
+          workspaceId,
+          actorUserId: userId,
+          eventType: AUDIT_EVENTS.WORKSPACE_UPDATED,
+          resource: 'workspaces',
+          entityId: workspaceId,
+          metadata: { updatedFields: Object.keys(data) },
+        }),
+        'Audit log for workspace update'
+      );
     }
 
     return result;
@@ -164,14 +171,17 @@ export class WorkspaceLifecycleService extends BaseRepository {
     await this.mutate('workspaces:deleteWorkspace', { workspaceId: workspaceId as any, userId: userId as any });
 
     if (this.auditRepo) {
-      await this.auditRepo.logAudit({
-        workspaceId,
-        actorUserId: userId,
-        eventType: AUDIT_EVENTS.WORKSPACE_DELETED,
-        resource: 'workspaces',
-        entityId: workspaceId,
-        metadata: { workspaceName: workspace.name },
-      }).catch(() => {});
+      fireAndForget(
+        this.auditRepo.logAudit({
+          workspaceId,
+          actorUserId: userId,
+          eventType: AUDIT_EVENTS.WORKSPACE_DELETED,
+          resource: 'workspaces',
+          entityId: workspaceId,
+          metadata: { workspaceName: workspace.name },
+        }),
+        'Audit log for workspace deletion'
+      );
     }
   }
 }

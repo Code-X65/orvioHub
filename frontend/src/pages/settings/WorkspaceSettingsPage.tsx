@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { api } from '@/lib/api';
+import { handleApiError } from '@/lib/error-handler';
 import { SettingsLayout } from '@/components/settings/SettingsLayout';
 import { SettingsSidebar, type SettingsNavItem } from '@/components/settings/SettingsSidebar';
 import { WorkspaceContextHeader } from '@/components/settings/WorkspaceContextHeader';
@@ -21,7 +22,6 @@ import {
   Palette,
   Globe,
   Bell,
-  Grid,
   Users,
   ScrollText,
   AlertTriangle,
@@ -99,7 +99,6 @@ export const WorkspaceSettingsPage: React.FC = () => {
     defaultNotificationMode: 'all',
   });
 
-  const [applications, setApplications] = useState<any[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogRecord[]>([]);
 
   // Sync tab with URL
@@ -115,69 +114,71 @@ export const WorkspaceSettingsPage: React.FC = () => {
   };
 
   // Fetch Full Settings
-  const loadSettings = useCallback(async () => {
+  const loadSettings = useCallback(async (signal?: AbortSignal) => {
     if (!workspaceId) return;
     setIsLoading(true);
     try {
-      const res = await api.get<{ data: { settings: any } }>(`/workspaces/${workspaceId}/settings`);
-      const s = res.data?.settings;
-      if (s) {
-        setGeneralForm({
-          name: s.name || '',
-          displayName: s.displayName || s.name || '',
-          slug: s.slug || '',
-          type: s.type || 'retail',
-          category: s.category || '',
-          description: s.description || '',
-        });
-        setBusinessForm({
-          email: s.email || '',
-          phone: s.phone || '',
-          category: s.category || '',
-          description: s.description || '',
-        });
-        setAddressForm({
-          country: s.country || 'Nigeria',
-          state: s.state || 'Lagos',
-          lga: 'Ikeja',
-          city: s.city || 'Ikeja',
-          street: s.addressLine1 || '',
-          blockNumber: '',
-          area: '',
-          landmark: '',
-          postalCode: s.postalCode || '',
-        });
-        setBrandingForm({
-          logoUrl: s.logoUrl || '',
-          logoStorageId: s.logoStorageId || '',
-          faviconUrl: s.faviconUrl || '',
-          primaryColor: s.primaryColor || '#714b67',
-          secondaryColor: s.secondaryColor || '#FDB02F',
-        });
-        setLocalizationForm({
-          currency: s.currency || 'NGN',
-          timezone: s.timezone || 'Africa/Lagos',
-          country: s.country || 'Nigeria',
-          defaultLanguage: s.defaultLanguage || 'en',
-          dateFormat: s.dateFormat || 'YYYY-MM-DD',
-          numberFormat: s.numberFormat || 'standard',
-          weekStartsOn: s.weekStartsOn || 'monday',
-        });
-        setNotificationsForm({
-          defaultNotificationMode: s.defaultNotificationMode || 'all',
-        });
+      const [settingsResult, auditResult] = await Promise.allSettled([
+        api.get<{ settings: any }>(`/workspaces/${workspaceId}/settings`, { workspaceId, signal }),
+        api.get<{ logs?: any[] }>(`/workspaces/${workspaceId}/audit`, { workspaceId, signal }),
+      ]);
+
+      if (signal?.aborted) return;
+
+      if (settingsResult.status === 'fulfilled') {
+        const s = settingsResult.value.settings;
+        if (s) {
+          setGeneralForm({
+            name: s.name || '',
+            displayName: s.displayName || s.name || '',
+            slug: s.slug || '',
+            type: s.type || 'retail',
+            category: s.category || '',
+            description: s.description || '',
+          });
+          setBusinessForm({
+            email: s.email || '',
+            phone: s.phone || '',
+            category: s.category || '',
+            description: s.description || '',
+          });
+          setAddressForm({
+            country: s.country || 'Nigeria',
+            state: s.state || 'Lagos',
+            lga: 'Ikeja',
+            city: s.city || 'Ikeja',
+            street: s.addressLine1 || '',
+            blockNumber: '',
+            area: '',
+            landmark: '',
+            postalCode: s.postalCode || '',
+          });
+          setBrandingForm({
+            logoUrl: s.logoUrl || '',
+            logoStorageId: s.logoStorageId || '',
+            faviconUrl: s.faviconUrl || '',
+            primaryColor: s.primaryColor || '#714b67',
+            secondaryColor: s.secondaryColor || '#FDB02F',
+          });
+          setLocalizationForm({
+            currency: s.currency || 'NGN',
+            timezone: s.timezone || 'Africa/Lagos',
+            country: s.country || 'Nigeria',
+            defaultLanguage: s.defaultLanguage || 'en',
+            dateFormat: s.dateFormat || 'YYYY-MM-DD',
+            numberFormat: s.numberFormat || 'standard',
+            weekStartsOn: s.weekStartsOn || 'monday',
+          });
+          setNotificationsForm({
+            defaultNotificationMode: s.defaultNotificationMode || 'all',
+          });
+        }
+      } else {
+        handleApiError(settingsResult.reason, 'load organization settings', { showError: true });
       }
 
-      // Fetch Applications
-      try {
-        const appsRes = await api.get<{ data: { applications: any[] } }>(`/workspaces/${workspaceId}/applications`);
-        setApplications(appsRes.data?.applications || []);
-      } catch {}
-
-      // Fetch Audit Logs
-      try {
-        const auditRes = await api.get<{ data?: { logs: any[] }; logs?: any[] }>(`/organizations/${workspaceId}/audit`);
-        const rawLogs = auditRes.data?.logs || auditRes.logs || [];
+      if (auditResult.status === 'fulfilled') {
+        const rawLogs = auditResult.value.logs || [];
         setAuditLogs(
           rawLogs.map((l: any) => ({
             id: l._id || l.id || Math.random().toString(),
@@ -192,16 +193,25 @@ export const WorkspaceSettingsPage: React.FC = () => {
             afterValues: l.afterValues || l.metadata?.after,
           }))
         );
-      } catch {}
+      } else {
+        handleApiError(auditResult.reason, 'load workspace audit logs', { showError: false });
+      }
     } catch (err: any) {
-      toast.error('Failed to load organization settings: ' + err.message);
+      if (err?.name === 'AbortError' || signal?.aborted) return;
+      handleApiError(err, 'load organization settings');
     } finally {
-      setIsLoading(false);
+      if (!signal?.aborted) {
+        setIsLoading(false);
+      }
     }
   }, [workspaceId]);
 
   useEffect(() => {
-    loadSettings();
+    const controller = new AbortController();
+    loadSettings(controller.signal);
+    return () => {
+      controller.abort();
+    };
   }, [loadSettings]);
 
   // Save Handlers
@@ -298,18 +308,6 @@ export const WorkspaceSettingsPage: React.FC = () => {
     }
   };
 
-  const handleToggleApplication = async (productKey: string, currentStatus: string) => {
-    if (!workspaceId) return;
-    const action = currentStatus === 'active' ? 'deactivate' : 'activate';
-    try {
-      await api.post(`/workspaces/${workspaceId}/applications/${productKey}/${action}`);
-      toast.success(`Application ${productKey} ${action}d successfully.`);
-      loadSettings();
-    } catch (err: any) {
-      toast.error(`Failed to ${action} application: ` + err.message);
-    }
-  };
-
   // Nav items definition
   const navItems: SettingsNavItem[] = [
     { id: 'general', label: 'General & Profile', icon: Building2 },
@@ -318,7 +316,6 @@ export const WorkspaceSettingsPage: React.FC = () => {
     { id: 'branding', label: 'Branding & Logo', icon: Palette },
     { id: 'localization', label: 'Localization & Currency', icon: Globe },
     { id: 'notifications', label: 'Notifications', icon: Bell },
-    { id: 'applications', label: 'Applications & Modules', icon: Grid, badge: applications.length || undefined },
     { id: 'team', label: 'Members & Roles', icon: Users },
     { id: 'audit', label: 'Audit Trail', icon: ScrollText },
     { id: 'danger', label: 'Data & Retention', icon: AlertTriangle, danger: true },
@@ -744,70 +741,6 @@ export const WorkspaceSettingsPage: React.FC = () => {
         </form>
       )}
 
-      {/* 7. Applications Catalog Tab */}
-      {activeTab === 'applications' && (
-        <div className="space-y-6 animate-in fade-in duration-150">
-          <div className="border-b border-white/10 pb-4">
-            <h2 className="text-base font-bold text-white">Application Catalog & Modules</h2>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Enable or suspend product modules for this organization.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {applications.map((app) => {
-              const isActive = app.status === 'active';
-
-              return (
-                <div
-                  key={app.key}
-                  className="p-5 rounded-2xl border border-white/10 bg-black/40 flex flex-col justify-between space-y-4 hover:border-white/20 transition-all shadow-lg"
-                >
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                        {app.name}
-                      </h3>
-                      <span
-                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
-                          isActive
-                            ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
-                            : 'bg-white/5 text-slate-400 border-white/10'
-                        }`}
-                      >
-                        {isActive ? 'Active' : 'Available'}
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-400 leading-relaxed">{app.description}</p>
-                  </div>
-
-                  <div className="flex items-center justify-between pt-3 border-t border-white/5">
-                    <span className="text-[10px] font-mono text-slate-500 uppercase">
-                      Category: {app.category}
-                    </span>
-
-                    {isOwnerOrAdmin && (
-                      <Button
-                        type="button"
-                        variant={isActive ? 'outline' : 'default'}
-                        size="sm"
-                        onClick={() => handleToggleApplication(app.key, app.status)}
-                        className={`h-8 text-xs font-semibold ${
-                          isActive
-                            ? 'border-rose-500/30 text-rose-300 hover:bg-rose-500/10'
-                            : 'bg-[#714b67] hover:bg-[#86597a] text-white shadow-lg shadow-[#714b67]/25'
-                        }`}
-                      >
-                        {isActive ? 'Deactivate' : 'Activate Module'}
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
 
       {/* 8. Team & Roles Redirect Tab */}
       {activeTab === 'team' && (
@@ -868,8 +801,10 @@ export const WorkspaceSettingsPage: React.FC = () => {
               a.click();
             }}
             onArchive={async (reason) => {
+              // Workspace archival is still served by the legacy administrative endpoint.
+              // Keep this isolated from normal workspace navigation until its workspace route ships.
               await api.post(`/organizations/${workspaceId}/archive`, { reason });
-              toast.success('Organization archived.');
+              toast.success('Workspace archived.');
               navigate('/dashboard');
             }}
             onDeleteRequest={async (reason) => {

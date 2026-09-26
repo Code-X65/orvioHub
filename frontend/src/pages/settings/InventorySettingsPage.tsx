@@ -92,10 +92,10 @@ export const InventorySettingsPage: React.FC = () => {
     if (!workspaceId) return;
     setIsLoading(true);
     try {
-      const res = await api.get<{ data: { application: any } }>(
-        `/workspaces/${workspaceId}/applications/inventory/settings`
+      const res = await api.get<{ application: any }>(
+        `/workspaces/${workspaceId}/applications/inventory/settings`, { workspaceId }
       );
-      const app = res.data?.application;
+      const app = res.application;
       if (app?.settings) {
         if (app.settings.productConfig) setProductConfig(app.settings.productConfig);
         if (app.settings.stockRules) setStockRules(app.settings.stockRules);

@@ -13,15 +13,33 @@ const updateBranchSettingsSchema = z.object({
 export const branchSettingsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.addHook('preHandler', fastify.authenticate);
 
+  // Branch settings are workspace-scoped. Read access requires the same
+  // canonical branch guard used by inventory; writes require inventory's
+  // manage-settings permission.
+  const requireSettingsRead = async (request: any, reply: any) => {
+    await fastify.requireWorkspaceMembership(request, reply);
+    if (reply.sent) return;
+    await fastify.requireProductEntitlement('inventory')(request, reply);
+    if (reply.sent) return;
+    await fastify.requireBranchAccess('inventory')(request, reply);
+  };
+  const requireSettingsWrite = async (request: any, reply: any) => {
+    await fastify.requireProductPermission('inventory', 'manage_settings', { requireBranchAccess: true })(request, reply);
+    if (!reply.sent) await fastify.requireBranchAccess('inventory')(request, reply);
+  };
+
   // 1. GET Branch Details with Operational Settings
-  fastify.get('/workspaces/:workspaceId/branches/:branchId/settings', async (request, reply) => {
-    const { branchId } = request.params as { workspaceId: string; branchId: string };
+  fastify.get('/workspaces/:workspaceId/branches/:branchId/settings', { preHandler: requireSettingsRead }, async (request, reply) => {
+    const { workspaceId, branchId } = request.params as { workspaceId: string; branchId: string };
     try {
       const branchSettings = await dataService.getFullBranchSettings(branchId);
+      if (branchSettings && String(branchSettings.workspaceId) !== String(workspaceId)) {
+        return reply.status(404).send({ success: false, error: { code: 'not_found', message: 'Branch not found.' } });
+      }
       if (!branchSettings) {
         return reply.status(404).send({
           success: false,
-          error: { code: 'BRANCH_NOT_FOUND', message: 'Branch not found' },
+          error: { code: 'not_found', message: 'Branch not found' },
         });
       }
       return reply.send({ success: true, data: { branch: branchSettings } });
@@ -35,8 +53,8 @@ export const branchSettingsRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   // 2. PATCH Branch Operational Settings
-  fastify.patch('/workspaces/:workspaceId/branches/:branchId/settings', async (request, reply) => {
-    const { branchId } = request.params as { workspaceId: string; branchId: string };
+  fastify.patch('/workspaces/:workspaceId/branches/:branchId/settings', { preHandler: requireSettingsWrite }, async (request, reply) => {
+    const { workspaceId, branchId } = request.params as { workspaceId: string; branchId: string };
     const parsed = updateBranchSettingsSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({
@@ -47,6 +65,8 @@ export const branchSettingsRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       await dataService.updateBranchOperationalSettings(branchId, parsed.data, request.user.id);
       const updated = await dataService.getFullBranchSettings(branchId);
+      if (updated && String(updated.workspaceId) !== String(workspaceId)) return reply.status(404).send({ success: false, error: { code: 'not_found', message: 'Branch not found.' } });
+      await dataService.logAudit({ actorUserId: request.user.id, workspaceId, productKey: 'inventory', eventType: 'branch.settings_updated', action: 'branch.settings_updated', resource: 'branchSettings', entityId: branchId, metadata: parsed.data });
       return reply.send({
         success: true,
         data: { branch: updated },

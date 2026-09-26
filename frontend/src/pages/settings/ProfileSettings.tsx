@@ -296,8 +296,8 @@ export const ProfileSettings: React.FC = () => {
   const handleExportData = async () => {
     setIsExporting(true);
     try {
-      const res = await api.get<{ data: any }>('/auth/account/export');
-      const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(res.data, null, 2));
+      const res = await api.get<Record<string, unknown>>('/auth/account/export');
+      const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(res, null, 2));
       const downloadAnchor = document.createElement('a');
       downloadAnchor.setAttribute('href', dataStr);
       downloadAnchor.setAttribute('download', `orvio-user-data-${user?.id || 'export'}.json`);

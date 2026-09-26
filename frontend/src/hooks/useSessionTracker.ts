@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { getCurrentSubdomain } from '@/lib/domain';
 import { api } from '@/lib/api';
+import { handleApiError } from '@/lib/error-handler';
 
 const EXCLUDED_PATHS = new Set([
   '/login',
@@ -43,8 +44,8 @@ export function useSessionTracker() {
       api.post('/auth/session/context', {
         lastVisitedUrl: fullTargetUrl,
         lastVisitedSubdomain: subdomain,
-      }).catch(() => {
-        // Silently ignore context recording failures
+      }).catch((err) => {
+        handleApiError(err, 'record session context', { showError: false });
       });
     }, 1200);
 

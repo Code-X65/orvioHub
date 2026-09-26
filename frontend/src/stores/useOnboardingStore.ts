@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { api } from '@/lib/api';
+import { handleApiError } from '@/lib/error-handler';
 
 export interface OnboardingState {
   status: 'pending' | 'in_progress' | 'completed' | 'abandoned';
@@ -79,12 +80,13 @@ export const useOnboardingStore = create<OnboardingState>()(
       await api.patch('/onboarding/progress', { step, data });
       set((state) => ({
         currentStep: step,
-        formData: { ...state.formData, [step]: data, ...data },
+        formData: { ...state.formData, [step]: data },
       }));
-    } catch {
+    } catch (err) {
+      handleApiError(err, 'save onboarding progress', { showError: false });
       set((state) => ({
         currentStep: step,
-        formData: { ...state.formData, [step]: data, ...data },
+        formData: { ...state.formData, [step]: data },
       }));
     }
   },
@@ -95,9 +97,10 @@ export const useOnboardingStore = create<OnboardingState>()(
       set((state) => ({
         currentStep: nextStep || step,
         completedSteps: Array.from(new Set([...state.completedSteps, step])),
-        formData: data ? { ...state.formData, [step]: data, ...data } : state.formData,
+        formData: data ? { ...state.formData, [step]: data } : state.formData,
       }));
-    } catch {
+    } catch (err) {
+      handleApiError(err, 'complete onboarding step', { showError: false });
       set((state) => ({
         currentStep: nextStep || step,
         completedSteps: Array.from(new Set([...state.completedSteps, step])),

@@ -1,5 +1,6 @@
 import { query, mutation } from "./_generated/server.js";
 import { v } from "convex/values";
+import bcrypt from "bcryptjs";
 
 export const getUserByEmail = query({
   args: { email: v.string() },
@@ -146,6 +147,7 @@ export const setVerificationToken = mutation({
       emailVerificationToken: args.token,
       emailVerificationExpiresAt: args.expiresAt,
       ...(args.code ? { emailVerificationCode: args.code, emailVerificationCodeExpiresAt: args.codeExpiresAt } : {}),
+      failedEmailVerificationAttempts: 0,
       updatedAt: Date.now(),
     });
   },
@@ -186,7 +188,21 @@ export const verifyUserEmail = mutation({
           .withIndex("by_email", (q) => q.eq("email", emailNorm))
           .first();
 
-        if (!user || user.emailVerificationCode !== cleanCode) {
+        if (!user) {
+          throw new Error("INVALID_CODE");
+        }
+        if (user.emailVerificationCode !== cleanCode) {
+          const failedAttempts = (user.failedEmailVerificationAttempts || 0) + 1;
+          await ctx.db.patch(user._id, {
+            failedEmailVerificationAttempts: failedAttempts,
+            ...(failedAttempts >= 5
+              ? {
+                  emailVerificationCode: undefined,
+                  emailVerificationCodeExpiresAt: undefined,
+                }
+              : {}),
+            updatedAt: Date.now(),
+          });
           throw new Error("INVALID_CODE");
         }
       } else {
@@ -220,6 +236,7 @@ export const verifyUserEmail = mutation({
       emailVerificationExpiresAt: undefined,
       emailVerificationCode: undefined,
       emailVerificationCodeExpiresAt: undefined,
+      failedEmailVerificationAttempts: undefined,
       updatedAt: now,
     });
 
@@ -1237,8 +1254,14 @@ export const consumeBackupCode = mutation({
     const user = await ctx.db.get(args.userId);
     if (!user || !user.twoFactorBackupCodes) throw new Error("INVALID_BACKUP_CODE");
 
-    const normalizedInput = args.code.trim().toUpperCase();
-    const index = user.twoFactorBackupCodes.findIndex((c) => c.toUpperCase() === normalizedInput);
+    const normalizedInput = args.code.trim().replace("-", "").toUpperCase();
+    const index = (await Promise.all(
+      user.twoFactorBackupCodes.map(async (storedCode) => {
+        if (storedCode.startsWith("$2")) return bcrypt.compare(normalizedInput, storedCode);
+        // Compatibility for existing records; newly issued backup codes are bcrypt hashes.
+        return storedCode.replace("-", "").toUpperCase() === normalizedInput;
+      })
+    )).findIndex(Boolean);
     if (index === -1) {
       throw new Error("INVALID_BACKUP_CODE");
     }

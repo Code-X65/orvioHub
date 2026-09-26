@@ -27,7 +27,7 @@ export const InvoiceDetailPage: React.FC = () => {
       try {
         const res: any = await api.get(`/billing/invoices/${invoiceId}`);
         if (res?.data) {
-          setInvoice(res.data);
+          setInvoice(res);
         } else if (res?.success && res?.invoice) {
           setInvoice(res.invoice);
         } else {

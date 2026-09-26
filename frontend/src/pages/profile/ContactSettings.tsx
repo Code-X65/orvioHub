@@ -11,6 +11,7 @@ import { PhoneInput } from '@/components/phone/PhoneInput';
 import { OtpVerificationModal } from '@/components/phone/OtpVerificationModal';
 import { StateSelector } from '@/components/location/StateSelector';
 import { LgaSelector } from '@/components/location/LgaSelector';
+import { useNigerianStates } from '@/hooks/useLocations';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -34,6 +35,7 @@ const contactSchema = z.object({
   phoneVisibility: z.enum(['private', 'workspace']).default('private'),
   country: z.string().min(2, 'Country is required'),
   state: z.string().optional(),
+  stateCode: z.string().optional(),
   lga: z.string().optional(),
   city: z.string().optional(),
   timezone: z.string().default('Africa/Lagos'),
@@ -56,8 +58,9 @@ export const ContactSettings: React.FC = () => {
   const [newPhoneNumber, setNewPhoneNumber] = useState('');
   const [phoneForOtp, setPhoneForOtp] = useState<string | null>(null);
 
+  const { states } = useNigerianStates();
   // Track stateCode separately — LgaSelector needs the code (e.g. "LA"), not the name ("Lagos")
-  const [selectedStateCode, setSelectedStateCode] = useState('');
+  const [selectedStateCode, setSelectedStateCode] = useState(user?.stateCode || '');
 
   const {
     register,
@@ -72,7 +75,8 @@ export const ContactSettings: React.FC = () => {
       phoneVisibility: (user?.phoneVisibility as 'private' | 'workspace') || 'private',
       country: user?.country || 'Nigeria',
       state: user?.state || '',
-      lga: '',
+      stateCode: user?.stateCode || '',
+      lga: user?.lga || '',
       city: user?.city || '',
       timezone: user?.timezone || 'Africa/Lagos',
     },
@@ -82,18 +86,27 @@ export const ContactSettings: React.FC = () => {
 
   useEffect(() => {
     if (user) {
+      // Determine resolved state code from user.stateCode or matching user.state in states list
+      let resolvedCode = user.stateCode || '';
+      if (!resolvedCode && user.state && states.length > 0) {
+        const found = states.find(
+          (s) => s.name.toLowerCase() === user.state?.toLowerCase() || s.code === user.state || s.stateCode === user.state
+        );
+        if (found) resolvedCode = found.code || found.stateCode;
+      }
+
       reset({
         phoneVisibility: (user.phoneVisibility as 'private' | 'workspace') || 'private',
         country: user.country || 'Nigeria',
         state: user.state || '',
+        stateCode: resolvedCode,
         lga: user.lga || '',
         city: user.city || '',
         timezone: user.timezone || 'Africa/Lagos',
       });
-      // Restore stateCode if saved
-      if (user.stateCode) setSelectedStateCode(user.stateCode);
+      setSelectedStateCode(resolvedCode);
     }
-  }, [user, reset]);
+  }, [user, states, reset]);
 
   useEffect(() => {
     fetchPhones();
@@ -102,8 +115,14 @@ export const ContactSettings: React.FC = () => {
   const onSubmit = async (data: ContactFormData) => {
     setIsLoading(true);
     try {
-      const res = await api.patch<{ user: any }>('/users/me/contact', data);
-      updateUser(res.user);
+      const payload = {
+        ...data,
+        stateCode: selectedStateCode || data.stateCode,
+      };
+      const res = await api.patch<{ user?: any; data?: any }>('/users/me/contact', payload);
+      if (res.user) {
+        updateUser(res.user);
+      }
       await refreshSession();
       toast.success('Contact & location information saved.');
     } catch (err: any) {
@@ -376,6 +395,7 @@ export const ContactSettings: React.FC = () => {
                 onChange={(code, name) => {
                   setSelectedStateCode(code);
                   setValue('state', name, { shouldDirty: true });
+                  setValue('stateCode', code, { shouldDirty: true });
                   setValue('lga', '', { shouldDirty: true });
                 }}
                 label="State"

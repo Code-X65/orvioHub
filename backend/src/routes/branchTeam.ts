@@ -1,8 +1,9 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { dataService } from '../services/dataService.js';
-import { ERROR_CODES, AUDIT_EVENTS } from '../config/constants.js';
+import { ERROR_CODES } from '../config/constants.js';
 import { INVENTORY_ROLE_PERMISSIONS, type InventoryRole } from '../config/inventoryRbac.js';
+import { realtimeHub, realtimeRooms } from '../services/realtimeHub.js';
 
 
 const inviteBranchMemberSchema = z.object({
@@ -16,7 +17,10 @@ const inviteBranchMemberSchema = z.object({
     'accountant',
     'inventory_viewer',
   ]),
-  branchId: z.string().min(1, 'Branch ID is required'),
+  // Empty branchIds means all branches; a legacy single branchId is also accepted.
+  branchId: z.string().min(1).optional(),
+  branchIds: z.array(z.string().min(1)).optional(),
+  catalogScope: z.array(z.string().min(1)).optional(),
   message: z.string().max(500).optional(),
   permissions: z.array(z.string()).optional(),
 });
@@ -32,6 +36,8 @@ const updateRoleSchema = z.object({
     'inventory_viewer',
   ]),
   permissions: z.array(z.string()).optional(),
+  branchIds: z.array(z.string().min(1)).optional(),
+  catalogScope: z.array(z.string().min(1)).optional(),
 });
 
 const transferStaffSchema = z.object({
@@ -55,15 +61,76 @@ export const branchTeamRoutes: FastifyPluginAsync = async (fastify) => {
   // All team management routes require authentication
   fastify.addHook('preHandler', fastify.authenticate);
 
-  // Helper to extract workspace/organization ID from request params
+  /**
+   * Non-negotiable guard for every workspace inventory-team route. Mutations
+   * require a workspace manager; reads retain branch-scoped visibility.
+   * Branch IDs in params, query, or invite bodies are all checked by the one
+   * canonical Fastify branch guard.
+   */
+  fastify.addHook('preHandler', async (request: any, reply: any) => {
+    const workspaceId = request.params?.workspaceId;
+    if (!workspaceId || (!String(request.url).includes('/applications/inventory') && !String(request.url).includes('/products/inventory'))) return;
+    await fastify.requireWorkspaceMembership(request, reply);
+    if (reply.sent) return;
+    await fastify.requireProductEntitlement('inventory')(request, reply);
+    if (reply.sent) return;
+
+    const method = String(request.method).toUpperCase();
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+      const workspaceRole = String(request.workspaceMembership?.role || '').toLowerCase();
+      const productMembership: any = await dataService.getProductMembership(workspaceId, request.user.id, 'inventory');
+      const productRole = String(productMembership?.role || '').toLowerCase();
+      const canManage = ['owner', 'admin', 'manager'].includes(workspaceRole)
+        || ['inventory_owner', 'inventory_manager'].includes(productRole)
+        || productMembership?.permissions?.includes('manage_members')
+        || productMembership?.permissions?.includes('manage_branch_members');
+      if (!canManage) {
+        return reply.status(403).send({ success: false, error: { code: 'permission_denied', message: 'You do not have permission to manage branch team members.' } });
+      }
+    }
+
+    const branchIds = Array.from(new Set([
+      request.params?.branchId,
+      request.query?.branchId,
+      request.body?.branchId,
+      ...(Array.isArray(request.body?.branchIds) ? request.body.branchIds : []),
+    ].filter(Boolean).map(String)));
+    if (!branchIds.length) return;
+    const originalBranchId = request.body?.branchId;
+    for (const branchId of branchIds) {
+      if (request.body && typeof request.body === 'object') request.body.branchId = branchId;
+      await fastify.requireBranchAccess('inventory')(request, reply);
+      if (reply.sent) break;
+    }
+    if (request.body && typeof request.body === 'object') request.body.branchId = originalBranchId;
+  });
+
+  // Branch presence: clients may send { type: 'shift.started' | 'register.assigned', data }.
+  fastify.get('/workspaces/:workspaceId/branches/:branchId/presence', { websocket: true }, async (socket, request: any) => {
+    await fastify.requireWorkspaceMembership(request, { sent: false } as any);
+    if (!request.workspaceMembership) return socket.close(1008, 'workspace_access_denied');
+    await fastify.requireBranchAccess('inventory')(request, { sent: false } as any);
+    const room = realtimeRooms.branchPresence(request.params.workspaceId, request.params.branchId);
+    realtimeHub.join(room, socket as any);
+    realtimeHub.publish(room, { type: 'user.joined', userId: request.user.id, workspaceId: request.params.workspaceId, branchId: request.params.branchId });
+    socket.on('message', (raw: Buffer) => {
+      try { const message = JSON.parse(raw.toString()); if (['shift.started', 'register.assigned'].includes(message.type)) realtimeHub.publish(room, { type: message.type, userId: request.user.id, workspaceId: request.params.workspaceId, branchId: request.params.branchId, data: message.data || {} }); } catch { /* ignore invalid client frames */ }
+    });
+    socket.on('close', () => realtimeHub.publish(room, { type: 'user.left', userId: request.user.id, workspaceId: request.params.workspaceId, branchId: request.params.branchId }));
+  });
+
+  fastify.get('/workspaces/:workspaceId/team/stream', { websocket: true }, async (socket, request: any) => {
+    await fastify.requireWorkspaceMembership(request, { sent: false } as any);
+    if (!request.workspaceMembership) return socket.close(1008, 'workspace_access_denied');
+    realtimeHub.join(realtimeRooms.team(request.params.workspaceId), socket as any);
+  });
+
+  // Workspace is the sole tenancy boundary for branch-team operations.
   const getContextId = (req: any): string => {
     return (
       req.params.workspaceId ||
-      req.params.organizationId ||
-      req.params.orgId ||
       req.params.id ||
       req.headers['x-workspace-id'] ||
-      req.headers['x-organization-id'] ||
       ''
     );
   };
@@ -80,15 +147,27 @@ export const branchTeamRoutes: FastifyPluginAsync = async (fastify) => {
 
     const { branchId, status } = (request.query || {}) as { branchId?: string; status?: string };
     try {
+      await fastify.requireWorkspaceMembership(request, reply);
+      if (reply.sent) return;
+      await fastify.requireProductEntitlement('inventory')(request, reply);
+      if (reply.sent) return;
+      if (branchId) {
+        await fastify.requireBranchAccess('inventory')(request, reply);
+        if (reply.sent) return;
+      }
       const members = await dataService.listBranchMembers(workspaceId, {
         applicationKey: 'inventory',
         branchId: branchId || request.params.branchId,
         status,
       });
 
+      const scope = await fastify.resolveBranchScope(request, 'inventory');
+      const scopedMembers = branchId || scope.type === 'all'
+        ? members
+        : members.filter((member: any) => scope.branchIds.includes(String(member.branchId)));
       return reply.send({
         success: true,
-        data: { members },
+        data: { members: scopedMembers },
       });
     } catch (err: any) {
       request.log.error({ err, workspaceId }, 'Failed to list branch team members');
@@ -121,14 +200,24 @@ export const branchTeamRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
 
-    const { email, role, branchId, message } = parsed.data;
+    const { email, role, message } = parsed.data;
+    let branchIds = parsed.data.branchIds || (parsed.data.branchId ? [parsed.data.branchId] : []);
+    // Staff cannot use an implicit empty scope as an "all branches" bypass.
+    // Expand the UI's all-branches selection into an explicit current scope.
+    if (branchIds.length === 0) {
+      const allBranches: any[] = await dataService.getBranches(workspaceId);
+      branchIds = allBranches
+        .filter((branch) => branch.isActive !== false && branch.status !== 'archived' && branch.status !== 'deleted')
+        .map((branch) => String(branch._id || branch.id));
+    }
+    const catalogScope = parsed.data.catalogScope;
     const normalizedEmail = email.toLowerCase().trim();
 
     try {
       // 1. Fetch branch details for name/code
       let branchName = 'Main Store';
       try {
-        const branch = await dataService.getBranchById(branchId);
+        const branch = branchIds[0] ? await dataService.getBranchById(branchIds[0]) : null;
         if (branch?.name) branchName = branch.name;
       } catch {}
 
@@ -144,10 +233,12 @@ export const branchTeamRoutes: FastifyPluginAsync = async (fastify) => {
           {
             productKey: 'inventory',
             appRole: role,
-            branchIds: [branchId],
+            branchIds,
+            catalogScope,
           },
         ],
-        branchIds: [branchId],
+        branchIds,
+        catalogScope,
         message,
       });
 
@@ -156,7 +247,7 @@ export const branchTeamRoutes: FastifyPluginAsync = async (fastify) => {
         actorUserId: request.user.id,
         workspaceId,
         productKey: 'inventory',
-        eventType: AUDIT_EVENTS.WORKSPACE_MEMBER_INVITED || 'inventory.member_invited',
+        eventType: 'inventory.member_invited',
         action: 'inventory.member_invited',
         resource: 'branch_invitations',
         entityId: (invitation as any)?.id || (invitation as any)?._id || normalizedEmail,
@@ -165,7 +256,8 @@ export const branchTeamRoutes: FastifyPluginAsync = async (fastify) => {
         metadata: {
           email: normalizedEmail,
           role,
-          branchId,
+          branchIds,
+          catalogScope: catalogScope || ['all'],
           branchName,
         },
       });
@@ -177,7 +269,8 @@ export const branchTeamRoutes: FastifyPluginAsync = async (fastify) => {
             id: (invitation as any)?.id || (invitation as any)?._id,
             email: normalizedEmail,
             role,
-            branchId,
+            branchIds,
+            catalogScope: catalogScope || ['all'],
             branchName,
             status: 'pending',
             expiresAt: invitation.expiresAt,
@@ -188,6 +281,9 @@ export const branchTeamRoutes: FastifyPluginAsync = async (fastify) => {
       });
     } catch (err: any) {
       request.log.error({ err, workspaceId, email }, 'Failed to send branch invitation');
+      if (String(err?.message || '').includes('member_limit_exceeded')) {
+        return reply.status(403).send({ success: false, error: { code: 'member_limit_exceeded', message: 'Your workspace has reached its member limit. Upgrade your plan to invite another member.' } });
+      }
       return reply.status(500).send({
         success: false,
         error: { code: ERROR_CODES.INTERNAL_SERVER_ERROR, message: err.message || 'Failed to send invitation' },
@@ -285,6 +381,28 @@ export const branchTeamRoutes: FastifyPluginAsync = async (fastify) => {
         updatedBy: request.user.id,
       });
 
+      if (parsed.data.branchIds) {
+        await dataService.logAudit({ actorUserId: request.user.id, workspaceId, productKey: 'inventory', eventType: 'inventory.member_branch_access_changed', action: 'inventory.member_branch_access_changed', resource: 'productMemberships', entityId: membershipId, metadata: { branchIds: parsed.data.branchIds } });
+      }
+      if (parsed.data.catalogScope) {
+        await dataService.logAudit({ actorUserId: request.user.id, workspaceId, productKey: 'inventory', eventType: 'inventory.member_catalog_access_changed', action: 'inventory.member_catalog_access_changed', resource: 'productMemberships', entityId: membershipId, metadata: { catalogScope: parsed.data.catalogScope } });
+      }
+
+      // Product membership owns both branch and catalog scopes. This keeps the
+      // older role endpoint compatible while allowing a single edit form.
+      if (parsed.data.branchIds || parsed.data.catalogScope) {
+        const member = await dataService.getWorkspaceMemberById(workspaceId, membershipId, request.user.id);
+        await dataService.updateMemberAccess({
+          workspaceId,
+          memberUserId: (member as any).userId,
+          callerUserId: request.user.id,
+          appAccess: [{
+            productKey: 'inventory', enabled: true, appRole: parsed.data.role,
+            branchIds: parsed.data.branchIds || [], catalogScope: parsed.data.catalogScope,
+          }],
+        });
+      }
+
       await dataService.logAudit({
         actorUserId: request.user.id,
         workspaceId,
@@ -293,7 +411,7 @@ export const branchTeamRoutes: FastifyPluginAsync = async (fastify) => {
         action: 'inventory.member_role_changed',
         resource: 'branch_memberships',
         entityId: membershipId,
-        metadata: { newRole: parsed.data.role },
+        metadata: { newRole: parsed.data.role, branchIds: parsed.data.branchIds, catalogScope: parsed.data.catalogScope },
       });
 
       return reply.send({
@@ -303,10 +421,7 @@ export const branchTeamRoutes: FastifyPluginAsync = async (fastify) => {
       });
     } catch (err: any) {
       request.log.error({ err, membershipId }, 'Failed to update member role');
-      return reply.status(500).send({
-        success: false,
-        error: { code: ERROR_CODES.INTERNAL_SERVER_ERROR, message: err.message || 'Failed to update member role' },
-      });
+      return sendBranchMutationError(reply, err);
     }
   };
 
@@ -575,6 +690,28 @@ export const branchTeamRoutes: FastifyPluginAsync = async (fastify) => {
     }
   };
 
+  const sendBranchMutationError = (reply: any, err: any) => {
+    const code = String(err?.message || '');
+    if (code.includes('branch_access_denied') || code.includes('permission_denied')) {
+      return reply.status(403).send({ success: false, error: { code: code.includes('branch_access_denied') ? 'branch_access_denied' : 'permission_denied', message: 'You do not have permission to manage this branch member.' } });
+    }
+    if (code.includes('not_found')) return reply.status(404).send({ success: false, error: { code: 'not_found', message: 'Branch membership not found.' } });
+    return reply.status(500).send({ success: false, error: { code: ERROR_CODES.INTERNAL_SERVER_ERROR, message: 'Unable to update branch member.' } });
+  };
+
+  /** Per-branch transfer history; a transfer is visible when it touches the branch. */
+  fastify.get('/workspaces/:workspaceId/branches/:branchId/transfers', {
+    preHandler: async (request: any, reply: any) => {
+      await fastify.requireWorkspaceMembership(request, reply);
+      if (!reply.sent) await fastify.requireProductEntitlement('inventory')(request, reply);
+      if (!reply.sent) await fastify.requireBranchAccess('inventory')(request, reply);
+    },
+  }, async (request: any, reply: any) => {
+    const { workspaceId, branchId } = request.params;
+    const transfers = await dataService.listBranchTransfers(workspaceId, request.query?.userId, branchId);
+    return reply.send({ success: true, data: { transfers } });
+  });
+
   // 13. Safe user search: GET /api/v1/users/search?email=...
   fastify.get('/users/search', async (request: any, reply: any) => {
     const email = request.query?.email;
@@ -619,18 +756,15 @@ export const branchTeamRoutes: FastifyPluginAsync = async (fastify) => {
         message: `Member status updated to ${status}.`,
       });
     } catch (err: any) {
-      return reply.status(500).send({
-        success: false,
-        error: { code: ERROR_CODES.INTERNAL_SERVER_ERROR, message: err.message || 'Failed to update member status' },
-      });
+      return sendBranchMutationError(reply, err);
     }
   };
 
-  // Register symmetric routes for workspaces and organizations
+  // Register workspace-only routes. Branch team management deliberately has no
+  // organization aliases: workspaceId is the tenancy and authorization key.
   const prefixes = [
     '/workspaces/:workspaceId/applications/inventory',
-    '/organizations/:organizationId/applications/inventory',
-    '/orgs/:orgId/applications/inventory',
+    '/workspaces/:workspaceId/products/inventory',
   ];
 
   prefixes.forEach((prefix) => {
@@ -641,11 +775,16 @@ export const branchTeamRoutes: FastifyPluginAsync = async (fastify) => {
     fastify.get(`${prefix}/branches/:branchId/team`, listMembersHandler);
 
     fastify.post(`${prefix}/invitations`, createInvitationHandler);
+    fastify.get(`${prefix}/members/invitations`, async (request: any, reply: any) => {
+      const invitations: any[] = await dataService.getWorkspaceInvitations(getContextId(request), request.user.id);
+      return reply.send({ success: true, data: { invitations: invitations.filter((invite) => invite.productKey === 'inventory' || invite.appAccess?.some((app: any) => app.productKey === 'inventory')) } });
+    });
     fastify.post(`${prefix}/team/invite`, createInvitationHandler);
     fastify.post(`${prefix}/invitations/:id/resend`, resendInvitationHandler);
     fastify.post(`${prefix}/invitations/:id/revoke`, revokeInvitationHandler);
 
     fastify.patch(`${prefix}/members/:membershipId/role`, updateRoleHandler);
+    fastify.patch(`${prefix}/members/:membershipId`, updateRoleHandler);
     fastify.patch(`${prefix}/team/members/:membershipId/role`, updateRoleHandler);
     fastify.patch(`${prefix}/branch-memberships/:membershipId/role`, updateRoleHandler);
 
@@ -701,6 +840,23 @@ export const branchTeamRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
     });
+
+    fastify.get(`${prefix}/me`, async (request: any, reply: any) => {
+      const workspaceId = getContextId(request);
+      const membership: any = await dataService.getProductMembership(workspaceId, request.user.id, 'inventory');
+      const permissions = membership?.permissions?.length
+        ? membership.permissions
+        : INVENTORY_ROLE_PERMISSIONS[(membership?.role || 'inventory_viewer') as InventoryRole] || [];
+      return reply.send({ success: true, data: {
+        role: membership?.role || 'inventory_viewer', branchIds: membership?.branchIds || [],
+        catalogScope: membership?.catalogScope || ['all'], permissions,
+      }});
+    });
+
+    fastify.get(`${prefix}/me/branches`, async (request: any, reply: any) => {
+      const branches = await dataService.getBranches(getContextId(request), request.user.id, 'inventory');
+      return reply.send({ success: true, data: { branches } });
+    });
   });
 
   // Global /me access-context endpoint for product launcher and dashboard
@@ -719,7 +875,7 @@ export const branchTeamRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   // Single workspace access-context
-  fastify.get('/workspaces/:workspaceId/access-context', async (request: any, reply: any) => {
+  fastify.get('/workspaces/:workspaceId/access-context', { preHandler: fastify.requireWorkspaceMembership }, async (request: any, reply: any) => {
     const workspaceId = getContextId(request);
     const userId = request.user?.id || request.user?._id;
     try {

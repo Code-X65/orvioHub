@@ -1,8 +1,6 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import { AuthGuard } from "../../components/auth/AuthGuard";
 import { HomePage } from "./pages/HomePage";
-import { ApplicationsPage } from "./pages/ApplicationsPage";
-import { BranchesPage } from "./pages/BranchesPage";
 import { WorkspaceSettingsPage } from "../../pages/settings/WorkspaceSettingsPage";
 import { BranchSettingsPage } from "../../pages/settings/BranchSettingsPage";
 import { InventorySettingsPage } from "../../pages/settings/InventorySettingsPage";
@@ -14,11 +12,10 @@ import { BillingSettingsPage } from "../../pages/billing/BillingSettingsPage";
 import { PaymentPage } from "../../pages/billing/PaymentPage";
 import { InvoiceDetailPage } from "../../pages/billing/InvoiceDetailPage";
 import { UsagePage } from "../../pages/billing/UsagePage";
-import { AppActivationPage } from "../../pages/apps/AppActivationPage";
-import { BranchSetupPage } from "../../pages/apps/BranchSetupPage";
 import { OrganizationWizard } from "../../pages/onboarding/OrganizationWizard";
 import { PersonalOnboarding } from "../../pages/onboarding/PersonalOnboarding";
 import { useAuthStore } from "@/stores/useAuthStore";
+import { WorkspaceRealtimeSync } from '@/components/workspace/WorkspaceRealtimeSync';
 
 function OnboardRouteDispatcher() {
   const { user } = useAuthStore();
@@ -30,7 +27,7 @@ function OnboardRouteDispatcher() {
 
 export default function HomeApp() {
   return (
-    <Routes>
+    <><WorkspaceRealtimeSync /><Routes>
       <Route path="/invite/:token" element={<AcceptInvite />} />
       <Route path="/invitations/:token" element={<AcceptInvite />} />
 
@@ -182,41 +179,11 @@ export default function HomeApp() {
         }
       />
 
-      {/* 2. Application Level: /applications & /application (shows applications registered for active organization) */}
-      <Route
-        path="/applications"
-        element={
-          <AuthGuard>
-            <ApplicationsPage />
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/application"
-        element={
-          <AuthGuard>
-            <ApplicationsPage />
-          </AuthGuard>
-        }
-      />
-
-      {/* 3. Branch Level: /branches & /branche (branch selector) */}
-      <Route
-        path="/branches"
-        element={
-          <AuthGuard>
-            <BranchesPage />
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/branche"
-        element={
-          <AuthGuard>
-            <BranchesPage />
-          </AuthGuard>
-        }
-      />
+      {/* Application and branch management are consolidated into /dashboard. */}
+      <Route path="/applications" element={<Navigate to="/dashboard" replace />} />
+      <Route path="/application" element={<Navigate to="/dashboard" replace />} />
+      <Route path="/branches" element={<Navigate to="/dashboard" replace />} />
+      <Route path="/branche" element={<Navigate to="/dashboard" replace />} />
 
       {/* 4. Settings */}
       <Route
@@ -269,14 +236,6 @@ export default function HomeApp() {
       />
       <Route
         path="/settings/notifications"
-        element={
-          <AuthGuard>
-            <WorkspaceSettingsPage />
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/settings/applications"
         element={
           <AuthGuard>
             <WorkspaceSettingsPage />
@@ -380,24 +339,6 @@ export default function HomeApp() {
         }
       />
 
-      {/* Application Activation & Branch Management */}
-      <Route
-        path="/orgs/:orgId/apps"
-        element={
-          <AuthGuard>
-            <AppActivationPage />
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/orgs/:orgId/apps/:appKey/branches"
-        element={
-          <AuthGuard>
-            <BranchSetupPage />
-          </AuthGuard>
-        }
-      />
-
       <Route
         path="/settings/usage"
         element={
@@ -415,7 +356,6 @@ export default function HomeApp() {
         }
       />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
-    </Routes>
+    </Routes></>
   );
 }
-

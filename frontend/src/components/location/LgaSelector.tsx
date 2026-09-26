@@ -1,5 +1,5 @@
-import React, { useEffect } from 'react';
-import { useLocationStore, type NigerianLga } from '@/stores/useLocationStore';
+import React from 'react';
+import { useNigerianLgas, type NigerianLga } from '@/hooks/useLocations';
 import { CustomSelect, type SelectOption } from '@/components/ui/custom-select';
 import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
@@ -28,17 +28,8 @@ export const LgaSelector: React.FC<LgaSelectorProps> = ({
   className = '',
   placeholder = 'Select Local Government Area',
 }) => {
-  const { lgasByState, isLoadingLgas, fetchLgas } = useLocationStore();
-
   const normalizedStateCode = stateCode ? stateCode.trim().toUpperCase() : '';
-  const lgas = normalizedStateCode ? lgasByState[normalizedStateCode] || [] : [];
-  const isLoading = normalizedStateCode ? Boolean(isLoadingLgas[normalizedStateCode]) : false;
-
-  useEffect(() => {
-    if (normalizedStateCode) {
-      fetchLgas(normalizedStateCode);
-    }
-  }, [normalizedStateCode, fetchLgas]);
+  const { lgas, isLoading } = useNigerianLgas(normalizedStateCode);
 
   const options: SelectOption[] = lgas.map((l: NigerianLga) => ({
     value: l.name,

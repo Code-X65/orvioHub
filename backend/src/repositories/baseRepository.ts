@@ -25,19 +25,61 @@ export class BaseRepository {
   }
 
   public async query<T = any>(path: string, args: Record<string, unknown> = {}): Promise<T> {
+    const startedAt = Date.now();
     try {
       const [module, functionName] = path.split(':');
       return (await this.client.query((anyApi as any)[module][functionName], args)) as T;
-    } catch (error) {
+    } catch (error: any) {
+      const durationMs = Date.now() - startedAt;
+      if (env.NODE_ENV !== 'test') {
+        console.error('[BaseRepository Query Error]', {
+          path,
+          error: error?.message || String(error),
+          code: error?.code,
+          args,
+          durationMs,
+        });
+      }
       serviceError(error);
     }
   }
 
+  public async safeQuery<T = any>(path: string, args: Record<string, unknown> = {}): Promise<T | null> {
+    const startedAt = Date.now();
+    try {
+      const [module, functionName] = path.split(':');
+      return (await this.client.query((anyApi as any)[module][functionName], args)) as T;
+    } catch (error: any) {
+      const durationMs = Date.now() - startedAt;
+      if (env.NODE_ENV !== 'test') {
+        console.warn('[BaseRepository SafeQuery Error]', {
+          path,
+          error: error?.message || String(error),
+          code: error?.code,
+          args,
+          durationMs,
+        });
+      }
+      return null;
+    }
+  }
+
   public async mutate<T = any>(path: string, args: Record<string, unknown> = {}): Promise<T> {
+    const startedAt = Date.now();
     try {
       const [module, functionName] = path.split(':');
       return (await this.client.mutation((anyApi as any)[module][functionName], args)) as T;
-    } catch (error) {
+    } catch (error: any) {
+      const durationMs = Date.now() - startedAt;
+      if (env.NODE_ENV !== 'test') {
+        console.error('[BaseRepository Mutation Error]', {
+          path,
+          error: error?.message || String(error),
+          code: error?.code,
+          args,
+          durationMs,
+        });
+      }
       serviceError(error);
     }
   }

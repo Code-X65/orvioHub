@@ -11,6 +11,8 @@ export const createWorkspace = mutation({
     ownerId: v.optional(v.id("users")),
     country: v.optional(v.string()),
     state: v.optional(v.string()),
+    stateCode: v.optional(v.string()),
+    lga: v.optional(v.string()),
     city: v.optional(v.string()),
     timezone: v.optional(v.string()),
     currency: v.optional(v.string()),
@@ -62,6 +64,8 @@ export const createWorkspace = mutation({
       ownerId: args.ownerId,
       country: args.country || "NG",
       state: args.state,
+      stateCode: args.stateCode,
+      lga: args.lga,
       city: args.city,
       timezone: args.timezone || "Africa/Lagos",
       currency: args.currency || "NGN",
@@ -898,6 +902,8 @@ export const updateWorkspace = mutation({
     type: v.optional(v.string()),
     country: v.optional(v.string()),
     state: v.optional(v.string()),
+    stateCode: v.optional(v.string()),
+    lga: v.optional(v.string()),
     city: v.optional(v.string()),
     timezone: v.optional(v.string()),
     currency: v.optional(v.string()),
@@ -916,6 +922,8 @@ export const updateWorkspace = mutation({
     if (args.type !== undefined) patch.type = args.type;
     if (args.country !== undefined) patch.country = args.country;
     if (args.state !== undefined) patch.state = args.state;
+    if (args.stateCode !== undefined) patch.stateCode = args.stateCode;
+    if (args.lga !== undefined) patch.lga = args.lga;
     if (args.city !== undefined) patch.city = args.city;
     if (args.timezone !== undefined) patch.timezone = args.timezone;
     if (args.currency !== undefined) patch.currency = args.currency;

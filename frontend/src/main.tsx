@@ -1,7 +1,8 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { queryClient } from "./lib/react-query-adapter";
 import { resolveHost, UnknownHostError } from "@orviohub/shared";
 import { HostProvider } from "./host/HostProvider";
 import { UnknownHostScreen } from "./host/UnknownHostScreen";
@@ -12,16 +13,7 @@ import { App } from "./App";
 import "./index.css";
 
 initObservability();
-useAuthStore.getState().refreshSession();
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 1000 * 60 * 5,
-      refetchOnWindowFocus: false,
-    },
-  },
-});
+useAuthStore.getState().initializeAuth();
 
 const root = createRoot(document.getElementById("root")!);
 

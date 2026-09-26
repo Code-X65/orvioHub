@@ -13,6 +13,7 @@ import { UsageLimitBanner } from '@/components/billing/UsageLimitBanner';
 import { UpgradeModal } from '@/components/billing/UpgradeModal';
 import { useOrganizationEntitlements } from '@/hooks/useOrganizationEntitlements';
 import { api } from '@/lib/api';
+import { handleApiError } from '@/lib/error-handler';
 import { toast } from 'sonner';
 import {
   Warehouse,
@@ -94,6 +95,7 @@ export const BranchesPage: React.FC = () => {
   }, [workspaces.length, fetchWorkspaces]);
 
   useEffect(() => {
+    const controller = new AbortController();
     let isMounted = true;
     if (currentWorkspace?.id) {
       const isCached = (branchesByOrgAndApp[`${currentWorkspace.id}::${appKey}`] || []).length > 0;
@@ -101,52 +103,54 @@ export const BranchesPage: React.FC = () => {
         setIsCheckingBranches(true);
       }
 
-      loadBranches(currentWorkspace.id, appKey)
-        .then(() => {
-          if (isMounted) {
-            setHasCheckedAutoSelect(true);
-            setIsCheckingBranches(false);
-          }
-        })
-        .catch(() => {
-          if (isMounted) {
-            setHasCheckedAutoSelect(true);
-            setIsCheckingBranches(false);
-          }
-        });
+      Promise.allSettled([
+        loadBranches(currentWorkspace.id, appKey, false, { signal: controller.signal }),
+        api.get<any>(`/organizations/${currentWorkspace.id}/subscription`, { signal: controller.signal }),
+        api.get<any>(`/organizations/${currentWorkspace.id}/my-permissions`, { signal: controller.signal }),
+      ]).then(([branchesRes, subRes, permsRes]) => {
+        if (!isMounted || controller.signal.aborted) return;
 
-      // Load subscription plan
-      api.get<any>(`/organizations/${currentWorkspace.id}/subscription`)
-        .then((res) => {
-          if (isMounted) {
-            const sub = res?.subscription || res?.data?.subscription || res;
-            const pk = (
-              sub?.activePlan ||
-              (sub?.status === 'active' ? (sub?.selectedPlan || sub?.planKey) : null) ||
-              sub?.planKey ||
-              res?.planKey ||
-              initialPlan
-            );
-            setPlanKey(String(pk).toLowerCase());
-          }
-        })
-        .catch(() => {});
+        setHasCheckedAutoSelect(true);
+        setIsCheckingBranches(false);
 
-      // Load caller RBAC permissions
-      api.get<any>(`/organizations/${currentWorkspace.id}/my-permissions`)
-        .then((res) => {
-          if (isMounted && res?.data) {
-            setUserPermissions(res.data);
+        if (branchesRes.status === 'rejected') {
+          handleApiError(branchesRes.reason, 'load branches', { showError: false });
+        }
+
+        if (subRes.status === 'fulfilled') {
+          const res = subRes.value;
+          const sub = res?.subscription || res?.data?.subscription || res;
+          const pk = (
+            sub?.activePlan ||
+            (sub?.status === 'active' ? (sub?.selectedPlan || sub?.planKey) : null) ||
+            sub?.planKey ||
+            res?.planKey ||
+            initialPlan
+          );
+          setPlanKey(String(pk).toLowerCase());
+        } else {
+          handleApiError(subRes.reason, 'load organization subscription', { showError: false });
+        }
+
+        if (permsRes.status === 'fulfilled') {
+          const res = permsRes.value;
+          if (res?.data) {
+            setUserPermissions(res);
           }
-        })
-        .catch(() => {});
+        } else {
+          handleApiError(permsRes.reason, 'load user permissions', { showError: false });
+        }
+      });
     } else if (!isWsLoading && workspaces.length === 0) {
       if (isMounted) {
         setHasCheckedAutoSelect(true);
         setIsCheckingBranches(false);
       }
     }
-    return () => { isMounted = false; };
+    return () => {
+      isMounted = false;
+      controller.abort();
+    };
   }, [currentWorkspace?.id, isWsLoading, workspaces.length, appKey, loadBranches]);
 
   const isFreeTrial = planKey === 'free_trial' || planKey === 'free';

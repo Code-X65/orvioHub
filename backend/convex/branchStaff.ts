@@ -225,6 +225,7 @@ export const listBranchMembers = query({
             userId: wm.userId,
             role: wm.role || wm.defaultRole || "staff",
             status: wm.status,
+            branchIds: wm.branchIds,
             joinedAt: wm.acceptedAt || wm.createdAt,
             createdAt: wm.createdAt,
             updatedAt: wm.updatedAt,
@@ -1407,6 +1408,7 @@ export const listBranchTransfers = query({
   args: {
     workspaceId: v.string(),
     userId: v.optional(v.id("users")),
+    branchId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     let transfers: any[] = [];
@@ -1428,7 +1430,10 @@ export const listBranchTransfers = query({
       } catch {}
     }
 
-    const filtered = args.userId ? transfers.filter((t) => t.userId === args.userId) : transfers;
+    const filtered = transfers.filter((t) =>
+      (!args.userId || t.userId === args.userId) &&
+      (!args.branchId || String(t.fromBranchId || t.sourceBranchId) === args.branchId || String(t.toBranchId || t.targetBranchId) === args.branchId)
+    );
 
     const populated = await Promise.all(
       filtered.map(async (t) => {
@@ -1474,6 +1479,51 @@ export const listBranchTransfers = query({
     );
 
     return populated;
+  },
+});
+
+/** Resolve the management authority used by branch-staff mutations. */
+async function requireBranchManager(ctx: any, args: { workspaceId: string; actingUserId: any; branchId: string }) {
+  const caller = await ctx.db.query("workspaceMemberships")
+    .withIndex("by_workspace_user", (q: any) => q.eq("workspaceId", args.workspaceId).eq("userId", args.actingUserId)).first();
+  const role = String(caller?.role || "").toLowerCase();
+  const product = await ctx.db.query("productMemberships")
+    .withIndex("by_workspace_product_user", (q: any) => q.eq("workspaceId", args.workspaceId).eq("productKey", "inventory").eq("userId", args.actingUserId)).first();
+  const permissions = product?.permissions?.length ? product.permissions : INVENTORY_ROLE_PERMISSIONS[product?.role || ""] || [];
+  const isWorkspaceManager = role === "owner" || role === "admin" || role === "manager";
+  if (!caller || caller.status.toLowerCase() !== "active" || (!isWorkspaceManager && !permissions.includes("manage_members") && !permissions.includes("manage_branch_members"))) {
+    throw new Error("permission_denied");
+  }
+  const scoped = product?.status?.toLowerCase() === "active" && product.branchIds?.length ? product.branchIds : caller.branchIds;
+  if (!isWorkspaceManager && (!scoped || !scoped.map(String).includes(String(args.branchId)))) throw new Error("branch_access_denied");
+}
+
+/** Change an explicit branch membership role. Only inventory managers may call it. */
+export const updateBranchMemberRole = mutation({
+  args: { workspaceId: v.string(), membershipId: v.string(), role: v.string(), permissions: v.optional(v.array(v.string())), updatedBy: v.id("users") },
+  handler: async (ctx, args) => {
+    const membership: any = await ctx.db.get(args.membershipId as any);
+    if (!membership || String(membership.workspaceId) !== args.workspaceId) throw new Error("not_found");
+    await requireBranchManager(ctx, { workspaceId: args.workspaceId, actingUserId: args.updatedBy, branchId: String(membership.branchId) });
+    const now = Date.now();
+    const permissions = args.permissions || INVENTORY_ROLE_PERMISSIONS[args.role] || [];
+    await ctx.db.patch(membership._id, { role: args.role, permissions, updatedAt: now });
+    await ctx.db.insert("workspaceAuditLogs", { workspaceId: membership.workspaceId, actorUserId: args.updatedBy, eventType: "member.role_changed", entityType: "branchMembership", entityId: membership._id, severity: "info", metadata: { userId: membership.userId, branchId: membership.branchId, role: args.role }, createdAt: now });
+    return { ...membership, role: args.role, permissions, updatedAt: now };
+  },
+});
+
+/** Suspend, restore, or remove an explicit branch membership. */
+export const setBranchMemberStatus = mutation({
+  args: { workspaceId: v.string(), membershipId: v.string(), status: v.union(v.literal("active"), v.literal("suspended"), v.literal("removed")), actingUserId: v.id("users") },
+  handler: async (ctx, args) => {
+    const membership: any = await ctx.db.get(args.membershipId as any);
+    if (!membership || String(membership.workspaceId) !== args.workspaceId) throw new Error("not_found");
+    await requireBranchManager(ctx, { workspaceId: args.workspaceId, actingUserId: args.actingUserId, branchId: String(membership.branchId) });
+    const now = Date.now();
+    await ctx.db.patch(membership._id, { status: args.status, updatedAt: now, ...(args.status === "removed" ? { removedAt: now } : {}) });
+    await ctx.db.insert("workspaceAuditLogs", { workspaceId: membership.workspaceId, actorUserId: args.actingUserId, eventType: args.status === "removed" ? "member.removed" : args.status === "suspended" ? "member.suspended" : "member.restored", entityType: "branchMembership", entityId: membership._id, severity: args.status === "active" ? "info" : "warning", metadata: { userId: membership.userId, branchId: membership.branchId, status: args.status }, createdAt: now });
+    return { ...membership, status: args.status, updatedAt: now };
   },
 });
 

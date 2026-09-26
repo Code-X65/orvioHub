@@ -97,7 +97,8 @@ export interface APIResponse<T> {
 // Responses
 export interface AuthResponse {
   user: User;
-  token: string;
+  /** Legacy during session-cookie migration; never persisted by the browser. */
+  token?: string;
   refreshToken?: string;
   onboarding: OnboardingState;
   memberships?: Membership[];
@@ -105,8 +106,8 @@ export interface AuthResponse {
 
 export interface RefreshResponse {
   user: User;
-  token: string;
-  refreshToken: string;
+  token?: string;
+  refreshToken?: string;
 }
 
 export interface MeResponse {
@@ -173,7 +174,14 @@ export interface DeviceSession {
   authenticationMethod?: string;
   createdAt: number;
   lastActiveAt?: number;
+  expiresAt: number;
+  absoluteExpiresAt?: number;
   isCurrent?: boolean;
+  isRevoked?: boolean;
+  revocationReason?: string;
+  browser?: string;
+  operatingSystem?: string;
+  approximateLocation?: string;
 }
 
 export interface LinkedIdentityItem {
@@ -184,4 +192,3 @@ export interface LinkedIdentityItem {
   createdAt: number;
   isPrimary?: boolean;
 }
-

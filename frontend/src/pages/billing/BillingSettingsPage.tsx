@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { api } from "@/lib/api";
+import { handleApiError } from "@/lib/error-handler";
 import {
   CreditCard,
   Building2,
@@ -46,53 +47,53 @@ export const BillingSettingsPage: React.FC = () => {
   const [billingEmail, setBillingEmail] = useState(user?.email || "");
   const [isSavingEmail, setIsSavingEmail] = useState(false);
 
-  const fetchBillingData = async () => {
+  const fetchBillingData = async (signal?: AbortSignal) => {
     if (!effectiveOrgId) return;
     setIsLoading(true);
     try {
-      let sub: any = null;
-      try {
-        const subRes: any = await api.get(`/billing/subscription?workspaceId=${effectiveOrgId}&organizationId=${effectiveOrgId}`);
-        sub = subRes.data?.data?.subscription || subRes.data?.subscription || subRes.data;
-      } catch {
-        try {
-          const orgSubRes: any = await api.get(`/organizations/${effectiveOrgId}/subscription`);
-          sub = orgSubRes.data?.subscription || orgSubRes.data;
-        } catch {}
+      const [subRes, invRes] = await Promise.allSettled([
+        api.get<any>(`/workspaces/${effectiveOrgId}/subscription`, { signal }).catch(() =>
+          api.get<any>(`/billing/subscription?workspaceId=${effectiveOrgId}`, { signal })
+        ),
+        api.get<any>(`/billing/invoices?workspaceId=${effectiveOrgId}`, { signal }),
+      ]);
+
+      if (signal?.aborted) return;
+
+      if (subRes.status === 'fulfilled') {
+        const sub = subRes.value?.subscription || subRes.value;
+        if (sub) setSubData(sub);
+      } else {
+        handleApiError(subRes.reason, 'load subscription data', { showError: false });
       }
 
-      if (sub) {
-        setSubData(sub);
+      if (invRes.status === 'fulfilled') {
+        const rawInvoices = invRes.value;
+        const invList = Array.isArray(rawInvoices)
+          ? rawInvoices
+          : Array.isArray(rawInvoices?.invoices)
+          ? rawInvoices.invoices
+          : [];
+        setInvoices(invList);
+      } else {
+        handleApiError(invRes.reason, 'load billing invoices', { showError: false });
       }
-      
-      let invList: any[] = [];
-      try {
-        const orgInvRes: any = await api.get(`/billing/organizations/${effectiveOrgId}/invoices`);
-        if (orgInvRes.data?.data && Array.isArray(orgInvRes.data.data)) {
-          invList = orgInvRes.data.data;
-        } else if (Array.isArray(orgInvRes.data)) {
-          invList = orgInvRes.data;
-        }
-      } catch {}
-
-      if (invList.length === 0) {
-        try {
-          const invRes: any = await api.get(`/billing/invoices?workspaceId=${effectiveOrgId}`);
-          if (invRes.data?.data?.invoices && Array.isArray(invRes.data.data.invoices)) {
-            invList = invRes.data.data.invoices;
-          }
-        } catch {}
-      }
-      setInvoices(invList);
-    } catch {
-      // Fallback gracefully
+    } catch (err: any) {
+      if (err?.name === 'AbortError' || signal?.aborted) return;
+      handleApiError(err, 'load billing data');
     } finally {
-      setIsLoading(false);
+      if (!signal?.aborted) {
+        setIsLoading(false);
+      }
     }
   };
 
   useEffect(() => {
-    fetchBillingData();
+    const controller = new AbortController();
+    fetchBillingData(controller.signal);
+    return () => {
+      controller.abort();
+    };
   }, [effectiveOrgId]);
 
   const planKey = (
@@ -129,7 +130,7 @@ export const BillingSettingsPage: React.FC = () => {
       return;
     }
     try {
-      await api.post("/billing/cancel", { workspaceId: effectiveOrgId, organizationId: effectiveOrgId });
+      await api.post("/billing/cancel", { workspaceId: effectiveOrgId });
       toast.success("Subscription scheduled for cancellation at the end of the current period.");
       setSubData((prev: any) => ({ ...prev, cancelAtPeriodEnd: true }));
     } catch (err: any) {
@@ -142,12 +143,12 @@ export const BillingSettingsPage: React.FC = () => {
     if (!effectiveOrgId) return;
     setIsSavingEmail(true);
     try {
-      await api.patch(`/organizations/${effectiveOrgId}`, {
+      await api.patch(`/workspaces/${effectiveOrgId}`, {
         email: billingEmail,
-      }).catch(() => {});
+      });
       toast.success("Billing contact email updated successfully.");
     } catch (err: any) {
-      toast.error(err?.message || "Failed to update billing email.");
+      handleApiError(err, "update billing email");
     } finally {
       setIsSavingEmail(false);
     }

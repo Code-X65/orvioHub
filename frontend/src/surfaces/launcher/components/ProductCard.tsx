@@ -23,7 +23,6 @@ export interface ProductCardData {
 export interface ProductCardProps {
   product: ProductCardData;
   type?: 'active' | 'coming_soon' | 'available' | 'upgrade';
-  isActivated?: boolean;
   isAllowedByPlan?: boolean;
   requiredPlan?: string;
   ctaText?: string;
@@ -36,7 +35,6 @@ export interface ProductCardProps {
 export const ProductCard: React.FC<ProductCardProps> = ({
   product,
   type,
-  isActivated = false,
   isAllowedByPlan = true,
   requiredPlan,
   ctaText,
@@ -56,9 +54,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({
         'group relative flex flex-col justify-between p-6 sm:p-7 rounded-2xl transition-all duration-300 overflow-hidden border',
         isComingSoon
           ? 'opacity-85 bg-gradient-to-br from-[#1b120c]/80 via-[#120b10]/90 to-black/95 border-amber-500/20 hover:opacity-100 hover:border-amber-500/40 hover:shadow-xl hover:shadow-amber-500/5'
-          : isActivated
-          ? 'bg-gradient-to-br from-[#1f101d]/90 via-[#140b12]/95 to-black border-[#714b67]/40 hover:border-[#714b67] hover:shadow-2xl hover:shadow-[#714b67]/20 hover:-translate-y-1'
-          : 'bg-gradient-to-br from-[#150d14]/80 via-[#10080e]/90 to-black/95 border-white/10 hover:border-white/20 hover:shadow-xl',
+        : 'bg-gradient-to-br from-[#1f101d]/90 via-[#140b12]/95 to-black border-[#714b67]/40 hover:border-[#714b67] hover:shadow-2xl hover:shadow-[#714b67]/20 hover:-translate-y-1',
         className
       )}
     >
@@ -81,9 +77,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({
               'w-12 h-12 rounded-xl flex items-center justify-center font-bold text-lg shadow-lg shrink-0 border transition-transform duration-300 group-hover:scale-105',
               isComingSoon
                 ? 'bg-amber-500/10 border-amber-500/25 text-amber-400'
-                : isActivated
-                ? 'bg-[#714b67]/25 border-[#714b67] text-[#FDB02F]'
-                : 'bg-white/5 border-white/15 text-slate-300'
+                : 'bg-[#714b67]/25 border-[#714b67] text-[#FDB02F]'
             )}
           >
             {product.iconUrl ? (
@@ -104,13 +98,6 @@ export const ProductCard: React.FC<ProductCardProps> = ({
 
           {/* Badges Container */}
           <div className="flex flex-wrap items-center justify-end gap-1.5">
-            {isActivated && (
-              <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
-                <Check className="w-2.5 h-2.5" />
-                <span>Active</span>
-              </span>
-            )}
-
             {product.isFeatured && (
               <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider bg-amber-500/15 text-amber-300 border border-amber-500/30">
                 <Sparkles className="w-2.5 h-2.5" />
@@ -127,12 +114,6 @@ export const ProductCard: React.FC<ProductCardProps> = ({
             {isComingSoon && (
               <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider bg-amber-500/10 text-amber-400 border border-amber-500/20">
                 Coming Soon
-              </span>
-            )}
-
-            {!isActivated && !isComingSoon && (
-              <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider bg-white/10 text-slate-300 border border-white/15">
-                Ready to Enable
               </span>
             )}
           </div>
@@ -192,21 +173,16 @@ export const ProductCard: React.FC<ProductCardProps> = ({
             target="_self"
             className="w-full h-10 bg-[#714b67] hover:bg-[#86597a] active:bg-[#603f57] text-white rounded-xs text-xs font-semibold shadow-lg shadow-[#714b67]/20 flex items-center justify-center gap-2 transition-all cursor-pointer text-center group/btn"
           >
-            <span>{ctaText || (isActivated ? 'Open Application' : 'Explore Application')}</span>
+            <span>{ctaText || 'Open Application'}</span>
             <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover/btn:translate-x-0.5" />
           </a>
         ) : (
           <Button
             type="button"
             onClick={onCtaClick}
-            className={cn(
-              'w-full h-10 text-white rounded-xs text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-all shadow-md',
-              isActivated
-                ? 'bg-[#714b67] hover:bg-[#86597a]'
-                : 'border border-[#714b67]/60 bg-[#714b67]/15 hover:bg-[#714b67]/30'
-            )}
+            className="w-full h-10 text-white rounded-xs text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-all shadow-md bg-[#714b67] hover:bg-[#86597a]"
           >
-            <span>{ctaText || (isActivated ? 'Open Application' : 'Activate Module')}</span>
+            <span>{ctaText || 'Open Application'}</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </Button>
         )}

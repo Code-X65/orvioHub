@@ -86,7 +86,12 @@ export const InviteBranchMemberModal: React.FC<InviteBranchMemberModalProps> = (
   onSuccess,
 }) => {
   const [email, setEmail] = useState('');
+  const [branchIds, setBranchIds] = useState<string[]>([]);
+  // Retained for the legacy single-branch selector kept below for compatibility.
   const [branchId, setBranchId] = useState<string>(branches[0]?.id || '');
+  const [allBranches, setAllBranches] = useState(true);
+  const [catalogScope, setCatalogScope] = useState<string[]>(['all']);
+  const [categories, setCategories] = useState<string[]>([]);
   const [role, setRole] = useState<string>('cashier');
   const [message, setMessage] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -94,10 +99,15 @@ export const InviteBranchMemberModal: React.FC<InviteBranchMemberModalProps> = (
   const [foundUser, setFoundUser] = useState<{ id: string; name: string; avatar?: string } | null>(null);
 
   useEffect(() => {
-    if (branches.length > 0 && !branchId) {
-      setBranchId(branches[0].id);
-    }
-  }, [branches, branchId]);
+    if (branches.length > 0 && branchIds.length === 0 && !allBranches) setBranchIds([branches[0].id]);
+  }, [branches, branchIds.length, allBranches]);
+
+  useEffect(() => {
+    if (!isOpen || !workspaceId) return;
+    api.get<{ products: Array<{ category?: string }> }>('/inventory/products')
+      .then((result: any) => setCategories([...new Set((result?.products || result?.data?.products || []).map((p: any) => p.category).filter(Boolean))].sort() as string[]))
+      .catch(() => setCategories([]));
+  }, [isOpen, workspaceId]);
 
   // Live user lookup when typing email
   useEffect(() => {
@@ -131,8 +141,8 @@ export const InviteBranchMemberModal: React.FC<InviteBranchMemberModalProps> = (
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email.trim() || !branchId || !role) {
-      toast.error('Please enter email, branch, and role.');
+    if (!email.trim() || !role || (!allBranches && branchIds.length === 0)) {
+      toast.error('Please enter email, role, and branch access.');
       return;
     }
 
@@ -141,7 +151,8 @@ export const InviteBranchMemberModal: React.FC<InviteBranchMemberModalProps> = (
       await api.post(`/workspaces/${workspaceId}/applications/inventory/invitations`, {
         email: email.trim(),
         role,
-        branchId,
+        branchIds: allBranches ? [] : branchIds,
+        catalogScope,
         message: message.trim() || undefined,
       });
 
@@ -229,10 +240,12 @@ export const InviteBranchMemberModal: React.FC<InviteBranchMemberModalProps> = (
 
           {/* Branch selector */}
           <div className="space-y-2">
-            <Label htmlFor="invite-branch" className="text-xs font-semibold text-slate-300">
-              Assign to Branch
-            </Label>
-            <div className="relative">
+            <Label className="text-xs font-semibold text-slate-300">Branch Access</Label>
+            <label className="flex gap-2 text-xs text-slate-300 cursor-pointer"><input type="checkbox" checked={allBranches} onChange={(e) => setAllBranches(e.target.checked)} /> All branches</label>
+            {!allBranches && <select multiple value={branchIds} onChange={(e) => setBranchIds(Array.from(e.currentTarget.selectedOptions, o => o.value))} className="w-full min-h-24 px-3 py-2 text-xs rounded-md bg-slate-950/60 border border-slate-800 text-white">
+              {branches.map((b) => <option key={b.id} value={b.id}>{b.name}{b.city ? ` (${b.city})` : ''}</option>)}
+            </select>}
+            {false && <div className="relative">
               <Building2 className="w-4 h-4 text-slate-500 absolute left-3 top-3 pointer-events-none" />
               <select
                 id="invite-branch"
@@ -246,7 +259,15 @@ export const InviteBranchMemberModal: React.FC<InviteBranchMemberModalProps> = (
                   </option>
                 ))}
               </select>
-            </div>
+            </div>}
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs font-semibold text-slate-300">Catalog Access</Label>
+            <label className="flex gap-2 text-xs text-slate-300 cursor-pointer"><input type="checkbox" checked={catalogScope.includes('all')} onChange={(e) => setCatalogScope(e.target.checked ? ['all'] : [])} /> All products</label>
+            {!catalogScope.includes('all') && <select multiple value={catalogScope} onChange={(e) => setCatalogScope(Array.from(e.currentTarget.selectedOptions, o => o.value))} className="w-full min-h-24 px-3 py-2 text-xs rounded-md bg-slate-950/60 border border-slate-800 text-white">
+              {categories.map((category) => <option key={category} value={category}>{category}</option>)}
+            </select>}
           </div>
 
           {/* Role selector */}

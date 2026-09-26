@@ -1,13 +1,17 @@
 import type { FastifyPluginAsync } from 'fastify';
+import { timingSafeEqual } from 'node:crypto';
+import bcrypt from 'bcryptjs';
 import { z } from 'zod';
-import { dataService } from '../services/dataService.js';
+import { dataService, hashSessionToken } from '../services/dataService.js';
 import { oauthService } from '../services/oauth.js';
 import { env } from '../config/env.js';
 import { getAccountsUrl } from '@orviohub/shared';
-import { ERROR_CODES, AUDIT_EVENTS, PRODUCT_CATALOG, type ProductKey } from '../config/constants.js';
-import { setAuthCookies, clearAuthCookies } from '../utils/cookies.js';
+import { ERROR_CODES, AUDIT_EVENTS } from '../config/constants.js';
+import { setAuthCookies, setSessionCookie, clearAuthCookies, REFRESH_COOKIE_NAME, SESSION_COOKIE_NAME, createSessionCsrfToken } from '../utils/cookies.js';
+import { isAllowedOrigin, type Environment } from '@orviohub/shared';
 import { toPublicUser } from '../utils/userSerializer.js';
 import type { JwtPayload } from '../plugins/auth.js';
+import { createRefreshRecoveryTicket, readRefreshRecoveryTicket } from '../utils/refreshRecovery.js';
 
 const accountsBaseUrl = () => {
   try {
@@ -27,6 +31,18 @@ const COMMON_WEAK_PASSWORDS = new Set([
   'letmein123',
   '123456789',
 ]);
+
+// Cost-12 hash for a non-secret, fixed value.  Comparing against it on every
+// unknown-password path prevents the account lookup from becoming a timing
+// oracle for registered email addresses.
+const LOGIN_DUMMY_PASSWORD_HASH = '$2b$12$Bk/jhaEtexVdSDq/GKGCHOvnNrB/OwPcvLGVb8mPtuDNT/L0N5JPW';
+const GENERIC_LOGIN_FAILURE = {
+  success: false,
+  error: {
+    code: ERROR_CODES.UNAUTHENTICATED,
+    message: 'Invalid email or password.',
+  },
+};
 
 export const strongPasswordSchema = z
   .string()
@@ -59,6 +75,7 @@ const signupSchema = z
     acceptTerms: z.boolean().optional(),
     acceptPrivacy: z.boolean().optional(),
     marketingConsent: z.boolean().optional(),
+    rememberMe: z.boolean().optional(),
   })
   .refine(
     (data) => Boolean(data.name || (data.firstName && data.lastName) || data.firstName),
@@ -71,6 +88,7 @@ const signupSchema = z
 const loginSchema = z.object({
   email: z.string().email('Invalid email address'),
   password: z.string().min(1, 'Password is required'),
+  rememberMe: z.boolean().optional(),
 });
 
 const resendVerificationSchema = z.object({
@@ -151,6 +169,7 @@ const disableTwoFactorSchema = z.object({
 const loginTwoFactorSchema = z.object({
   tempToken: z.string().min(1, 'Temporary token is required'),
   code: z.string().min(1, 'Verification code or backup code is required'),
+  rememberMe: z.boolean().optional(),
 });
 
 const oauthAuthorizeSchema = z.object({
@@ -171,6 +190,32 @@ const oauthTokenSchema = z.object({
 });
 
 export const authRoutes: FastifyPluginAsync = async (fastify) => {
+  const csrfFor = (refreshToken: string) => createSessionCsrfToken(refreshToken);
+  const isTrustedBrowserOrigin = (origin: string | undefined, allowMissing = false) => {
+    // Vite's same-origin development proxy legitimately strips Origin from a
+    // safe GET. Unsafe cookie operations never use this allowance.
+    if (!origin) return allowMissing || env.NODE_ENV === 'test';
+    const currentEnv: Environment = env.NODE_ENV === 'production' ? 'production' : 'development';
+    return isAllowedOrigin(origin, currentEnv);
+  };
+  const hasValidCsrf = (request: any, refreshToken: string) => {
+    const supplied = request.headers['x-csrf-token'];
+    if (typeof supplied !== 'string') return false;
+    const expected = Buffer.from(csrfFor(refreshToken));
+    const actual = Buffer.from(supplied);
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
+  };
+
+  fastify.get('/csrf', async (request, reply) => {
+    if (!isTrustedBrowserOrigin(request.headers.origin, true)) {
+      return reply.status(403).send({ success: false, error: { code: 'CSRF_ORIGIN_INVALID', message: 'Untrusted request origin.' } });
+    }
+    const sessionSecret = request.cookies?.[SESSION_COOKIE_NAME] || request.cookies?.[REFRESH_COOKIE_NAME];
+    if (!sessionSecret) {
+      return reply.status(401).send({ success: false, error: { code: ERROR_CODES.UNAUTHENTICATED, message: 'Session refresh credential is missing.' } });
+    }
+    return reply.send({ success: true, data: { csrfToken: csrfFor(sessionSecret) } });
+  });
   // POST /api/v1/auth/refresh
   fastify.post(
     '/refresh',
@@ -184,48 +229,72 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         body: {
           type: 'object',
           // refreshToken is optional in body — can also be provided via orvio_refresh_token cookie
-          properties: {
-            refreshToken: { type: 'string' },
-          },
         },
       },
     },
     async (request, reply) => {
-      // Accept refresh token from body (primary) or wildcard cookie (cross-subdomain fallback).
-      // The orvio_refresh_token cookie is shared across all *.orviohub.* subdomains, so any
-      // surface (e.g. marketing root domain, where localStorage is isolated) can silently refresh.
-      const bodyToken = (request.body as any)?.refreshToken as string | undefined;
-      const cookieToken = request.cookies?.orvio_refresh_token;
-      const refreshTokenValue = bodyToken || cookieToken;
+      // Prefer the shared HttpOnly cookie over a body token. Refresh tokens rotate,
+      // and each subdomain has isolated localStorage: a destination surface can
+      // therefore hold an older handoff token while the cookie contains the
+      // current token. Using the stale body value first logs a valid user out.
+      const refreshTokenValue = request.cookies?.[REFRESH_COOKIE_NAME];
 
-      if (!refreshTokenValue) {
-        return reply.status(400).send({
+      if (!refreshTokenValue || !isTrustedBrowserOrigin(request.headers.origin) || !hasValidCsrf(request, refreshTokenValue)) {
+        return reply.status(403).send({
           success: false,
           error: {
-            code: ERROR_CODES.VALIDATION_ERROR,
-            message: 'Refresh token is required (body or cookie).',
+            code: 'CSRF_VALIDATION_FAILED',
+            message: 'A valid same-origin CSRF token is required to refresh the session.',
           },
         });
       }
 
       try {
+        const recovery = readRefreshRecoveryTicket((request.body as any)?.recoveryTicket);
+        if ((request.body as any)?.recoveryTicket) {
+          if (!recovery) {
+            return reply.status(403).send({ success: false, error: { code: 'REFRESH_RECOVERY_INVALID', message: 'Refresh recovery request is invalid.' } });
+          }
+          const session = await dataService.getSessionById(recovery.sessionId!);
+          const user = session ? await dataService.getUserById(session.userId) : null;
+          const now = Date.now();
+          if (!session || !user || session.isRevoked || session.revokedAt || session.sessionHash !== hashSessionToken(refreshTokenValue) || session.expiresAt <= now || (session.absoluteExpiresAt && session.absoluteExpiresAt <= now) || session.tokenVersion !== (user.tokenVersion ?? 0)) {
+            return reply.status(409).send({ success: false, error: { code: 'REFRESH_RECOVERY_PENDING', message: 'Waiting for the replacement session cookie.' } });
+          }
+          const accessToken = fastify.jwt.sign({ userId: user.id, email: user.email, sessionId: String(session.id), tokenVersion: user.tokenVersion ?? 0 });
+          return reply.send({ success: true, data: { token: accessToken, user: { id: user.id, email: user.email, name: user.name, emailVerified: user.emailVerified } } });
+        }
         const userAgent = request.headers['user-agent'];
         const ipAddress = request.ip;
         const result = await dataService.rotateSession(refreshTokenValue, userAgent, ipAddress);
 
+        if ('concurrentRefresh' in result) {
+          return reply.status(409).send({ success: false, error: { code: 'REFRESH_CONCURRENTLY_ROTATED', message: 'Refresh was completed by another tab.' }, data: { recoveryTicket: createRefreshRecoveryTicket(result.replacementSessionId) } });
+        }
+
+        if (!result.user) {
+          return reply.status(401).send({
+            success: false,
+            error: {
+              code: 'UNAUTHORIZED',
+              message: 'Invalid session or user not found',
+            },
+          });
+        }
+
         const accessToken = fastify.jwt.sign({
           userId: result.user.id,
           email: result.user.email,
+          sessionId: result.sessionId,
           tokenVersion: result.user.tokenVersion ?? 0,
         });
 
-        setAuthCookies(reply, { token: accessToken, refreshToken: result.refreshToken });
+        setAuthCookies(reply, { refreshToken: result.refreshToken }, result.rememberMe);
 
         return reply.send({
           success: true,
           data: {
             token: accessToken,
-            refreshToken: result.refreshToken,
             user: {
               id: result.user.id,
               email: result.user.email,
@@ -235,7 +304,11 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           },
         });
       } catch (err: any) {
-        if (err.message === 'USER_SUSPENDED' || err.code === 'USER_SUSPENDED') {
+        // Stable domain error codes live on `code`; messages are descriptive and
+        // must not determine the public API response.
+        const errorCode = err.code || err.message;
+        if (errorCode === 'ACCOUNT_SUSPENDED' || errorCode === 'USER_SUSPENDED') {
+          clearAuthCookies(reply);
           return reply.status(403).send({
             success: false,
             error: {
@@ -244,30 +317,43 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
             },
           });
         }
-        if (err.code === 'INVALID_TOKEN' || err.code === 'SESSION_INVALIDATED' || err.code === 'USER_NOT_ACTIVE') {
+        if (errorCode === 'SESSION_REVOKED') {
+          clearAuthCookies(reply);
           return reply.status(401).send({
             success: false,
             error: {
-              code: ERROR_CODES.UNAUTHENTICATED,
-              message: 'Invalid or expired session. Please sign in again.',
+              code: 'SESSION_REVOKED',
+              message: 'Session has been revoked. Please sign in again.',
             },
           });
         }
-        if (err.code === 'TOKEN_EXPIRED') {
+        if (errorCode === 'TOKEN_EXPIRED') {
+          clearAuthCookies(reply);
           return reply.status(401).send({
             success: false,
             error: {
-              code: ERROR_CODES.TOKEN_EXPIRED,
+              code: 'TOKEN_EXPIRED',
               message: 'Refresh token has expired. Please sign in again.',
             },
           });
         }
-        if (err.code === 'SESSION_REVOKED') {
+        if (errorCode === 'SESSION_INVALIDATED') {
+          clearAuthCookies(reply);
           return reply.status(401).send({
             success: false,
             error: {
-              code: ERROR_CODES.UNAUTHENTICATED,
-              message: 'Security alert: Session was already revoked. Please sign in again.',
+              code: 'SESSION_INVALIDATED',
+              message: 'Session has been invalidated. Please sign in again.',
+            },
+          });
+        }
+        if (errorCode === 'INVALID_TOKEN' || errorCode === 'USER_NOT_ACTIVE') {
+          clearAuthCookies(reply);
+          return reply.status(401).send({
+            success: false,
+            error: {
+              code: 'INVALID_TOKEN',
+              message: 'Invalid refresh credential. Please sign in again.',
             },
           });
         }
@@ -324,21 +410,6 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       try {
         const { planKey, billingInterval, paymentMethod, paidPlanRef, ...userPayload } = parsed.data;
         const { user } = await dataService.createUser(userPayload as any);
-        const session = await dataService.createSession(user.id, {
-          userAgent: request.headers['user-agent'],
-          ipAddress: request.ip,
-          authenticationMethod: 'password',
-          tokenVersion: user.tokenVersion ?? 1,
-        });
-        const jwtToken = fastify.jwt.sign(
-          {
-            userId: user.id,
-            email: user.email,
-            sessionId: session.sessionId,
-            tokenVersion: user.tokenVersion ?? 1,
-          },
-          { expiresIn: '15m' }
-        );
 
         await dataService.logAudit({
           actorUserId: user.id,
@@ -347,28 +418,15 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           userAgent: request.headers['user-agent'],
         });
 
-        setAuthCookies(reply, { token: jwtToken, refreshToken: session.refreshToken });
-
         return reply.status(201).send({
           success: true,
-          data: {
-            user: toPublicUser(user),
-            token: jwtToken,
-            refreshToken: session.refreshToken,
-            onboarding: {
-              status: 'IN_PROGRESS',
-              currentStep: 'EMAIL_VERIFICATION',
-            },
-          },
+          message: 'A link to activate your account has been emailed to the address provided.',
         });
       } catch (err: any) {
         if (err.code === 'USER_ALREADY_EXISTS') {
-          return reply.status(409).send({
-            success: false,
-            error: {
-              code: ERROR_CODES.CONFLICT,
-              message: 'An account with this email address already exists.',
-            },
+          return reply.status(201).send({
+            success: true,
+            message: 'A link to activate your account has been emailed to the address provided.',
           });
         }
         throw err;
@@ -392,6 +450,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           properties: {
             email: { type: 'string' },
             password: { type: 'string' },
+            rememberMe: { type: 'boolean' },
           },
         },
       },
@@ -409,6 +468,11 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       const user = await dataService.getUserByEmail(parsed.data.email);
+      // Always perform the expensive comparison before returning an auth
+      // failure. This includes unknown, suspended, deleted, and locked users.
+      const isMatch = user
+        ? await dataService.verifyPassword(user, parsed.data.password)
+        : await bcrypt.compare(parsed.data.password, LOGIN_DUMMY_PASSWORD_HASH);
       if (!user) {
         await dataService.logAuthEvent({
           eventType: 'login_failed',
@@ -423,13 +487,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           userAgent: request.headers['user-agent'],
           metadata: { email: parsed.data.email },
         });
-        return reply.status(401).send({
-          success: false,
-          error: {
-            code: ERROR_CODES.UNAUTHENTICATED,
-            message: 'Invalid email or password.',
-          },
-        });
+        return reply.status(401).send(GENERIC_LOGIN_FAILURE);
       }
 
       // Check if account is suspended
@@ -445,30 +503,16 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
             suspensionReason: (user as any).suspensionReason,
           },
         });
-        return reply.status(403).send({
-          success: false,
-          error: {
-            code: 'ACCOUNT_SUSPENDED',
-            message: 'Your account has been suspended by our administration team. Please contact support.',
-            reason: (user as any).suspensionReason || 'Policy violation',
-          },
-        });
+        return reply.status(401).send(GENERIC_LOGIN_FAILURE);
       }
 
       // Check if account is deleted
       if ((user.status as any) === 'DELETED' || (user.status as any) === 'deleted' || (user as any).deletedAt) {
-        return reply.status(401).send({
-          success: false,
-          error: {
-            code: ERROR_CODES.UNAUTHENTICATED,
-            message: 'Invalid email or password.',
-          },
-        });
+        return reply.status(401).send(GENERIC_LOGIN_FAILURE);
       }
 
       // Check if account is temporarily locked
       if (user.lockedUntil && user.lockedUntil > Date.now()) {
-        const remainingMinutes = Math.ceil((user.lockedUntil - Date.now()) / (60 * 1000));
         await dataService.logAuthEvent({
           eventType: 'login_failed',
           userId: user.id,
@@ -476,18 +520,9 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           userAgent: request.headers['user-agent'],
           metadata: { email: parsed.data.email, reason: 'ACCOUNT_LOCKED', lockedUntil: user.lockedUntil },
         });
-        return reply.status(429).send({
-          success: false,
-          error: {
-            code: 'ACCOUNT_LOCKED',
-            message: `Account is temporarily locked due to 5 consecutive failed login attempts. Please try again in ${remainingMinutes} minute${remainingMinutes > 1 ? 's' : ''}, or reset your password.`,
-            lockedUntil: user.lockedUntil,
-            remainingMinutes,
-          },
-        });
+        return reply.status(401).send(GENERIC_LOGIN_FAILURE);
       }
 
-      const isMatch = await dataService.verifyPassword(user, parsed.data.password);
       if (!isMatch) {
         const failedResult = await dataService.recordFailedLogin(user.id);
         await dataService.logAuthEvent({
@@ -506,15 +541,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
             userAgent: request.headers['user-agent'],
             metadata: { email: parsed.data.email, accountLocked: true, lockedUntil: failedResult.lockedUntil },
           });
-          return reply.status(429).send({
-            success: false,
-            error: {
-              code: 'ACCOUNT_LOCKED',
-              message: 'Account locked due to 5 consecutive failed attempts. Please try again in 15 minutes or reset your password.',
-              lockedUntil: failedResult.lockedUntil,
-              remainingMinutes: 15,
-            },
-          });
+          return reply.status(401).send(GENERIC_LOGIN_FAILURE);
         }
 
         await dataService.logAudit({
@@ -525,13 +552,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           userAgent: request.headers['user-agent'],
           metadata: { email: parsed.data.email, failedAttempts: failedResult.failedAttempts },
         });
-        return reply.status(401).send({
-          success: false,
-          error: {
-            code: ERROR_CODES.UNAUTHENTICATED,
-            message: 'Invalid email or password.',
-          },
-        });
+        return reply.status(401).send(GENERIC_LOGIN_FAILURE);
       }
 
       // Successful password verification: reset failure counters
@@ -556,17 +577,9 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         userAgent: request.headers['user-agent'],
         ipAddress: request.ip,
         authenticationMethod: 'password',
+        rememberMe: parsed.data.rememberMe ?? false,
         tokenVersion: user.tokenVersion ?? 1,
       });
-      const jwtToken = fastify.jwt.sign(
-        {
-          userId: user.id,
-          email: user.email,
-          sessionId: session.sessionId,
-          tokenVersion: user.tokenVersion ?? 1,
-        },
-        { expiresIn: '15m' }
-      );
       const status = await dataService.getOnboardingStatus(user.id);
 
       await dataService.logAuthEvent({
@@ -585,14 +598,12 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         userAgent: request.headers['user-agent'],
       });
 
-      setAuthCookies(reply, { token: jwtToken, refreshToken: session.refreshToken });
+      setSessionCookie(reply, session.refreshToken, session.rememberMe);
 
       return reply.send({
         success: true,
         data: {
           user: toPublicUser(user),
-          token: jwtToken,
-          refreshToken: session.refreshToken,
           session: {
             id: session.sessionId,
             lastVisitedUrl: session.lastVisitedUrl,
@@ -650,8 +661,12 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       throw err;
     }
   };
-  fastify.post('/2fa/verify', { preHandler: [fastify.authenticate] }, verifyTwoFactorHandler);
-  fastify.post('/2fa/enable-verify', { preHandler: [fastify.authenticate] }, verifyTwoFactorHandler);
+  const twoFactorVerificationOptions = {
+    preHandler: [fastify.authenticate],
+    config: { rateLimit: { max: 10, timeWindow: '15 minutes' } },
+  };
+  fastify.post('/2fa/verify', twoFactorVerificationOptions, verifyTwoFactorHandler);
+  fastify.post('/2fa/enable-verify', twoFactorVerificationOptions, verifyTwoFactorHandler);
 
   // POST /api/v1/auth/2fa/disable
   fastify.post(
@@ -730,22 +745,13 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         ipAddress: request.ip,
         authenticationMethod: 'mfa_totp',
         mfaVerified: true,
+        rememberMe: parsed.data.rememberMe ?? false,
         tokenVersion: user.tokenVersion ?? 1,
       });
 
-      const accessToken = fastify.jwt.sign(
-        {
-          userId: user.id,
-          email: user.email,
-          sessionId: session.sessionId,
-          tokenVersion: user.tokenVersion ?? 1,
-        },
-        { expiresIn: '15m' }
-      );
-
       const status = await dataService.getOnboardingStatus(user.id);
 
-      setAuthCookies(reply, { token: accessToken, refreshToken: session.refreshToken });
+      setSessionCookie(reply, session.refreshToken, session.rememberMe);
 
       return reply.send({
         success: true,
@@ -757,8 +763,6 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
             emailVerified: user.emailVerified,
             twoFactorEnabled: user.twoFactorEnabled,
           },
-          token: accessToken,
-          refreshToken: session.refreshToken,
           onboarding: status,
           usedBackupCode: !!usedBackupCode,
         },
@@ -889,9 +893,12 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
 
     try {
       const { user } = await dataService.verifyEmail(parsed.data);
-      const jwtToken = fastify.jwt.sign({ userId: user.id, email: user.email, tokenVersion: user.tokenVersion ?? 0 });
-      const session = await dataService.createSession(user.id, request.headers['user-agent'], request.ip);
-
+      const session = await dataService.createSession(user.id, {
+        userAgent: request.headers['user-agent'],
+        ipAddress: request.ip,
+        authenticationMethod: 'email_verification',
+        tokenVersion: user.tokenVersion ?? 0,
+      });
       await dataService.logAuthEvent({
         eventType: 'email_verified',
         userId: user.id,
@@ -900,7 +907,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         userAgent: request.headers['user-agent'],
       });
 
-      setAuthCookies(reply, { token: jwtToken, refreshToken: session.refreshToken });
+      setSessionCookie(reply, session.refreshToken);
 
       return reply.send({
         success: true,
@@ -911,8 +918,6 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
             name: user.name,
             emailVerified: user.emailVerified,
           },
-          token: jwtToken,
-          refreshToken: session.refreshToken,
           onboarding: {
             currentStep: 'ORGANIZATION_CREATION',
             status: 'IN_PROGRESS',
@@ -956,6 +961,9 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     '/verify-email',
     {
+      config: {
+        rateLimit: { max: 5, timeWindow: '1 minute' },
+      },
       schema: {
         tags: ['Auth'],
         summary: 'Verify user email address using token or 6-digit code (POST)',
@@ -975,6 +983,9 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get(
     '/verify-email',
     {
+      config: {
+        rateLimit: { max: 5, timeWindow: '1 minute' },
+      },
       schema: {
         tags: ['Auth'],
         summary: 'Verify user email address using token link (GET)',
@@ -1010,18 +1021,9 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       const status = await dataService.getOnboardingStatus(request.user.id);
       const sessionContext = request.sessionId ? await dataService.getSessionById(request.sessionId) : null;
 
-      const jwtToken = fastify.jwt.sign({
-        userId: request.user.id,
-        email: request.user.email,
-        sessionId: request.sessionId,
-        tokenVersion: userToSerialize.tokenVersion ?? 0,
-      });
-      setAuthCookies(reply, { token: jwtToken });
-
       return reply.send({
         success: true,
         data: {
-          token: jwtToken,
           user: toPublicUser(userToSerialize),
           session: sessionContext ? {
             id: sessionContext.id,
@@ -1121,18 +1123,22 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         tags: ['Auth'],
         summary: 'Log out current user and invalidate active session tokens',
         security: [{ bearerAuth: [] }],
-        body: {
-          type: 'object',
-          nullable: true,
-          properties: {
-            refreshToken: { type: 'string' },
-          },
-        },
       },
     },
     async (request, reply) => {
       let userId: string | undefined = (request as any).user?.id;
       let sessionId: string | undefined = (request as any).sessionId;
+
+      // Session-cookie callers do not need a bearer token. Resolve once here
+      // because logout intentionally has no authenticate pre-handler.
+      const sessionSecret = request.cookies?.[SESSION_COOKIE_NAME];
+      if (sessionSecret && (!userId || !sessionId)) {
+        const session = await dataService.getSessionBySecret(sessionSecret);
+        if (session && !session.revokedAt && !session.isRevoked) {
+          userId = String(session.userId);
+          sessionId = String(session.id || session._id);
+        }
+      }
 
       // Extract user and sessionId from authorization header if present
       if ((!userId || !sessionId) && request.headers.authorization?.startsWith('Bearer ')) {
@@ -1145,22 +1151,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         }
       }
 
-      // Extract user and sessionId from wildcard session cookies if present
-      const cookieSessionToken = request.cookies?.session || request.cookies?.orvio_session;
-      if ((!userId || !sessionId) && cookieSessionToken) {
-        try {
-          const decoded = fastify.jwt.verify<JwtPayload>(cookieSessionToken);
-          if (!userId) userId = decoded.userId;
-          if (!sessionId && decoded.sessionId) sessionId = decoded.sessionId;
-        } catch {
-          // Ignore invalid/expired token on logout
-        }
-      }
-
-      const body = (request.body as { refreshToken?: string } | undefined) || {};
-      const refreshToken = body.refreshToken || request.cookies?.refresh_token || request.cookies?.orvio_refresh_token;
-
-      if (!userId && !refreshToken && !sessionId) {
+      if (!userId || !sessionId) {
         clearAuthCookies(reply);
         return reply.status(401).send({
           success: false,
@@ -1172,7 +1163,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       try {
-        await dataService.logoutUser(userId || '', refreshToken, sessionId, {
+        await dataService.logoutUser(userId, undefined, sessionId, {
           ipAddress: request.ip,
           userAgent: request.headers['user-agent'],
         });
@@ -1243,23 +1234,20 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           type: 'object',
           properties: {
             sessionId: { type: 'string' },
-            refreshToken: { type: 'string' },
           },
         },
       },
     },
     async (request, reply) => {
-      const body = (request.body as { sessionId?: string; refreshToken?: string }) || {};
+      const body = (request.body as { sessionId?: string }) || {};
       if (body.sessionId) {
         await dataService.revokeSessionById(body.sessionId, request.user.id);
-      } else if (body.refreshToken) {
-        await dataService.revokeSession(body.refreshToken);
       } else {
         return reply.status(400).send({
           success: false,
           error: {
             code: ERROR_CODES.VALIDATION_ERROR,
-            message: 'Either sessionId or refreshToken is required.',
+            message: 'A sessionId is required.',
           },
         });
       }
@@ -1425,8 +1413,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
 
       try {
         const { user } = await dataService.confirmEmailChange(parsed.data.token);
-        const jwtToken = fastify.jwt.sign({ userId: user.id, email: user.email, tokenVersion: user.tokenVersion ?? 0 });
         const session = await dataService.createSession(user.id, request.headers['user-agent'], request.ip, user.tokenVersion ?? 0);
+        setSessionCookie(reply, session.refreshToken);
         return reply.send({
           success: true,
           data: {
@@ -1436,8 +1424,6 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
               name: user.name,
               emailVerified: user.emailVerified,
             },
-            token: jwtToken,
-            refreshToken: session.refreshToken,
           },
           message: 'Email address updated successfully.',
         });
@@ -1596,6 +1582,9 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     '/reset-password',
     {
+      config: {
+        rateLimit: { max: 5, timeWindow: '15 minutes' },
+      },
       schema: {
         tags: ['Auth'],
         summary: 'Reset password using token',
@@ -1675,6 +1664,9 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     '/change-password',
     {
       preHandler: [fastify.authenticate],
+      config: {
+        rateLimit: { max: 10, timeWindow: '15 minutes' },
+      },
       schema: {
         tags: ['Auth'],
         summary: 'Change password for authenticated user',
@@ -1835,18 +1827,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           authenticationMethod: 'oauth',
           tokenVersion: user.tokenVersion ?? 1,
         });
-        const jwtToken = fastify.jwt.sign(
-          {
-            userId: user.id,
-            email: user.email,
-            sessionId: session.sessionId,
-            tokenVersion: user.tokenVersion ?? 1,
-          },
-          { expiresIn: '15m' }
-        );
-
-        setAuthCookies(reply, { token: jwtToken, refreshToken: session.refreshToken });
-        return reply.redirect(`${accountsBaseUrl()}/auth/callback?token=${jwtToken}&refreshToken=${session.refreshToken}`);
+        setSessionCookie(reply, session.refreshToken);
+        return reply.redirect(`${accountsBaseUrl()}/auth/callback`);
       } catch (err: any) {
         console.error('[Google OAuth Error]:', err?.message || err, err?.stack);
         const errorCode = err.code || (err.message?.includes('OAUTH_') ? err.message : ERROR_CODES.OAUTH_PROVIDER_ERROR);
@@ -1948,18 +1930,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
           authenticationMethod: 'oauth',
           tokenVersion: user.tokenVersion ?? 1,
         });
-        const jwtToken = fastify.jwt.sign(
-          {
-            userId: user.id,
-            email: user.email,
-            sessionId: session.sessionId,
-            tokenVersion: user.tokenVersion ?? 1,
-          },
-          { expiresIn: '15m' }
-        );
-
-        setAuthCookies(reply, { token: jwtToken, refreshToken: session.refreshToken });
-        return reply.redirect(`${accountsBaseUrl()}/auth/callback?token=${jwtToken}&refreshToken=${session.refreshToken}`);
+        setSessionCookie(reply, session.refreshToken);
+        return reply.redirect(`${accountsBaseUrl()}/auth/callback`);
       } catch (err: any) {
         console.error('[Facebook OAuth Error]:', err?.message || err, err?.stack);
         const errorCode = err.code || (err.message?.includes('OAUTH_') ? err.message : ERROR_CODES.OAUTH_PROVIDER_ERROR);
@@ -2005,14 +1977,22 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      const productKey = (parsed.data.productKey || parsed.data.product || 'hub') as ProductKey;
+      const productKey = (parsed.data.productKey || parsed.data.product || 'hub').toLowerCase();
       const redirectUri = parsed.data.redirect_uri;
 
-      // Validate redirect URI against product catalog
-      const productInfo = PRODUCT_CATALOG[productKey] || PRODUCT_CATALOG.hub;
-      const isAllowedUri = productInfo.allowedRedirectUris.some((allowed) =>
-        redirectUri.startsWith(allowed)
-      );
+      // Product identity comes from the database registry. Redirect origins are
+      // derived from its configured subdomain; localhost remains a development
+      // origin and hub is the accounts application rather than a product row.
+      let allowedRedirectUris = ['http://localhost:5173', 'http://localhost:3000', accountsBaseUrl()];
+      if (productKey !== 'hub') {
+        try {
+          const product: any = await dataService.getProductByKey(productKey);
+          allowedRedirectUris.push(`https://${product.subdomain}`);
+        } catch {
+          return reply.status(400).send({ success: false, error: { code: ERROR_CODES.REDIRECT_URI_MISMATCH, message: `Unknown or inactive product '${productKey}'.` } });
+        }
+      }
+      const isAllowedUri = allowedRedirectUris.some((allowed) => redirectUri.startsWith(allowed));
 
       if (!isAllowedUri) {
         return reply.status(400).send({
@@ -2168,6 +2148,7 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
 
         const onboarding = await dataService.getOnboardingStatus(result.user.id);
         const memberships = await dataService.getUserMemberships(result.user.id);
+        setAuthCookies(reply, { refreshToken: result.refreshToken });
 
         return reply.send({
           success: true,
@@ -2175,7 +2156,6 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
             access_token: accessToken,
             token_type: 'Bearer',
             expires_in: 900, // 15 mins
-            refresh_token: result.refreshToken,
             product: result.productKey,
             user: {
               id: result.user.id,

@@ -1,4 +1,5 @@
 import { ConvexHttpClient } from 'convex/browser';
+import { fireAndForget } from '../../utils/asyncUtils.js';
 import { BaseRepository } from '../../repositories/baseRepository.js';
 import { BillingRepository } from '../../repositories/billingRepository.js';
 import { AuditNotificationRepository } from '../../repositories/auditNotificationRepository.js';
@@ -161,15 +162,18 @@ export class BillingOrchestrator extends BaseRepository {
 
     // Audit log
     if (this.auditRepo) {
-      await this.auditRepo.logAudit({
-        organizationId,
-        workspaceId,
-        actorUserId: userId,
-        eventType: 'subscription.upgraded',
-        resource: 'subscriptions',
-        entityId: workspaceId || userId,
-        metadata: { reference, gateway, planKey: verifiedPlanKey },
-      }).catch(() => {});
+      fireAndForget(
+        this.auditRepo.logAudit({
+          organizationId,
+          workspaceId,
+          actorUserId: userId,
+          eventType: 'subscription.upgraded',
+          resource: 'subscriptions',
+          entityId: workspaceId || userId,
+          metadata: { reference, gateway, planKey: verifiedPlanKey },
+        }),
+        'Audit log for subscription upgrade'
+      );
     }
 
     return {
@@ -206,14 +210,17 @@ export class BillingOrchestrator extends BaseRepository {
     }
 
     if (this.auditRepo) {
-      await this.auditRepo.logAudit({
-        workspaceId: params.workspaceId,
-        actorUserId: params.userId,
-        eventType: 'manual_payment.submitted',
-        resource: 'manual_payments',
-        entityId: payment?.paymentId || params.workspaceId,
-        metadata: { amount: params.amount, planKey: params.planKey },
-      }).catch(() => {});
+      fireAndForget(
+        this.auditRepo.logAudit({
+          workspaceId: params.workspaceId,
+          actorUserId: params.userId,
+          eventType: 'manual_payment.submitted',
+          resource: 'manual_payments',
+          entityId: payment?.paymentId || params.workspaceId,
+          metadata: { amount: params.amount, planKey: params.planKey },
+        }),
+        'Audit log for manual payment submission'
+      );
     }
 
     return payment;

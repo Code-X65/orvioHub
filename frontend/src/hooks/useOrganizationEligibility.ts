@@ -1,5 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { handleApiError } from '@/lib/error-handler';
+import { createQueryKey } from '@/lib/react-query-adapter';
 
 export interface OrganizationCreationEligibility {
   canCreate: boolean;
@@ -31,7 +33,7 @@ export interface OrganizationCreationEligibility {
   message?: string;
 }
 
-const DEFAULT_ELIGIBILITY: OrganizationCreationEligibility = {
+export const DEFAULT_ELIGIBILITY: OrganizationCreationEligibility = {
   canCreate: true,
   allowed: true,
   currentOwned: 0,
@@ -49,69 +51,68 @@ const DEFAULT_ELIGIBILITY: OrganizationCreationEligibility = {
   recommendedPlan: 'free_trial',
 };
 
+export const ORG_ELIGIBILITY_QUERY_KEY = createQueryKey('/users/me/organization-creation-eligibility');
+
+export async function fetchOrganizationEligibility(): Promise<OrganizationCreationEligibility> {
+  try {
+    const res = await api.get<any>('/users/me/organization-creation-eligibility');
+  const data = res?.data || res;
+  if (!data) return DEFAULT_ELIGIBILITY;
+
+  const currentOwned = data.currentOwned ?? data.currentOwnedOrganizations ?? 0;
+  const maximumOwned = data.maximumOwned ?? data.maximumOwnedOrganizations ?? 3;
+  const remainingOwned = data.remainingOwned ?? data.remainingOwnedOrganizations ?? Math.max(maximumOwned - currentOwned, 0);
+  const canCreate = data.canCreate ?? data.allowed ?? (currentOwned < maximumOwned);
+
+  const freeTrial = data.freeTrial || {
+    used: 0,
+    maximum: 1,
+    available: true,
+  };
+
+  return {
+    canCreate,
+    allowed: canCreate,
+    currentOwned,
+    currentOwnedOrganizations: currentOwned,
+    maximumOwned,
+    maximumOwnedOrganizations: maximumOwned,
+    remainingOwned,
+    remainingOwnedOrganizations: remainingOwned,
+    freeTrial: {
+      used: freeTrial.used ?? (freeTrial.available ? 0 : 1),
+      maximum: freeTrial.maximum ?? 1,
+      available: freeTrial.available ?? (freeTrial.used === 0),
+      organizationId: freeTrial.organizationId,
+      organizationName: freeTrial.organizationName,
+      trialEndsAt: freeTrial.trialEndsAt,
+    },
+    reasons: data.reasons || (canCreate ? [] : ['organization_limit_reached']),
+    recommendedPlan: data.recommendedPlan || (freeTrial.available ? 'free_trial' : 'standard'),
+    override: data.override,
+    code: data.code,
+    message: data.message,
+  };
+  } catch (err) {
+    handleApiError(err, 'fetch organization creation eligibility', { showError: false });
+    return DEFAULT_ELIGIBILITY;
+  }
+}
+
 export function useOrganizationEligibility() {
-  const [eligibility, setEligibility] = useState<OrganizationCreationEligibility>(DEFAULT_ELIGIBILITY);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
+  const query = useQuery({
+    queryKey: ORG_ELIGIBILITY_QUERY_KEY,
+    queryFn: fetchOrganizationEligibility,
+    staleTime: 1000 * 60 * 2, // 2 minutes
+  });
 
-  const fetchEligibility = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const res = await api.get<any>('/users/me/organization-creation-eligibility');
-      const data = res?.data || res;
-      if (data) {
-        const currentOwned = data.currentOwned ?? data.currentOwnedOrganizations ?? 0;
-        const maximumOwned = data.maximumOwned ?? data.maximumOwnedOrganizations ?? 3;
-        const remainingOwned = data.remainingOwned ?? data.remainingOwnedOrganizations ?? Math.max(maximumOwned - currentOwned, 0);
-        const canCreate = data.canCreate ?? data.allowed ?? (currentOwned < maximumOwned);
-
-        const freeTrial = data.freeTrial || {
-          used: 0,
-          maximum: 1,
-          available: true,
-        };
-
-        setEligibility({
-          canCreate,
-          allowed: canCreate,
-          currentOwned,
-          currentOwnedOrganizations: currentOwned,
-          maximumOwned,
-          maximumOwnedOrganizations: maximumOwned,
-          remainingOwned,
-          remainingOwnedOrganizations: remainingOwned,
-          freeTrial: {
-            used: freeTrial.used ?? (freeTrial.available ? 0 : 1),
-            maximum: freeTrial.maximum ?? 1,
-            available: freeTrial.available ?? (freeTrial.used === 0),
-            organizationId: freeTrial.organizationId,
-            organizationName: freeTrial.organizationName,
-            trialEndsAt: freeTrial.trialEndsAt,
-          },
-          reasons: data.reasons || (canCreate ? [] : ['organization_limit_reached']),
-          recommendedPlan: data.recommendedPlan || (freeTrial.available ? 'free_trial' : 'standard'),
-          override: data.override,
-          code: data.code,
-          message: data.message,
-        });
-      }
-    } catch (err: any) {
-      setError(err?.message || 'Failed to check organization creation eligibility');
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchEligibility();
-  }, [fetchEligibility]);
+  const eligibility = query.data || DEFAULT_ELIGIBILITY;
 
   return {
     eligibility,
-    isLoading,
-    error,
-    refreshEligibility: fetchEligibility,
+    isLoading: query.isLoading,
+    error: query.error ? (query.error as Error).message : null,
+    refreshEligibility: query.refetch,
     isLimitReached: !eligibility.canCreate || !eligibility.allowed,
     isFreeTrialAvailable: eligibility.freeTrial.available,
   };

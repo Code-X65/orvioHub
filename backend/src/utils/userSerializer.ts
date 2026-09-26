@@ -20,6 +20,8 @@ export interface PublicUser {
   phoneVisibility?: 'private' | 'workspace';
   country?: string;
   state?: string;
+  stateCode?: string;
+  lga?: string;
   city?: string;
   timezone: string;
   language: string;
@@ -79,6 +81,8 @@ export function toPublicUser(
     phoneVisibility: user.phoneVisibility || 'private',
     country: user.country,
     state: user.state,
+    stateCode: user.stateCode,
+    lga: user.lga,
     city: user.city,
     timezone: user.timezone || 'Africa/Lagos',
     language: user.language || 'en',

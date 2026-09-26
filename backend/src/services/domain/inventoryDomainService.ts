@@ -1,4 +1,5 @@
 import { ConvexHttpClient } from 'convex/browser';
+import { fireAndForget } from '../../utils/asyncUtils.js';
 import { BaseRepository } from '../../repositories/baseRepository.js';
 import { AuditNotificationRepository } from '../../repositories/auditNotificationRepository.js';
 import { entitlementService } from '../entitlementService.js';
@@ -118,17 +119,20 @@ export class InventoryDomainService extends BaseRepository {
 
     // 3. Audit trail
     if (this.auditRepo) {
-      await this.auditRepo.logAudit({
-        workspaceId,
-        actorUserId,
-        productKey: 'inventory',
-        eventType: 'inventory.product_created',
-        resource: 'inventoryProducts',
-        entityId: productId,
-        ipAddress: params.ipAddress,
-        userAgent: params.userAgent,
-        metadata: { name: data.name, sku: data.sku, sellingPrice: data.sellingPrice },
-      }).catch(() => {});
+      fireAndForget(
+        this.auditRepo.logAudit({
+          workspaceId,
+          actorUserId,
+          productKey: 'inventory',
+          eventType: 'inventory.product_created',
+          resource: 'inventoryProducts',
+          entityId: productId,
+          ipAddress: params.ipAddress,
+          userAgent: params.userAgent,
+          metadata: { name: data.name, sku: data.sku, sellingPrice: data.sellingPrice },
+        }),
+        'Audit log for inventory product creation'
+      );
     }
 
     return productId;
@@ -150,17 +154,20 @@ export class InventoryDomainService extends BaseRepository {
     });
 
     if (this.auditRepo) {
-      await this.auditRepo.logAudit({
-        workspaceId,
-        actorUserId,
-        productKey: 'inventory',
-        eventType: 'inventory.sale_recorded',
-        resource: 'inventorySales',
-        entityId: result?.saleId || workspaceId,
-        ipAddress: params.ipAddress,
-        userAgent: params.userAgent,
-        metadata: { itemCount: items.length, paymentMethod },
-      }).catch(() => {});
+      fireAndForget(
+        this.auditRepo.logAudit({
+          workspaceId,
+          actorUserId,
+          productKey: 'inventory',
+          eventType: 'inventory.sale_recorded',
+          resource: 'inventorySales',
+          entityId: result?.saleId || workspaceId,
+          ipAddress: params.ipAddress,
+          userAgent: params.userAgent,
+          metadata: { itemCount: items.length, paymentMethod },
+        }),
+        'Audit log for inventory sale'
+      );
     }
 
     return result;
@@ -176,15 +183,18 @@ export class InventoryDomainService extends BaseRepository {
     });
 
     if (this.auditRepo) {
-      await this.auditRepo.logAudit({
-        workspaceId,
-        actorUserId,
-        productKey: 'inventory',
-        eventType: 'inventory.sample_seeded',
-        resource: 'inventoryProducts',
-        entityId: workspaceId,
-        metadata: { sector },
-      }).catch(() => {});
+      fireAndForget(
+        this.auditRepo.logAudit({
+          workspaceId,
+          actorUserId,
+          productKey: 'inventory',
+          eventType: 'inventory.sample_seeded',
+          resource: 'inventoryProducts',
+          entityId: workspaceId,
+          metadata: { sector },
+        }),
+        'Audit log for inventory sample seeding'
+      );
     }
 
     return result;
@@ -198,6 +208,93 @@ export class InventoryDomainService extends BaseRepository {
       workspaceId: workspaceId as any,
     });
   }
+
+  /**
+   * Record opening stock ledger entries
+   */
+  public async recordOpeningStock(params: {
+    workspaceId: string;
+    branchId?: string;
+    entries: Array<{
+      productId: string;
+      quantity: number;
+      unitCost?: number;
+      totalCost?: number;
+      notes?: string;
+    }>;
+    notes?: string;
+    referenceType?: string;
+    referenceId?: string;
+    actorUserId: string;
+    ipAddress?: string;
+    userAgent?: string;
+  }): Promise<any> {
+    const { workspaceId, actorUserId, ...rest } = params;
+    const result = await this.mutate('inventory:recordOpeningStock', {
+      workspaceId: workspaceId as any,
+      branchId: rest.branchId as any,
+      entries: rest.entries as any,
+      notes: rest.notes,
+      referenceType: rest.referenceType || 'onboarding',
+      referenceId: rest.referenceId,
+      actorUserId: actorUserId as any,
+      userId: actorUserId as any,
+    });
+
+    if (this.auditRepo) {
+      fireAndForget(
+        this.auditRepo.logAudit({
+          workspaceId,
+          actorUserId,
+          productKey: 'inventory',
+          eventType: 'inventory.opening_stock_recorded',
+          resource: 'stockMovements',
+          entityId: workspaceId,
+          ipAddress: params.ipAddress,
+          userAgent: params.userAgent,
+          metadata: {
+            productsCount: result?.recordedCount || rest.entries.length,
+            totalQuantity: result?.totalQuantity,
+            totalValuation: result?.totalValuation,
+            branchId: rest.branchId,
+          },
+        }),
+        'Audit log for opening stock recording'
+      );
+    }
+
+    return result;
+  }
+
+  /**
+   * Get stock movements filtered by movementType, branch, or product
+   */
+  public async getStockMovements(params: {
+    workspaceId: string;
+    branchId?: string;
+    productId?: string;
+    movementType?: string;
+    limit?: number;
+  }): Promise<any[]> {
+    return (await this.query('inventory:getStockMovements', {
+      workspaceId: params.workspaceId as any,
+      branchId: params.branchId as any,
+      productId: params.productId as any,
+      movementType: params.movementType,
+      limit: params.limit,
+    })) || [];
+  }
+
+  /**
+   * Get current opening stock status for workspace & branch
+   */
+  public async getOpeningStock(workspaceId: string, branchId?: string): Promise<any> {
+    return await this.query('inventory:getOpeningStock', {
+      workspaceId: workspaceId as any,
+      branchId: branchId as any,
+    });
+  }
 }
 
 export const inventoryDomainService = new InventoryDomainService();
+

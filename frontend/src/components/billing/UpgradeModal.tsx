@@ -14,10 +14,18 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { useHost } from "@/host/useHost";
-import { getApiUrl } from "@orviohub/shared";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { openPaystackPopup } from "@/lib/payment";
+import { api } from "@/lib/api";
 import { toast } from "sonner";
+
+async function secureRequest(url: string, init: RequestInit): Promise<{ ok: true }> {
+  const parsed = new URL(url);
+  const endpoint = `${parsed.pathname.replace(/^\/api\/v1/, "")}${parsed.search}`;
+  const body = typeof init.body === "string" && init.body ? JSON.parse(init.body) : undefined;
+  await api.post(endpoint, body);
+  return { ok: true };
+}
 
 interface UpgradeModalProps {
   isOpen: boolean;
@@ -62,7 +70,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
 }) => {
   const host = useHost();
   const env = host.environment;
-  const { token, user } = useAuthStore();
+  const { user } = useAuthStore();
 
   const normalizedPlan = (currentPlanKey || "free_trial").toLowerCase();
   const isStandard = normalizedPlan === "standard";
@@ -169,13 +177,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
         planName: `${activePlanInfo.name} (${billingInterval === "annual" ? "Annual" : "Monthly"})`,
         onSuccess: async (verifiedRef) => {
           try {
-            const apiUrl = getApiUrl(env).replace(/\/$/, "");
-            await fetch(
-              `${apiUrl}/api/v1/billing/verify?reference=${encodeURIComponent(verifiedRef)}&gateway=paystack&workspaceId=${encodeURIComponent(workspaceId)}&interval=${billingInterval}&plan=${selectedPlan}`,
-              {
-                headers: token ? { Authorization: `Bearer ${token}` } : {},
-              }
-            );
+            await api.get(`/billing/verify?reference=${encodeURIComponent(verifiedRef)}&gateway=paystack&workspaceId=${encodeURIComponent(workspaceId)}&interval=${billingInterval}&plan=${selectedPlan}`, { bypassCache: true });
             toast.success(`Payment confirmed! Upgraded to ${activePlanInfo.name}.`);
             if (onSuccess) onSuccess();
             onClose();
@@ -208,13 +210,12 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
 
     try {
       const apiUrl = getApiUrl(env).replace(/\/$/, "");
-      const res = await fetch(
+      const res = await secureRequest(
         `${apiUrl}/api/v1/workspaces/${workspaceId}/subscription/request-upgrade`,
         {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
           body: JSON.stringify({
             requestedPlan: selectedPlan,
@@ -668,5 +669,4 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
     </div>
   );
 };
-
 

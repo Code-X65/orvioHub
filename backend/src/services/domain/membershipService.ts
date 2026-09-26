@@ -3,6 +3,7 @@ import { BaseRepository } from '../../repositories/baseRepository.js';
 import { OrganizationRepository } from '../../repositories/organizationRepository.js';
 import { AuditNotificationRepository } from '../../repositories/auditNotificationRepository.js';
 import { entitlementService } from '../entitlementService.js';
+import { fireAndForget } from '../../utils/asyncUtils.js';
 import { AUDIT_EVENTS, ERROR_CODES, type Role } from '../../config/constants.js';
 
 export interface InviteMemberParams {
@@ -83,14 +84,17 @@ export class MembershipService extends BaseRepository {
 
     // 3. Audit log
     if (this.auditRepo) {
-      await this.auditRepo.logAudit({
-        organizationId,
-        actorUserId: invitedBy,
-        eventType: AUDIT_EVENTS.WORKSPACE_MEMBER_INVITED,
-        resource: 'invitations',
-        entityId: invitation?.id || invitation?._id || email,
-        metadata: { email, role },
-      }).catch(() => {});
+      fireAndForget(
+        this.auditRepo.logAudit({
+          organizationId,
+          actorUserId: invitedBy,
+          eventType: AUDIT_EVENTS.WORKSPACE_MEMBER_INVITED,
+          resource: 'invitations',
+          entityId: invitation?.id || invitation?._id || email,
+          metadata: { email, role },
+        }),
+        'Audit log for member invitation'
+      );
     }
 
     return invitation;
@@ -125,14 +129,17 @@ export class MembershipService extends BaseRepository {
     });
 
     if (this.auditRepo) {
-      await this.auditRepo.logAudit({
-        organizationId,
-        actorUserId: actingUserId,
-        eventType: AUDIT_EVENTS.WORKSPACE_MEMBER_ROLE_CHANGED,
-        resource: 'organizationMemberships',
-        entityId: targetUserId,
-        metadata: { targetUserId, newRole },
-      }).catch(() => {});
+      fireAndForget(
+        this.auditRepo.logAudit({
+          organizationId,
+          actorUserId: actingUserId,
+          eventType: AUDIT_EVENTS.WORKSPACE_MEMBER_ROLE_CHANGED,
+          resource: 'organizationMemberships',
+          entityId: targetUserId,
+          metadata: { targetUserId, newRole },
+        }),
+        'Audit log for member role update'
+      );
     }
 
     return updated;
@@ -161,14 +168,17 @@ export class MembershipService extends BaseRepository {
     });
 
     if (this.auditRepo) {
-      await this.auditRepo.logAudit({
-        organizationId,
-        actorUserId: actingUserId,
-        eventType: AUDIT_EVENTS.WORKSPACE_MEMBER_REMOVED,
-        resource: 'organizationMemberships',
-        entityId: targetUserId,
-        metadata: { targetUserId },
-      }).catch(() => {});
+      fireAndForget(
+        this.auditRepo.logAudit({
+          organizationId,
+          actorUserId: actingUserId,
+          eventType: AUDIT_EVENTS.WORKSPACE_MEMBER_REMOVED,
+          resource: 'organizationMemberships',
+          entityId: targetUserId,
+          metadata: { targetUserId },
+        }),
+        'Audit log for member removal'
+      );
     }
 
     return result;
@@ -201,14 +211,17 @@ export class MembershipService extends BaseRepository {
     }
 
     if (this.auditRepo) {
-      await this.auditRepo.logAudit({
-        organizationId,
-        actorUserId: actingUserId,
-        eventType: 'organization.member_permissions_updated',
-        resource: 'organizationMemberships',
-        entityId: targetUserId,
-        metadata: { allowedApplications, allowedBranches, primaryBranchId },
-      }).catch(() => {});
+      fireAndForget(
+        this.auditRepo.logAudit({
+          organizationId,
+          actorUserId: actingUserId,
+          eventType: 'organization.member_permissions_updated',
+          resource: 'organizationMemberships',
+          entityId: targetUserId,
+          metadata: { allowedApplications, allowedBranches, primaryBranchId },
+        }),
+        'Audit log for member permissions update'
+      );
     }
 
     return result;

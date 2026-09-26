@@ -41,6 +41,12 @@ jobs:
       - name: Build Shared Packages
         run: pnpm --filter @orviohub/shared build
 
+      - name: Verify shared session contract
+        run: pnpm --filter @orviohub/shared test
+
+      - name: Generate and typecheck Convex API
+        run: pnpm --filter backend exec convex codegen
+
       - name: Typecheck Backend
         run: pnpm --filter backend typecheck
 
@@ -56,3 +62,28 @@ jobs:
           PORT: 3000
           HOST: 127.0.0.1
 
+  deploy-convex-production:
+    name: Deploy Convex production contract
+    needs: validate-and-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Deploy Convex schema and functions
+        run: pnpm --filter backend exec convex deploy
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}

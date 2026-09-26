@@ -25,7 +25,7 @@ import { useAuthStore } from '@/stores/useAuthStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { api } from '@/lib/api';
 import { openPaystackPopup } from '@/lib/payment';
-import { getHomeUrl } from '@/lib/domain';
+import { getHomeUrl, getCrossSubdomainUrl } from '@/lib/domain';
 
 const BANK_ACCOUNTS = [
   {

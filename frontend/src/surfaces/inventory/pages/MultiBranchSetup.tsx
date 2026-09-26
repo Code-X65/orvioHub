@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
+import { safeFetch } from '@/lib/error-handler';
 import { getCrossSubdomainUrl } from '@/lib/domain';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { useBranchStore } from '@/stores/useBranchStore';
@@ -150,7 +151,11 @@ export const MultiBranchSetup: React.FC = () => {
       let orgPhone = ws?.phone || meta.phone || '';
 
       if (!orgStreet && !orgPhone && activeOrgId) {
-        const res = await api.get<any>(`/organizations/${activeOrgId}`).catch(() => null);
+        const res = await safeFetch(api.get<any>(`/organizations/${activeOrgId}`), {
+          context: 'prefill organization address',
+          fallback: null,
+          showError: false,
+        });
         const orgData = res?.organization || res?.data?.organization || res;
         if (orgData) {
           orgStreet = orgData.street || orgData.address || '';
@@ -272,8 +277,7 @@ export const MultiBranchSetup: React.FC = () => {
       setActiveBranch(target);
     }
     const targetId = target?.id || target?._id;
-    toast.success(`Setup finished for ${activeOrgName}!`);
-    navigate(`/dashboard?org=${activeOrgId}${targetId ? `&branchId=${targetId}` : ''}`);
+    navigate(`/onboard/opening-stock?org=${activeOrgId}${targetId ? `&branchId=${targetId}` : ''}`);
   };
 
   if (isLoading) {

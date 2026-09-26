@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { buildApp } from '../src/app.js';
 import { dataService } from '../src/services/dataService.js';
 import { ERROR_CODES } from '../src/config/constants.js';
+import { REFRESH_COOKIE_NAME } from '../src/utils/cookies.js';
 
 describe('Logout Flow and Wildcard Session Handling Across Subdomains Test Suite', () => {
   let app: Awaited<ReturnType<typeof buildApp>>;
@@ -15,11 +16,15 @@ describe('Logout Flow and Wildcard Session Handling Across Subdomains Test Suite
   const originalGetOnboardingStatus = dataService.getOnboardingStatus;
   const originalGetUserMemberships = dataService.getUserMemberships;
   const originalLogAuthEvent = dataService.logAuthEvent;
+  const originalResetFailedLogins = dataService.resetFailedLogins;
+  const originalTouchLastLogin = dataService.touchLastLogin;
 
   beforeEach(async () => {
     app = await buildApp();
     dataService.getUserMemberships = async () => [];
     dataService.logAuthEvent = async () => ({ success: true });
+    dataService.resetFailedLogins = async () => ({ success: true });
+    dataService.touchLastLogin = async () => ({ success: true });
     dataService.getOnboardingStatus = async () => ({
       status: 'COMPLETED' as const,
       currentStep: 'COMPLETED' as const,
@@ -36,6 +41,8 @@ describe('Logout Flow and Wildcard Session Handling Across Subdomains Test Suite
     dataService.getOnboardingStatus = originalGetOnboardingStatus;
     dataService.getUserMemberships = originalGetUserMemberships;
     dataService.logAuthEvent = originalLogAuthEvent;
+    dataService.resetFailedLogins = originalResetFailedLogins;
+    dataService.touchLastLogin = originalTouchLastLogin;
   });
 
   test('1. Successful login sets wildcard cookies scoped to .orviohub.localhost', async () => {
@@ -78,16 +85,16 @@ describe('Logout Flow and Wildcard Session Handling Across Subdomains Test Suite
 
     const cookieStrings = Array.isArray(setCookies) ? setCookies : [setCookies];
     
-    // Confirm session cookie is scoped to .orviohub.localhost (or env COOKIE_DOMAIN)
-    const sessionCookie = cookieStrings.find((c) => c.startsWith('session=') || c.startsWith('orvio_session='));
-    assert.ok(sessionCookie, 'Must set session or orvio_session cookie');
+    // Confirm refresh cookie is scoped to .orviohub.localhost (or env COOKIE_DOMAIN)
+    const refreshCookie = cookieStrings.find((c) => c.startsWith(`${REFRESH_COOKIE_NAME}=`));
+    assert.ok(refreshCookie, `Must set ${REFRESH_COOKIE_NAME} cookie`);
     assert.ok(
-      sessionCookie.includes('Domain=.orviohub.localhost') || sessionCookie.includes('domain=.orviohub.localhost'),
-      'Session cookie must have Domain=.orviohub.localhost'
+      refreshCookie.includes('Domain=.orviohub.localhost') || refreshCookie.includes('domain=.orviohub.localhost'),
+      'Refresh cookie must have Domain=.orviohub.localhost'
     );
-    assert.ok(sessionCookie.includes('Path=/') || sessionCookie.includes('path=/'), 'Cookie must have Path=/');
-    assert.ok(sessionCookie.toLowerCase().includes('httponly'), 'Cookie must be HttpOnly');
-    assert.ok(sessionCookie.toLowerCase().includes('samesite=lax'), 'Cookie must have SameSite=Lax');
+    assert.ok(refreshCookie.includes('Path=/api/v1/auth/') || refreshCookie.includes('path=/api/v1/auth/'), 'Cookie must have Path=/api/v1/auth/');
+    assert.ok(refreshCookie.toLowerCase().includes('httponly'), 'Cookie must be HttpOnly');
+    assert.ok(refreshCookie.toLowerCase().includes('samesite=lax'), 'Cookie must have SameSite=Lax');
   });
 
   test('2. Logout from any subdomain revokes server-side session and clears cookies with Domain=.orviohub.localhost', async () => {
@@ -107,12 +114,13 @@ describe('Logout Flow and Wildcard Session Handling Across Subdomains Test Suite
       tokenVersion: 1,
     });
 
-    // Simulate request coming from a subdomain (e.g. inventory or home) with session cookie
+    // Simulate request coming from a subdomain (e.g. inventory or home) with auth bearer
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/logout',
       headers: {
-        cookie: `orvio_session=${token}; orvio_refresh_token=mock_refresh_token`,
+        authorization: `Bearer ${token}`,
+        cookie: `${REFRESH_COOKIE_NAME}=mock_refresh_token`,
       },
     });
 
@@ -130,11 +138,11 @@ describe('Logout Flow and Wildcard Session Handling Across Subdomains Test Suite
     
     const clearedWildcardCookie = cookieStrings.find(
       (c) =>
-        (c.startsWith('session=') || c.startsWith('orvio_session=')) &&
+        c.startsWith(`${REFRESH_COOKIE_NAME}=`) &&
         (c.includes('Domain=.orviohub.localhost') || c.includes('domain=.orviohub.localhost')) &&
         (c.includes('Max-Age=0') || c.includes('max-age=0'))
     );
-    assert.ok(clearedWildcardCookie, 'Must clear session cookie on .orviohub.localhost with Max-Age=0');
+    assert.ok(clearedWildcardCookie, 'Must clear refresh cookie on .orviohub.localhost with Max-Age=0');
   });
 
   test('3. Revoked session is rejected by authentication middleware across all subdomains', async () => {
@@ -293,7 +301,7 @@ describe('Logout Flow and Wildcard Session Handling Across Subdomains Test Suite
       method: 'GET',
       url: '/api/v1/auth/me',
       headers: {
-        cookie: `orvio_session=${token}`,
+        authorization: `Bearer ${token}`,
       },
     });
 

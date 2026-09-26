@@ -1,6 +1,8 @@
 import Fastify, { type FastifyError } from 'fastify';
+import { randomUUID } from 'node:crypto';
 import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
+import websocket from '@fastify/websocket';
 import sensible from '@fastify/sensible';
 import { env } from './config/env.js';
 import { getAllowedOrigins, isAllowedOrigin, type Environment } from '@orviohub/shared';
@@ -40,12 +42,21 @@ import { rateLimitPlugin } from './plugins/rateLimit.js';
 
 import { AppError } from './errors/AppError.js';
 import { ERROR_CODES } from './config/constants.js';
+import { hasValidSessionCsrfToken, SESSION_COOKIE_NAME } from './utils/cookies.js';
 
 export async function buildApp() {
   const fastify = Fastify({
     trustProxy: true,
+    requestIdHeader: 'x-request-id',
+    genReqId: (req) => {
+      const existingId =
+        req.headers['x-request-id'] || req.headers['cf-ray'] || req.headers['x-correlation-id'];
+      if (existingId) return Array.isArray(existingId) ? existingId[0] : String(existingId);
+      return randomUUID();
+    },
     logger: {
       level: env.LOG_LEVEL,
+      redact: ['req.headers.authorization', 'req.headers.cookie'],
     },
   });
 
@@ -103,8 +114,9 @@ export async function buildApp() {
   // 1. Explicit CORS configuration (Registered FIRST so OPTIONS preflights get CORS headers)
   await fastify.register(cors, {
     origin: (origin, cb) => {
-      // Allow requests with no origin (like mobile apps, curl, server-to-server)
-      if (!origin) return cb(null, true);
+      // Requests without an Origin are not browser CORS requests. Auth routes
+      // independently reject originless cookie operations.
+      if (!origin) return cb(null, false);
 
       const currentEnv: Environment =
         (process.env.NODE_ENV as Environment) === 'production' ? 'production' : 'development';
@@ -117,11 +129,26 @@ export async function buildApp() {
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Orviohub-Application'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token', 'X-Requested-With', 'X-Orviohub-Application', 'X-Workspace-Id', 'X-Branch-Id', 'X-Organization-Id'],
   });
 
   // 2. Cookie Support (Required for cross-subdomain session cookies)
   await fastify.register(cookie);
+
+  // Once an HttpOnly session cookie authenticates normal API routes, every
+  // unsafe cookie-auth request needs CSRF protection (not only /auth/refresh).
+  fastify.addHook('onRequest', async (request, reply) => {
+    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) return;
+    if (!request.url.startsWith('/api/')) return;
+    const sessionSecret = request.cookies?.[SESSION_COOKIE_NAME];
+    if (!sessionSecret) return;
+    const origin = request.headers.origin;
+    const currentEnv: Environment = process.env.NODE_ENV === 'production' ? 'production' : 'development';
+    if ((!origin && env.NODE_ENV !== 'test') || (origin && !isAllowedOrigin(origin, currentEnv)) || !hasValidSessionCsrfToken(request.headers['x-csrf-token'], sessionSecret)) {
+      return reply.status(403).send({ success: false, error: { code: 'CSRF_VALIDATION_FAILED', message: 'A valid same-origin CSRF token is required.' } });
+    }
+  });
+  await fastify.register(websocket);
 
   // 3. Host Context & Subdomain Resolution
   await fastify.register(hostContextPlugin);

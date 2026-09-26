@@ -19,6 +19,7 @@ const envSchema = z.object({
   SENTRY_DSN: z.string().optional(),
   BETTERSTACK_LOGTAIL_TOKEN: z.string().optional(),
   JWT_SECRET: z.string().default('orvio-hub-super-secret-key-change-in-production-min32chars'),
+  TOTP_ENCRYPTION_KEY: z.string().min(32).optional(),
   APP_URL: z.string().default('http://orviohub.localhost:3000'),
   BASE_URL_MARKETING: z.string().default('http://orviohub.localhost:3000'),
   BASE_URL_ACCOUNT: z.string().default('http://account.orviohub.localhost:3000'),
@@ -61,4 +62,26 @@ if (env.NODE_ENV === 'production') {
   if (secret.length < 32) {
     throw new Error('JWT_SECRET must be at least 32 characters in production.');
   }
+  if (!env.TOTP_ENCRYPTION_KEY) {
+    throw new Error('TOTP_ENCRYPTION_KEY must be supplied by the deployment secret manager in production.');
+  }
+  if (process.env.COOKIE_DOMAIN && process.env.COOKIE_DOMAIN.includes('localhost')) {
+    throw new Error('COOKIE_DOMAIN cannot reference localhost in production.');
+  }
+  const browserUrls = {
+    APP_URL: env.APP_URL,
+    BASE_URL_MARKETING: env.BASE_URL_MARKETING,
+    BASE_URL_ACCOUNT: env.BASE_URL_ACCOUNT,
+    BASE_URL_HOME: env.BASE_URL_HOME,
+    BASE_URL_INVENTORY: env.BASE_URL_INVENTORY,
+  };
+  for (const [name, value] of Object.entries(browserUrls)) {
+    if (!value.startsWith('https://')) {
+      throw new Error(`${name} must use HTTPS in production.`);
+    }
+  }
+}
+
+if (env.NODE_ENV === 'production' && (!env.COOKIE_DOMAIN.startsWith('.') || env.COOKIE_DOMAIN.includes('localhost'))) {
+  throw new Error('COOKIE_DOMAIN must be a shared production parent domain such as .orviohub.com.');
 }

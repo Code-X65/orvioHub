@@ -19,7 +19,6 @@ export const getProducts = query({
     return products;
   },
 });
-
 export const createProduct = mutation({
   args: {
     workspaceId: v.id("workspaces"),
@@ -278,17 +277,44 @@ export const recordSale = mutation({
 export const getDashboardMetrics = query({
   args: {
     workspaceId: v.id("workspaces"),
+    branchId: v.optional(v.union(v.id("branches"), v.string())),
+    allowedBranchIds: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
-    const products = await ctx.db
+    let products = await ctx.db
       .query("inventoryProducts")
       .withIndex("by_workspaceId", (i) => i.eq("workspaceId", args.workspaceId))
       .collect();
 
-    const sales = await ctx.db
+    // Products are workspace-global, but branch-scoped dashboards derive their
+    // stock from movements in the permitted branch set rather than exposing
+    // the workspace-wide product balances.
+    if (args.branchId || args.allowedBranchIds) {
+      const allMovements = await ctx.db.query("inventoryStockMovements")
+        .withIndex("by_workspaceId", (i) => i.eq("workspaceId", args.workspaceId)).collect();
+      const scoped = args.branchId
+        ? allMovements.filter((m) => String(m.branchId) === String(args.branchId))
+        : allMovements.filter((m) => m.branchId && args.allowedBranchIds!.includes(String(m.branchId)));
+      const balances = new Map<string, number>();
+      for (const movement of scoped.sort((a, b) => a.createdAt - b.createdAt)) {
+        const key = `${String(movement.branchId)}:${String(movement.productId)}`;
+        balances.set(key, movement.balanceAfter ?? ((balances.get(key) || 0) + movement.quantity));
+      }
+      const byProduct = new Map<string, number>();
+      for (const [key, balance] of balances) {
+        const productId = key.slice(key.indexOf(':') + 1);
+        byProduct.set(productId, (byProduct.get(productId) || 0) + balance);
+      }
+      products = products.filter((product) => byProduct.has(String(product._id))).map((product) => ({ ...product, stockQuantity: byProduct.get(String(product._id)) || 0 }));
+    }
+
+    let sales = await ctx.db
       .query("inventorySales")
       .withIndex("by_workspaceId", (i) => i.eq("workspaceId", args.workspaceId))
       .collect();
+    // Historical sales without a branch are not returned to restricted users.
+    if (args.branchId) sales = sales.filter((s: any) => String(s.branchId) === String(args.branchId));
+    else if (args.allowedBranchIds) sales = sales.filter((s: any) => s.branchId && args.allowedBranchIds!.includes(String(s.branchId)));
 
     const totalProducts = products.length;
     const lowStockProducts = products.filter((p) => p.stockQuantity <= p.minStockLevel);
@@ -429,5 +455,256 @@ export const updateReceiptSettings = mutation({
       });
       return await ctx.db.get(id);
     }
+  },
+});
+
+export const recordOpeningStock = mutation({
+  args: {
+    workspaceId: v.id("workspaces"),
+    branchId: v.optional(v.union(v.id("branches"), v.string())),
+    entries: v.array(
+      v.object({
+        productId: v.union(v.id("inventoryProducts"), v.id("products"), v.string()),
+        quantity: v.number(),
+        unitCost: v.optional(v.number()),
+        totalCost: v.optional(v.number()),
+        notes: v.optional(v.string()),
+      })
+    ),
+    notes: v.optional(v.string()),
+    referenceType: v.optional(v.string()),
+    referenceId: v.optional(v.string()),
+    actorUserId: v.optional(v.union(v.id("users"), v.string())),
+    userId: v.optional(v.union(v.id("users"), v.string())),
+    deviceId: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const effectiveUserId = args.actorUserId || args.userId;
+    const normalizedUserId = (effectiveUserId ? ctx.db.normalizeId("users", effectiveUserId) : undefined) ?? undefined;
+    const normalizedBranchId = (args.branchId ? ctx.db.normalizeId("branches", args.branchId) : undefined) ?? undefined;
+
+    const movementIds: string[] = [];
+    let totalQuantity = 0;
+    let totalValuation = 0;
+
+    for (const entry of args.entries) {
+      const normalizedProductId = ctx.db.normalizeId("inventoryProducts", entry.productId);
+      if (!normalizedProductId) continue;
+
+      const product = await ctx.db.get(normalizedProductId);
+      if (!product || product.workspaceId !== args.workspaceId) continue;
+
+      const balanceBefore = product.stockQuantity;
+      const newStock = entry.quantity;
+      const unitCost = entry.unitCost !== undefined ? entry.unitCost : product.costPrice;
+      const totalCost = entry.totalCost !== undefined ? entry.totalCost : unitCost * entry.quantity;
+
+      // Update product stock balance and costPrice if provided
+      await ctx.db.patch(product._id, {
+        stockQuantity: newStock,
+        costPrice: unitCost > 0 ? unitCost : product.costPrice,
+        updatedAt: now,
+      });
+
+      // Insert stock movement in inventoryStockMovements
+      const movId = await ctx.db.insert("inventoryStockMovements", {
+        workspaceId: args.workspaceId,
+        branchId: normalizedBranchId,
+        productId: product._id,
+        quantity: entry.quantity,
+        unitCost,
+        totalCost,
+        balanceBefore,
+        balanceAfter: newStock,
+        type: "OPENING_STOCK",
+        movementType: "opening_stock",
+        reason: "Opening Stock Entry",
+        notes: entry.notes || args.notes,
+        referenceType: args.referenceType || "onboarding",
+        referenceId: args.referenceId,
+        actorUserId: normalizedUserId,
+        userId: normalizedUserId,
+        deviceId: args.deviceId,
+        createdAt: now,
+      });
+
+      // Insert also in stockMovements
+      await ctx.db.insert("stockMovements", {
+        workspaceId: args.workspaceId,
+        branchId: normalizedBranchId,
+        productId: product._id,
+        quantity: entry.quantity,
+        unitCost,
+        totalCost,
+        balanceBefore,
+        balanceAfter: newStock,
+        movementType: "opening_stock",
+        reason: "Opening Stock Entry",
+        notes: entry.notes || args.notes,
+        referenceType: args.referenceType || "onboarding",
+        referenceId: args.referenceId,
+        actorUserId: normalizedUserId,
+        userId: normalizedUserId,
+        deviceId: args.deviceId,
+        createdAt: now,
+      });
+
+      movementIds.push(movId);
+      totalQuantity += entry.quantity;
+      totalValuation += totalCost;
+    }
+
+    return {
+      success: true,
+      recordedCount: movementIds.length,
+      totalQuantity,
+      totalValuation,
+      movementIds,
+    };
+  },
+});
+
+export const getStockMovements = query({
+  args: {
+    workspaceId: v.id("workspaces"),
+    branchId: v.optional(v.union(v.id("branches"), v.string())),
+    productId: v.optional(v.union(v.id("inventoryProducts"), v.string())),
+    movementType: v.optional(v.string()),
+    limit: v.optional(v.number()),
+    allowedBranchIds: v.optional(v.array(v.string())),
+  },
+  handler: async (ctx, args) => {
+    let movements = await ctx.db
+      .query("inventoryStockMovements")
+      .withIndex("by_workspaceId", (q) => q.eq("workspaceId", args.workspaceId))
+      .collect();
+
+    if (args.branchId) movements = movements.filter((m) => String(m.branchId) === String(args.branchId));
+    else if (args.allowedBranchIds) movements = movements.filter((m) => m.branchId && args.allowedBranchIds!.includes(String(m.branchId)));
+
+    if (args.productId) {
+      movements = movements.filter((m) => m.productId === args.productId);
+    }
+
+    if (args.movementType) {
+      const targetType = args.movementType.toLowerCase();
+      movements = movements.filter(
+        (m) =>
+          (m.movementType && m.movementType.toLowerCase() === targetType) ||
+          (m.type && m.type.toLowerCase() === targetType)
+      );
+    }
+
+    // Sort descending by createdAt
+    movements.sort((a, b) => b.createdAt - a.createdAt);
+
+    if (args.limit) {
+      movements = movements.slice(0, args.limit);
+    }
+
+    // Attach product details
+    const populated = await Promise.all(
+      movements.map(async (m) => {
+        let product: any = null;
+        try {
+          const normProdId = ctx.db.normalizeId("inventoryProducts", m.productId);
+          if (normProdId) {
+            product = await ctx.db.get(normProdId);
+          }
+        } catch {}
+        return {
+          ...m,
+          productName: product?.name || "Unknown Product",
+          sku: product?.sku || "N/A",
+          unit: product?.unit || "pcs",
+        };
+      })
+    );
+
+    return populated;
+  },
+});
+
+export const getOpeningStock = query({
+  args: {
+    workspaceId: v.id("workspaces"),
+    branchId: v.optional(v.union(v.id("branches"), v.string())),
+    allowedBranchIds: v.optional(v.array(v.string())),
+  },
+  handler: async (ctx, args) => {
+    const products = await ctx.db
+      .query("inventoryProducts")
+      .withIndex("by_workspaceId", (q) => q.eq("workspaceId", args.workspaceId))
+      .collect();
+
+    const movements = await ctx.db
+      .query("inventoryStockMovements")
+      .withIndex("by_workspaceId", (q) => q.eq("workspaceId", args.workspaceId))
+      .collect();
+
+    const scopedMovements = args.branchId
+      ? movements.filter((m) => String(m.branchId) === String(args.branchId))
+      : args.allowedBranchIds
+        ? movements.filter((m) => m.branchId && args.allowedBranchIds!.includes(String(m.branchId)))
+        : movements;
+    const openingMovements = scopedMovements.filter(
+      (m) =>
+        m.movementType === "opening_stock" ||
+        m.type === "OPENING_STOCK" ||
+        m.type === "opening_stock" ||
+        m.type === "INITIAL"
+    );
+
+    const openingMap = new Map<string, any>();
+    for (const mov of openingMovements) {
+      openingMap.set(mov.productId, mov);
+    }
+
+    // Never expose the workspace-global product balance to a restricted
+    // branch scope. Aggregate the latest branch balances only from permitted
+    // movements; legacy unscoped movements were excluded above.
+    const scopedBalances = new Map<string, number>();
+    if (args.branchId || args.allowedBranchIds) {
+      for (const movement of scopedMovements.sort((a, b) => a.createdAt - b.createdAt)) {
+        const key = `${String(movement.branchId)}:${String(movement.productId)}`;
+        scopedBalances.set(key, movement.balanceAfter ?? ((scopedBalances.get(key) || 0) + movement.quantity));
+      }
+    }
+    const stockByProduct = new Map<string, number>();
+    for (const [key, balance] of scopedBalances) {
+      const productId = key.slice(key.indexOf(':') + 1);
+      stockByProduct.set(productId, (stockByProduct.get(productId) || 0) + balance);
+    }
+
+    const visibleProducts = (args.branchId || args.allowedBranchIds)
+      ? products.filter((p) => stockByProduct.has(String(p._id)))
+      : products;
+    const items = visibleProducts.map((p) => {
+      const mov = openingMap.get(p._id);
+      const currentStock = stockByProduct.has(String(p._id)) ? stockByProduct.get(String(p._id))! : p.stockQuantity;
+      return {
+        productId: p._id,
+        name: p.name,
+        sku: p.sku,
+        category: p.category,
+        costPrice: p.costPrice,
+        sellingPrice: p.sellingPrice,
+        unit: p.unit,
+        currentStock,
+        openingQuantity: mov ? mov.quantity : currentStock,
+        unitCost: mov?.unitCost !== undefined ? mov.unitCost : p.costPrice,
+        totalCost: mov?.totalCost !== undefined ? mov.totalCost : (p.costPrice * currentStock),
+        hasOpeningStock: !!mov,
+        recordedAt: mov?.createdAt,
+      };
+    });
+
+    return {
+      products: items,
+      totalProducts: visibleProducts.length,
+      recordedCount: openingMap.size,
+      isFullyRecorded: visibleProducts.length > 0 && openingMap.size >= visibleProducts.length,
+    };
   },
 });

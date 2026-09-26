@@ -43,7 +43,7 @@ export const useUserPhoneStore = create<UserPhoneStoreState>((set, get) => ({
     set({ isLoading: true });
     try {
       const response = await api.get<{ phones?: UserPhone[]; data?: { phones: UserPhone[] } }>('/users/me/phones');
-      const phones = response.data?.phones || response.phones || [];
+      const phones = response.phones || [];
       set({ phones, isLoading: false });
       return phones;
     } catch (err: any) {
@@ -69,8 +69,8 @@ export const useUserPhoneStore = create<UserPhoneStoreState>((set, get) => ({
 
       return {
         success: true,
-        normalizedPhone: response.data?.normalizedPhone,
-        expiresInSeconds: response.data?.expiresInSeconds || 600,
+        normalizedPhone: (response as any).normalizedPhone || response.data?.normalizedPhone,
+        expiresInSeconds: (response as any).expiresInSeconds || response.data?.expiresInSeconds || 600,
       };
     } catch (err: any) {
       set({ isSendingOtp: false });

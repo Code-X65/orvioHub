@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Bell, CheckCheck, Loader2, Mail, X } from 'lucide-react';
 import { api } from '@/lib/api';
+import { API_ORIGIN } from '@/lib/config';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { NotificationItem, type NotificationData } from './NotificationItem';
@@ -19,56 +20,99 @@ export const NotificationBell: React.FC = () => {
   const [activeFilter, setActiveFilter] = useState<'all' | 'invites'>('all');
 
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const unreadGeneration = useRef(0);
+  const notificationsGeneration = useRef(0);
+  const isOpenRef = useRef(false);
+  const realtimeConnectedRef = useRef(false);
+
+  useEffect(() => {
+    isOpenRef.current = isOpen;
+  }, [isOpen]);
+
+  // WebSocket is the primary realtime transport. HTTP polling below remains a
+  // fallback for a disconnected socket or deployments without WS support.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | undefined;
+    let disposed = false;
+    const connect = () => {
+      const url = `${API_ORIGIN.replace(/^http/, 'ws')}/api/v1/notifications/stream`;
+      socket = new WebSocket(url);
+      socket.onopen = () => { realtimeConnectedRef.current = true; };
+      socket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === 'notification.unread_count') setUnreadCount(message.count ?? 0);
+          if (message.type === 'notification.sync') window.dispatchEvent(new Event('orvio:notification-sync'));
+        } catch { /* Ignore malformed realtime messages. */ }
+      };
+      socket.onclose = () => {
+        realtimeConnectedRef.current = false;
+        if (!disposed) reconnectTimer = window.setTimeout(connect, 2_000);
+      };
+      socket.onerror = () => socket?.close();
+    };
+    connect();
+    return () => { disposed = true; realtimeConnectedRef.current = false; if (reconnectTimer) clearTimeout(reconnectTimer); socket?.close(); };
+  }, [isAuthenticated]);
 
   // 1. Fetch unread count
-  const fetchUnreadCount = useCallback(async () => {
+  const fetchUnreadCount = useCallback(async (signal?: AbortSignal) => {
     if (!isAuthenticated) return;
+    const generation = ++unreadGeneration.current;
     try {
-      const res = await api.get<{ count: number }>('/notifications/unread-count');
-      setUnreadCount(res?.count ?? 0);
+      const res = await api.get<{ count: number }>('/notifications/unread-count', { signal });
+      if (generation === unreadGeneration.current && !signal?.aborted) setUnreadCount(res?.count ?? 0);
     } catch {
       // ignore network errors in background poll
     }
   }, [isAuthenticated]);
 
   // 2. Fetch notifications list
-  const fetchNotifications = useCallback(async () => {
+  const fetchNotifications = useCallback(async (signal?: AbortSignal) => {
     if (!isAuthenticated) return;
+    const generation = ++notificationsGeneration.current;
     setIsLoading(true);
     try {
-      const res = await api.get<{ notifications: NotificationData[] }>('/notifications?limit=30');
-      setNotifications(res?.notifications || []);
+      const res = await api.get<{ notifications: NotificationData[] }>('/notifications?limit=30', { signal });
+      if (generation === notificationsGeneration.current && !signal?.aborted) setNotifications(res?.notifications || []);
     } catch (err: any) {
       console.warn('Failed to load notifications:', err.message);
     } finally {
-      setIsLoading(false);
+      if (generation === notificationsGeneration.current) setIsLoading(false);
     }
   }, [isAuthenticated]);
 
   // Initial load and polling every 25 seconds
   useEffect(() => {
     if (!isAuthenticated) return;
+    const controller = new AbortController();
 
-    fetchUnreadCount();
+    // Avoid starting a request for React Strict Mode's throwaway development mount.
+    const initialLoad = window.setTimeout(() => fetchUnreadCount(controller.signal), 0);
 
     const interval = setInterval(() => {
-      fetchUnreadCount();
-      if (isOpen) {
-        fetchNotifications();
+      if (realtimeConnectedRef.current) return;
+      fetchUnreadCount(controller.signal);
+      if (isOpenRef.current) {
+        fetchNotifications(controller.signal);
       }
     }, 25000);
 
     const handleFocus = () => {
-      fetchUnreadCount();
-      if (isOpen) fetchNotifications();
+      fetchUnreadCount(controller.signal);
+      if (isOpenRef.current) fetchNotifications(controller.signal);
     };
     window.addEventListener('focus', handleFocus);
 
     return () => {
       clearInterval(interval);
+      clearTimeout(initialLoad);
       window.removeEventListener('focus', handleFocus);
+      controller.abort();
     };
-  }, [isAuthenticated, isOpen, fetchUnreadCount, fetchNotifications]);
+  }, [isAuthenticated, fetchUnreadCount, fetchNotifications]);
 
   // Fetch notifications when opening dropdown
   useEffect(() => {

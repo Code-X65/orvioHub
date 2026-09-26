@@ -1,5 +1,6 @@
 import { query, mutation } from "./_generated/server.js";
 import { v } from "convex/values";
+import { evaluateMemberInvitation } from "./entitlements.js";
 
 export const getWorkspaceMembers = query({
   args: {
@@ -55,6 +56,7 @@ export const getWorkspaceMembers = query({
           role: pm.role,
           permissions: pm.permissions,
           branchIds: pm.branchIds,
+          catalogScope: pm.catalogScope,
           status: pm.status,
         })),
       });
@@ -99,6 +101,7 @@ export const getWorkspaceMemberById = query({
         role: pm.role,
         permissions: pm.permissions,
         branchIds: pm.branchIds,
+        catalogScope: pm.catalogScope,
         status: pm.status,
       })),
     };
@@ -114,6 +117,7 @@ export const updateWorkspaceMemberRole = mutation({
     productRole: v.optional(v.string()),
     productKey: v.optional(v.string()),
     branchIds: v.optional(v.array(v.id("branches"))),
+    catalogScope: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
     // 1. Verify caller permission (owner or admin)
@@ -127,6 +131,13 @@ export const updateWorkspaceMemberRole = mutation({
     const callerRole = (caller?.role || caller?.defaultRole || "").toLowerCase();
     if (!caller || (callerRole !== "owner" && callerRole !== "admin")) {
       throw new Error("WORKSPACE_ACCESS_DENIED");
+    }
+
+    // Authoritative seat check: callers cannot bypass this through a route.
+    const seatCheck = await evaluateMemberInvitation(ctx, args.workspaceId);
+    if (!seatCheck.allowed) {
+      await ctx.db.insert("workspaceAuditLogs", { workspaceId: args.workspaceId, actorUserId: args.callerUserId, eventType: "workspace.invitation_blocked_member_limit", entityType: "workspace", entityId: args.workspaceId, severity: "warning", metadata: seatCheck, createdAt: Date.now() });
+      throw new Error("member_limit_exceeded");
     }
 
     const target = await ctx.db.get(args.membershipId);
@@ -168,6 +179,7 @@ export const updateWorkspaceMemberRole = mutation({
         await ctx.db.patch(existingPm._id, {
           role: args.productRole,
           branchIds: args.branchIds,
+          catalogScope: args.catalogScope,
           updatedAt: now,
         });
       } else {
@@ -178,6 +190,7 @@ export const updateWorkspaceMemberRole = mutation({
           role: args.productRole,
           permissions: [],
           branchIds: args.branchIds,
+          catalogScope: args.catalogScope,
           status: "active",
           createdAt: now,
           updatedAt: now,
@@ -386,11 +399,13 @@ export const createWorkspaceInvitation = mutation({
           productKey: v.string(),
           appRole: v.string(),
           branchIds: v.array(v.string()),
+          catalogScope: v.optional(v.array(v.string())),
         })
       )
     ),
     productKey: v.optional(v.string()),
     branchIds: v.optional(v.array(v.id("branches"))),
+    catalogScope: v.optional(v.array(v.string())),
     tokenHash: v.string(),
     expiresAt: v.number(),
   },
@@ -454,6 +469,7 @@ export const createWorkspaceInvitation = mutation({
       organizationRole: effectiveOrgRole,
       appAccess: args.appAccess,
       branchIds: args.branchIds,
+      catalogScope: args.catalogScope,
       tokenHash: args.tokenHash,
       status: "pending",
       invitedBy: args.callerUserId,
@@ -470,7 +486,7 @@ export const createWorkspaceInvitation = mutation({
       entityType: "workspaceInvitation",
       entityId: inviteId,
       severity: "info",
-      metadata: { email: emailNormalized, role: args.role, productKey: args.productKey },
+      metadata: { email: emailNormalized, role: args.role, productKey: args.productKey, branchIds: args.branchIds },
       createdAt: now,
     });
 
@@ -538,6 +554,7 @@ export const getWorkspaceInvitations = query({
       role: inv.role,
       productKey: inv.productKey,
       branchIds: inv.branchIds,
+      catalogScope: inv.catalogScope,
       status: inv.status,
       expiresAt: inv.expiresAt,
       isExpired: inv.expiresAt < Date.now(),
@@ -589,6 +606,7 @@ export const getWorkspaceInvitationByToken = query({
           productName: prod?.name || item.productKey,
           appRole: item.appRole,
           branchIds: item.branchIds,
+          catalogScope: item.catalogScope,
           branches,
         });
       }
@@ -607,6 +625,7 @@ export const getWorkspaceInvitationByToken = query({
       appAccess: enrichedAppAccess,
       productKey: invite.productKey,
       branchIds: invite.branchIds,
+      catalogScope: invite.catalogScope,
       status: invite.status,
       expiresAt: invite.expiresAt,
       isExpired: invite.expiresAt < Date.now(),
@@ -704,6 +723,7 @@ export const acceptWorkspaceInvitation = mutation({
       await ctx.db.patch(existingMembership._id, {
         role: orgRole,
         status: "active",
+        branchIds: invite.branchIds,
         acceptedAt: now,
         updatedAt: now,
       });
@@ -713,6 +733,7 @@ export const acceptWorkspaceInvitation = mutation({
         userId: user._id,
         role: orgRole,
         status: "active",
+        branchIds: invite.branchIds,
         invitedBy: invite.invitedBy,
         invitedAt: invite.createdAt,
         acceptedAt: now,
@@ -736,6 +757,7 @@ export const acceptWorkspaceInvitation = mutation({
           await ctx.db.patch(existingPm._id, {
             role: app.appRole,
             branchIds: app.branchIds as any,
+            catalogScope: app.catalogScope,
             status: "active",
             updatedAt: now,
           });
@@ -747,6 +769,7 @@ export const acceptWorkspaceInvitation = mutation({
             role: app.appRole,
             permissions: [],
             branchIds: app.branchIds as any,
+            catalogScope: app.catalogScope,
             status: "active",
             createdAt: now,
             updatedAt: now,
@@ -881,6 +904,7 @@ export const acceptWorkspaceInvitation = mutation({
         await ctx.db.patch(existingPm._id, {
           role: invite.role,
           branchIds: invite.branchIds,
+          catalogScope: invite.catalogScope,
           status: "active",
           updatedAt: now,
         });
@@ -892,6 +916,7 @@ export const acceptWorkspaceInvitation = mutation({
           role: invite.role,
           permissions: [],
           branchIds: invite.branchIds,
+          catalogScope: invite.catalogScope,
           status: "active",
           createdAt: now,
           updatedAt: now,
@@ -947,7 +972,7 @@ export const acceptWorkspaceInvitation = mutation({
       entityType: "workspaceInvitation",
       entityId: invite._id,
       severity: "info",
-      metadata: { role: orgRole },
+      metadata: { role: orgRole, branchIds: invite.branchIds, productKey: invite.productKey },
       createdAt: now,
     });
 
@@ -958,7 +983,7 @@ export const acceptWorkspaceInvitation = mutation({
       entityType: "user",
       entityId: user._id,
       severity: "info",
-      metadata: { role: orgRole, email: user.email },
+      metadata: { role: orgRole, email: user.email, branchIds: invite.branchIds, productKey: invite.productKey },
       createdAt: now,
     });
 
@@ -1253,6 +1278,7 @@ export const updateMemberAccess = mutation({
         enabled: v.boolean(),
         appRole: v.string(),
         branchIds: v.array(v.string()),
+        catalogScope: v.optional(v.array(v.string())),
       })
     ),
   },
@@ -1326,6 +1352,7 @@ export const updateMemberAccess = mutation({
             role: app.appRole,
             status: "active",
             branchIds: app.branchIds as any,
+            catalogScope: app.catalogScope,
             updatedAt: now,
           });
         } else {
@@ -1336,6 +1363,7 @@ export const updateMemberAccess = mutation({
             role: app.appRole,
             permissions: [],
             branchIds: app.branchIds as any,
+            catalogScope: app.catalogScope,
             status: "active",
             createdAt: now,
             updatedAt: now,

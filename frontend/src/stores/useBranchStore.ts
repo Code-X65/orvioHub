@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import { api } from '@/lib/api';
+import { LRUCache } from '@/lib/lru-cache';
+import { invalidateApiQueries } from '@/lib/react-query-adapter';
 import {
   getCrossSubdomainItem,
   setCrossSubdomainItem,
@@ -28,18 +30,18 @@ export interface Branch {
   phone?: string;
   phoneNormalized?: string;
   phoneVerified?: boolean;
-  phoneVerifiedAt?: number;
+  phoneOtpExpiresAt?: number;
+  phoneVerificationAttempts?: number;
   email?: string;
-  managerId?: string;
   status: string;
-  createdAt?: number;
-  updatedAt?: number;
+  isHeadquarters?: boolean;
+  taxIdentificationNumber?: string;
+  notes?: string;
 }
 
 export interface CreateBranchInput {
-  workspaceId?: string;
+  workspaceId: string;
   organizationId?: string;
-  applicationId?: string;
   applicationKey?: string;
   name: string;
   code?: string;
@@ -58,14 +60,15 @@ export interface CreateBranchInput {
   formattedAddress?: string;
   phone?: string;
   email?: string;
-  managerId?: string;
+  isHeadquarters?: boolean;
+  taxIdentificationNumber?: string;
+  notes?: string;
 }
 
 export interface UpdateBranchInput {
   name?: string;
   code?: string;
   isPrimary?: boolean;
-  isActive?: boolean;
   country?: string;
   state?: string;
   stateCode?: string;
@@ -80,8 +83,12 @@ export interface UpdateBranchInput {
   formattedAddress?: string;
   phone?: string;
   email?: string;
-  managerId?: string;
   status?: string;
+  applicationKey?: string;
+  organizationId?: string;
+  isHeadquarters?: boolean;
+  taxIdentificationNumber?: string;
+  notes?: string;
 }
 
 interface BranchState {
@@ -93,8 +100,14 @@ interface BranchState {
   isVerifyingPhoneOtp: boolean;
   error: string | null;
 
+  // Actions
   setActiveBranch: (branch: Branch | null) => void;
-  loadBranches: (workspaceOrOrgId: string, productKey?: string, forceReload?: boolean) => Promise<Branch[]>;
+  loadBranches: (
+    workspaceId: string,
+    productKey?: string,
+    forceReload?: boolean,
+    options?: { signal?: AbortSignal }
+  ) => Promise<Branch[]>;
   createBranch: (data: CreateBranchInput) => Promise<Branch>;
   updateBranch: (branchId: string, data: UpdateBranchInput) => Promise<Branch>;
   deactivateBranch: (branchId: string, orgId?: string) => Promise<void>;
@@ -103,8 +116,8 @@ interface BranchState {
   clearBranches: () => void;
 }
 
-let inFlightBranchFetches = new Map<string, Promise<Branch[]>>();
-let lastFetchedBranches = new Map<string, number>();
+const inFlightBranchFetches = new LRUCache<string, Promise<Branch[]>>(100, 30_000);
+const lastFetchedBranches = new LRUCache<string, number>(100, 300_000);
 
 export const useBranchStore = create<BranchState>((set, get) => ({
   activeBranch: null,
@@ -127,9 +140,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     set({ activeBranch: branch });
   },
 
-  loadBranches: async (workspaceOrOrgId: string, productKey?: string, forceReload = false) => {
-    if (!workspaceOrOrgId) return [];
-    const cacheKey = `${workspaceOrOrgId}::${(productKey || '').toLowerCase()}`;
+  loadBranches: async (workspaceId: string, productKey?: string, forceReload = false, options?: { signal?: AbortSignal }) => {
+    if (!workspaceId) return [];
+    const cacheKey = `${workspaceId}::${(productKey || '').toLowerCase()}`;
     const cached = get().branchesByOrgAndApp[cacheKey];
 
     // Return in-flight promise if currently loading this exact key and not force reloading
@@ -152,20 +165,14 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     const fetchPromise = (async () => {
       try {
         let list: Branch[] = [];
-        const orgEndpoint = productKey
-          ? `/organizations/${workspaceOrOrgId}/branches?app=${encodeURIComponent(productKey)}`
-          : `/organizations/${workspaceOrOrgId}/branches`;
-
-        try {
-          const orgRes = await api.get<{ branches?: Branch[]; data?: { branches: Branch[] } }>(orgEndpoint);
-          list = orgRes.branches || orgRes.data?.branches || [];
-        } catch {
-          const wsEndpoint = productKey
-            ? `/workspaces/${workspaceOrOrgId}/branches?productKey=${encodeURIComponent(productKey)}`
-            : `/workspaces/${workspaceOrOrgId}/branches`;
-          const wsRes = await api.get<{ branches?: Branch[]; data?: { branches: Branch[] } }>(wsEndpoint);
-          list = wsRes.branches || wsRes.data?.branches || [];
-        }
+        const endpoint = productKey
+          ? `/workspaces/${workspaceId}/branches?productKey=${encodeURIComponent(productKey)}`
+          : `/workspaces/${workspaceId}/branches`;
+        const wsRes = await api.get<{ branches?: Branch[] }>(endpoint, {
+          workspaceId,
+          signal: options?.signal,
+        });
+        list = wsRes.branches || [];
 
         // Sort: primary branch first, then alphabetically
         const sorted = [...list].sort((a, b) => {
@@ -211,6 +218,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
         return sorted;
       } catch (err: any) {
+        if (err?.name === 'AbortError' || options?.signal?.aborted) {
+          return [];
+        }
         set({ error: err.message || 'Failed to load branches', isLoading: false });
         return [];
       } finally {
@@ -225,28 +235,18 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   createBranch: async (data: CreateBranchInput) => {
     set({ isLoading: true, error: null });
     try {
-      const targetId = data.organizationId || data.workspaceId;
-      let newBranch: Branch;
-
-      try {
-        const res = await api.post<{ branch?: Branch; data?: { branch: Branch } }>(
-          `/organizations/${targetId}/branches`,
-          data
-        );
-        newBranch = (res.branch || res.data?.branch) as Branch;
-      } catch (err: any) {
-        if (err?.code === 'BRANCH_LIMIT_REACHED' || err?.message?.includes('Free Trial')) {
-          throw err;
-        }
-        const res = await api.post<{ branch: Branch }>(`/workspaces/${data.workspaceId || targetId}/branches`, data);
-        newBranch = res.branch;
-      }
+      const targetId = data.workspaceId || data.organizationId;
+      if (!targetId) throw new Error('workspaceId is required to create a branch');
+      const res = await api.post<{ branch: Branch }>(`/workspaces/${targetId}/branches`, data, { workspaceId: targetId });
+      const newBranch = res.branch;
 
       // Invalidate cache
       if (targetId) {
         lastFetchedBranches.delete(`${targetId}::inventory`);
         lastFetchedBranches.delete(`${targetId}::`);
       }
+      invalidateApiQueries('/organizations/usage/summary');
+      invalidateApiQueries(`/workspaces/${targetId}/branches`);
 
       set((state) => {
         const updated = [...state.branches, newBranch].sort((a, b) => {
@@ -280,30 +280,19 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     try {
       const currentBranch = get().activeBranch;
       const targetId =
-        (currentBranch as any)?.organizationId ||
         currentBranch?.workspaceId ||
         getCrossSubdomainItem('orvio_active_workspace_id');
 
-      let updated: Branch;
-      try {
-        const res = await api.patch<{ branch?: Branch; data?: { branch: Branch } }>(
-          `/organizations/${targetId}/branches/${branchId}`,
-          data
-        );
-        updated = res.branch || res.data?.branch || ({ id: branchId, ...data } as any);
-      } catch {
-        const res = await api.patch<{ branch: Branch }>(
-          `/workspaces/${targetId}/branches/${branchId}`,
-          data
-        );
-        updated = res.branch;
-      }
+      if (!targetId) throw new Error('workspaceId is required to update a branch');
+      const res = await api.patch<{ branch: Branch }>(`/workspaces/${targetId}/branches/${branchId}`, data, { workspaceId: targetId, branchId });
+      const updated = res.branch;
 
       // Invalidate cache
       if (targetId) {
         lastFetchedBranches.delete(`${targetId}::inventory`);
         lastFetchedBranches.delete(`${targetId}::`);
       }
+      invalidateApiQueries(`/workspaces/${targetId}/branches`);
 
       set((state) => {
         const branches = state.branches
@@ -346,21 +335,19 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       const currentBranch = get().activeBranch;
       const targetId =
         orgId ||
-        (currentBranch as any)?.organizationId ||
         currentBranch?.workspaceId ||
         getCrossSubdomainItem('orvio_active_workspace_id');
 
-      try {
-        await api.delete(`/organizations/${targetId}/branches/${branchId}`);
-      } catch {
-        await api.delete(`/workspaces/${targetId}/branches/${branchId}`);
-      }
+      if (!targetId) throw new Error('workspaceId is required to deactivate a branch');
+      await api.delete(`/workspaces/${targetId}/branches/${branchId}`, undefined, { workspaceId: targetId, branchId });
 
       // Invalidate cache
       if (targetId) {
         lastFetchedBranches.delete(`${targetId}::inventory`);
         lastFetchedBranches.delete(`${targetId}::`);
       }
+      invalidateApiQueries('/organizations/usage/summary');
+      invalidateApiQueries(`/workspaces/${targetId}/branches`);
 
       set((state) => {
         const filtered = state.branches.filter((b) => (b.id || b._id) !== branchId);
@@ -391,12 +378,12 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   sendBranchPhoneOtp: async (workspaceId: string, branchId: string, phone: string) => {
     set({ isSendingPhoneOtp: true });
     try {
-      const res = await api.post<{ success: boolean; data?: { expiresInSeconds: number } }>(
+      const res = await api.post<{ expiresInSeconds?: number }>(
         `/workspaces/${workspaceId}/branches/${branchId}/phone/send-otp`,
         { phone }
       );
       set({ isSendingPhoneOtp: false });
-      return { success: true, expiresInSeconds: res.data?.expiresInSeconds || 600 };
+      return { success: true, expiresInSeconds: res.expiresInSeconds || 600 };
     } catch (err: any) {
       set({ isSendingPhoneOtp: false });
       throw err;

@@ -1218,21 +1218,24 @@ export const deleteOrganization = mutation({
 
 export const getOrganizationMembers = query({
   args: {
-    organizationId: v.id("organizations"),
+    organizationId: v.union(v.id("organizations"), v.id("workspaces"), v.string()),
     userId: v.id("users"),
   },
   handler: async (ctx, args) => {
+    const { orgId } = await resolveOrganization(ctx, args.organizationId);
+    if (!orgId) throw new Error("ORGANIZATION_NOT_FOUND");
+
     const caller = await ctx.db
       .query("organizationMemberships")
       .withIndex("by_org_and_user", (q: any) =>
-        q.eq("organizationId", args.organizationId).eq("userId", args.userId)
+        q.eq("organizationId", orgId).eq("userId", args.userId)
       )
       .first();
     if (!caller) throw new Error("ORGANIZATION_ACCESS_DENIED");
 
     const memberships = await ctx.db
       .query("organizationMemberships")
-      .withIndex("by_organizationId", (q) => q.eq("organizationId", args.organizationId))
+      .withIndex("by_organizationId", (q) => q.eq("organizationId", orgId))
       .collect();
 
     const results = [];

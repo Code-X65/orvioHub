@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import { useHost } from "./host/useHost";
 import { useSessionTracker } from "./hooks/useSessionTracker";
+import { useAuthSessionLifecycle } from "./hooks/useAuthSessionLifecycle";
 import { ErrorBoundary } from "./components/common/ErrorBoundary";
 
 const MarketingApp = lazy(() => import("./surfaces/marketing/App"));
@@ -21,6 +22,7 @@ function SurfaceFallback() {
 
 export function App() {
   useSessionTracker();
+  useAuthSessionLifecycle();
   const host = useHost();
 
   const renderSurface = () => {

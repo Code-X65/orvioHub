@@ -67,19 +67,18 @@ export function getAllowedOrigins(env) {
 export function isAllowedOrigin(origin, env) {
     if (!origin)
         return false;
-    // Disallow admin from user-facing surfaces
-    if (origin.includes("admin.orviohub"))
+    try {
+        const parsed = new URL(origin);
+        if (parsed.origin !== origin || parsed.protocol !== 'https:' && parsed.protocol !== 'http:')
+            return false;
+        const hostname = parsed.hostname.toLowerCase();
+        if (hostname === 'admin.orviohub.com' || hostname.startsWith('admin.'))
+            return false;
+        return getAllowedOrigins(env).includes(parsed.origin);
+    }
+    catch {
         return false;
-    if (origin.endsWith(".vercel.app") || origin.includes("vercel.app"))
-        return true;
-    if (origin.endsWith(".orviohub.com") || origin.includes("orviohub.com"))
-        return true;
-    if (origin.endsWith(".orviohub.localhost") || origin.includes("orviohub.localhost"))
-        return true;
-    if (origin.includes("localhost") || origin.includes("127.0.0.1"))
-        return true;
-    const origins = getAllowedOrigins(env);
-    return origins.includes(origin);
+    }
 }
 /**
  * Validates if a returnTo URL is safe and points to a registered Orviohub surface.

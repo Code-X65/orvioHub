@@ -411,7 +411,11 @@ export const updateUserContact = mutation({
     phoneNormalized: v.optional(v.string()),
     country: v.optional(v.string()),
     state: v.optional(v.string()),
+    stateCode: v.optional(v.string()),
+    lga: v.optional(v.string()),
     city: v.optional(v.string()),
+    phoneVisibility: v.optional(v.union(v.literal("private"), v.literal("workspace"))),
+    timezone: v.optional(v.string()),
     phoneUsedForRecovery: v.optional(v.boolean()),
     phoneUsedForMfa: v.optional(v.boolean()),
   },
@@ -438,7 +442,11 @@ export const updateUserContact = mutation({
 
     if (args.country !== undefined) updateData.country = args.country;
     if (args.state !== undefined) updateData.state = args.state;
+    if (args.stateCode !== undefined) updateData.stateCode = args.stateCode;
+    if (args.lga !== undefined) updateData.lga = args.lga;
     if (args.city !== undefined) updateData.city = args.city;
+    if (args.phoneVisibility !== undefined) updateData.phoneVisibility = args.phoneVisibility;
+    if (args.timezone !== undefined) updateData.timezone = args.timezone;
     if (args.phoneUsedForRecovery !== undefined) {
       // Only allow enabling if phone is verified
       if (args.phoneUsedForRecovery && (!user.phoneVerifiedAt || user.phoneStatus !== "verified")) {

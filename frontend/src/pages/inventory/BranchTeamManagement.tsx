@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { useBranchStore } from '@/stores/useBranchStore';
 import { api } from '@/lib/api';
+import { useRealtimeSocket, type RealtimeEvent } from '@/lib/useRealtimeSocket';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
@@ -69,6 +70,7 @@ export const BranchTeamManagement: React.FC = () => {
   const [invitations, setInvitations] = useState<PendingInvitation[]>([]);
   const [transfers, setTransfers] = useState<TransferRecord[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const loadGeneration = useRef(0);
 
   // Filters & Search
   const [searchQuery, setSearchQuery] = useState('');
@@ -84,6 +86,7 @@ export const BranchTeamManagement: React.FC = () => {
   const [accessSummaryTargetMember, setAccessSummaryTargetMember] = useState<StaffMember | null>(null);
 
   const workspaceId = urlOrg || currentWorkspace?.id || '';
+  const [onlineUserIds, setOnlineUserIds] = useState<Set<string>>(new Set());
 
   const branchOptions = useMemo(() => {
     return branches.map((b) => ({
@@ -94,41 +97,64 @@ export const BranchTeamManagement: React.FC = () => {
     }));
   }, [branches]);
 
-  const loadData = async () => {
+  const loadData = useCallback(async (signal?: AbortSignal) => {
     if (!workspaceId) return;
+    const generation = ++loadGeneration.current;
     setIsLoading(true);
     try {
+      const branchQuery = selectedBranchId !== 'all' ? `?branchId=${encodeURIComponent(selectedBranchId)}` : '';
+      const transfersPath = selectedBranchId !== 'all'
+        ? `/workspaces/${workspaceId}/branches/${selectedBranchId}/transfers`
+        : `/workspaces/${workspaceId}/applications/inventory/transfers`;
       const [membersRes, invitesRes, transfersRes] = await Promise.all([
         api
           .get<{ members: StaffMember[] }>(
-            `/workspaces/${workspaceId}/applications/inventory/members`
+            `/workspaces/${workspaceId}/applications/inventory/members${branchQuery}`
+            , { signal, workspaceId, branchId: selectedBranchId === 'all' ? undefined : selectedBranchId }
           )
           .catch(() => ({ members: [] })),
         api
           .get<{ invitations: PendingInvitation[] }>(
             `/workspaces/${workspaceId}/invitations`
+            , { signal, workspaceId }
           )
           .catch(() => ({ invitations: [] })),
         api
           .get<{ transfers: TransferRecord[] }>(
-            `/workspaces/${workspaceId}/applications/inventory/transfers`
+            transfersPath, { signal, workspaceId, branchId: selectedBranchId === 'all' ? undefined : selectedBranchId }
           )
           .catch(() => ({ transfers: [] })),
       ]);
 
+      if (generation !== loadGeneration.current || signal?.aborted) return;
       setMembers(membersRes.members || []);
       setInvitations((invitesRes.invitations || []).filter((i) => i.status === 'pending' || i.status === 'PENDING'));
       setTransfers(transfersRes.transfers || []);
     } catch (err: any) {
+      if (signal?.aborted || err?.name === 'AbortError') return;
       toast.error('Failed to load branch team data.');
     } finally {
-      setIsLoading(false);
+      if (generation === loadGeneration.current) setIsLoading(false);
     }
-  };
+  }, [workspaceId, selectedBranchId]);
 
   useEffect(() => {
-    loadData();
-  }, [workspaceId]);
+    const controller = new AbortController();
+    loadData(controller.signal);
+    return () => { controller.abort(); loadGeneration.current++; };
+  }, [loadData]);
+
+  const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
+    if (event.type === 'user.joined' && typeof event.userId === 'string') setOnlineUserIds((current) => new Set(current).add(event.userId));
+    if (event.type === 'user.left' && typeof event.userId === 'string') setOnlineUserIds((current) => { const next = new Set(current); next.delete(event.userId); return next; });
+    if (['member.role_changed', 'member.transferred', 'member.suspended'].includes(event.type)) void loadData();
+  }, [loadData]);
+  const streamBranchId = selectedBranchId === 'all' ? null : selectedBranchId;
+  const { connected: presenceConnected } = useRealtimeSocket(
+    workspaceId && streamBranchId ? `/api/v1/workspaces/${workspaceId}/branches/${streamBranchId}/presence` : null,
+    handleRealtimeEvent,
+  );
+  useRealtimeSocket(workspaceId ? `/api/v1/workspaces/${workspaceId}/team/stream` : null, handleRealtimeEvent);
 
   // Direct Restore action
   const handleRestore = async (memberId: string) => {
@@ -206,7 +232,7 @@ export const BranchTeamManagement: React.FC = () => {
           <Button
             variant="outline"
             size="sm"
-            onClick={loadData}
+            onClick={() => loadData()}
             disabled={isLoading}
             className="border-slate-800 hover:bg-slate-800 text-slate-300 gap-1.5"
           >

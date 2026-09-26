@@ -35,11 +35,6 @@ export const InventoryLanding: React.FC = () => {
 
   const workspaceId = currentWorkspace?.id || localStorage.getItem('orvio_active_workspace_id');
 
-  // Activation check state
-  const [isActivated, setIsActivated] = useState<boolean | null>(null);
-  const [isCheckingActivation, setIsCheckingActivation] = useState(false);
-  const [isActivating, setIsActivating] = useState(false);
-
   // Book a demo modal state
   const [demoModalOpen, setDemoModalOpen] = useState(false);
   const [demoName, setDemoName] = useState('');
@@ -52,57 +47,6 @@ export const InventoryLanding: React.FC = () => {
 
   // FAQ open accordion state
   const [openFaq, setOpenFaq] = useState<number | null>(0);
-
-  // Check product activation for the user's workspace
-  useEffect(() => {
-    let isMounted = true;
-    if (isAuthenticated && workspaceId) {
-      setIsCheckingActivation(true);
-      api
-        .get<{ isActive: boolean }>(
-          `/workspaces/${workspaceId}/products/inventory/is-active`
-        )
-        .then((res) => {
-          if (isMounted && res) {
-            setIsActivated(Boolean(res.isActive));
-          }
-        })
-        .catch(() => {
-          if (isMounted) {
-            // Default to true if already in workspace
-            setIsActivated(true);
-          }
-        })
-        .finally(() => {
-          if (isMounted) setIsCheckingActivation(false);
-        });
-    } else {
-      setIsActivated(null);
-      setIsCheckingActivation(false);
-    }
-    return () => {
-      isMounted = false;
-    };
-  }, [isAuthenticated, workspaceId]);
-
-  // Handle product activation
-  const handleActivateProduct = async () => {
-    if (!workspaceId) return;
-    setIsActivating(true);
-    try {
-      await api.post(
-        `/workspaces/${workspaceId}/products/inventory/activate`,
-        { planId: 'standard' }
-      );
-      toast.success('Inventory & POS activated successfully!');
-      setIsActivated(true);
-      navigate('/inventory/dashboard');
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to activate Inventory module.');
-    } finally {
-      setIsActivating(false);
-    }
-  };
 
   // Determine dynamic CTA properties
   const getCtaConfig = () => {
@@ -121,16 +65,6 @@ export const InventoryLanding: React.FC = () => {
         href: undefined,
         action: () => navigate('/onboarding'),
         primary: true,
-      };
-    }
-
-    if (isActivated === false) {
-      return {
-        text: 'Activate Inventory',
-        href: undefined,
-        action: handleActivateProduct,
-        primary: true,
-        loading: isActivating,
       };
     }
 

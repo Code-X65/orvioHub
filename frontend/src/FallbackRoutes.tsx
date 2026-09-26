@@ -40,10 +40,8 @@ import { TeamInvite } from "./pages/onboarding/TeamInvite";
 import { Complete } from "./pages/onboarding/Complete";
 import { PersonalOnboarding } from "./pages/onboarding/PersonalOnboarding";
 
-// Home Surface Hub (Organizations -> Applications -> Branches)
+// Home Surface Hub
 import { HomePage } from "./surfaces/home/pages/HomePage";
-import { ApplicationsPage } from "./surfaces/home/pages/ApplicationsPage";
-import { BranchesPage } from "./surfaces/home/pages/BranchesPage";
 
 // Inventory Flagship MVP
 import { InventoryDashboard } from "./pages/inventory/InventoryDashboard";
@@ -55,8 +53,6 @@ import { BranchSettingsPage } from "./pages/settings/BranchSettingsPage";
 import { WorkspaceMembers } from "./pages/settings/WorkspaceMembers";
 import { BillingSettingsPage } from "./pages/billing/BillingSettingsPage";
 import { InvoiceDetailPage } from "./pages/billing/InvoiceDetailPage";
-import { AppActivationPage } from "./pages/apps/AppActivationPage";
-import { BranchSetupPage } from "./pages/apps/BranchSetupPage";
 
 // Coming Soon Future Apps
 import { ComingSoonPage } from "./pages/ComingSoonPage";
@@ -401,47 +397,11 @@ export function FallbackRoutes() {
         }
       />
 
-      {/* Application Activation & Branch Management */}
-      <Route
-        path="/orgs/:orgId/apps"
-        element={
-          <AuthGuard>
-            <AppActivationPage />
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/orgs/:orgId/apps/:appKey/branches"
-        element={
-          <AuthGuard>
-            <BranchSetupPage />
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/apps"
-        element={
-          <AuthGuard>
-            <ApplicationsPage />
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/applications"
-        element={
-          <AuthGuard>
-            <ApplicationsPage />
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/branches"
-        element={
-          <AuthGuard>
-            <BranchesPage />
-          </AuthGuard>
-        }
-      />
+      <Route path="/apps" element={<Navigate to="/dashboard" replace />} />
+      <Route path="/applications" element={<Navigate to="/dashboard" replace />} />
+      <Route path="/application" element={<Navigate to="/dashboard" replace />} />
+      <Route path="/branches" element={<Navigate to="/dashboard" replace />} />
+      <Route path="/branche" element={<Navigate to="/dashboard" replace />} />
       <Route
         path="/settings"
         element={

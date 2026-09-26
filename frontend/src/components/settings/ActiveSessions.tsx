@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { Laptop, Smartphone, Tablet, LogOut, Loader2, CheckCircle2 } from 'lucide-react';
 import { api } from '../../lib/api';
 import { DeviceSession } from '../../lib/types';
-import { useAuthStore } from '../../stores/useAuthStore';
 import { toast } from 'sonner';
 
 export const ActiveSessions: React.FC = () => {
@@ -10,12 +9,11 @@ export const ActiveSessions: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [revokingAll, setRevokingAll] = useState(false);
-  const { logoutAllAccounts } = useAuthStore();
 
   const fetchSessions = async () => {
     try {
       setLoading(true);
-      const res = await api.get<{ sessions: DeviceSession[] }>('/users/me/sessions');
+      const res = await api.get<{ sessions: DeviceSession[]; currentSessionId: string | null }>('/users/me/sessions');
       if (res && res.sessions) {
         setSessions(res.sessions);
       }
@@ -47,10 +45,9 @@ export const ActiveSessions: React.FC = () => {
     if (!window.confirm('Are you sure you want to sign out of all other devices?')) return;
     try {
       setRevokingAll(true);
-      await api.post('/auth/logout-all');
-      toast.success('Signed out of all devices.');
-      await logoutAllAccounts();
-      window.location.href = '/login';
+      await api.post('/users/me/sessions/revoke-all');
+      toast.success('Signed out of all other devices.');
+      await fetchSessions();
     } catch (err: any) {
       toast.error(err.message || 'Failed to sign out of all devices.');
     } finally {
@@ -142,8 +139,8 @@ export const ActiveSessions: React.FC = () => {
             No active sessions found.
           </div>
         ) : (
-          sessions.map((session, index) => {
-            const isFirst = index === 0; // The active session is top of order
+          sessions.map((session) => {
+            const isCurrent = Boolean((session as DeviceSession & { isCurrent?: boolean }).isCurrent);
             return (
               <div
                 key={session.id}
@@ -158,7 +155,7 @@ export const ActiveSessions: React.FC = () => {
                       <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
                         {session.deviceName || 'Web Browser Session'}
                       </p>
-                      {isFirst && (
+                      {isCurrent && (
                         <span className="flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 border border-emerald-200/60 dark:border-emerald-800/60">
                           <CheckCircle2 className="w-3 h-3" />
                           This Device
@@ -169,11 +166,13 @@ export const ActiveSessions: React.FC = () => {
                       <span>IP: {session.ipAddress || '127.0.0.1'}</span>
                       <span>•</span>
                       <span>Last active: {formatTimeAgo(session.lastActiveAt || session.createdAt)}</span>
+                      <span>•</span>
+                      <span>Expires: {new Date(session.absoluteExpiresAt || session.expiresAt).toLocaleDateString()}</span>
                     </div>
                   </div>
                 </div>
 
-                {!isFirst && (
+                {!isCurrent && (
                   <button
                     type="button"
                     disabled={revokingId === session.id}

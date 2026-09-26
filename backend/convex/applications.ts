@@ -531,11 +531,12 @@ export const isApplicationActiveForOrg = query({
     const isActive =
       !!orgApp &&
       orgApp.enabled !== false &&
-      (orgApp.status === "active" || orgApp.status === "trial" || orgApp.status === "trialing");
+      (orgApp.status === "active" || orgApp.status === "trial" || orgApp.status === "trialing" || !orgApp.status);
 
     return {
       isActive,
-      status: orgApp?.status || "inactive",
+      active: isActive,
+      status: orgApp?.status || (isActive ? "active" : "inactive"),
       applicationKey: args.applicationKey,
       applicationId: app._id,
       planId: orgApp?.planId,

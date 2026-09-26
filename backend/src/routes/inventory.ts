@@ -40,10 +40,29 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.addHook('preHandler', fastify.requireWorkspaceMembership);
   fastify.addHook('preHandler', fastify.requireProductEntitlement('inventory'));
 
+  const requireBodyOrQueryBranch = async (request: any, reply: any) => {
+    const branchId = request.body?.branchId || request.query?.branchId;
+    if (!branchId) return;
+    await fastify.requireBranchAccess('inventory')(request, reply);
+  };
+
+  // No branch parameter aggregates only the resolved explicit scope. This is
+  // intentionally stricter than treating an omitted branch as workspace-wide.
+  const inventoryBranchScope = async (request: any) => fastify.resolveBranchScope(request, 'inventory');
+
+  const catalogScopeFor = async (request: any): Promise<string[] | undefined> => {
+    const workspaceRole = String(request.workspaceMembership?.role || '').toLowerCase();
+    if (workspaceRole === 'owner' || workspaceRole === 'admin') return undefined;
+    const membership: any = await dataService.getProductMembership(request.workspace!.id, request.user.id, 'inventory');
+    const scope = membership?.catalogScope;
+    return !scope || scope.includes('all') ? undefined : scope;
+  };
+
   // GET /api/v1/inventory/products
   fastify.get(
     '/products',
     {
+      preHandler: [requireBodyOrQueryBranch],
       schema: {
         tags: ['Inventory'],
         summary: 'List products in current workspace inventory',
@@ -59,10 +78,15 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const workspaceId = request.workspace!.id;
       const category = (request.query as any)?.category;
+      const branchScope = await inventoryBranchScope(request);
+      if (branchScope.type === 'explicit' && branchScope.branchIds.length === 0) {
+        return reply.status(403).send({ success: false, error: { code: 'BRANCH_ACCESS_DENIED', message: 'You do not have access to an inventory branch.' } });
+      }
       const products = await dataService.getInventoryProducts(workspaceId, category);
+      const catalogScope = await catalogScopeFor(request);
       return reply.send({
         success: true,
-        data: { products },
+        data: { products: catalogScope ? products.filter((product: any) => catalogScope.includes(product.category)) : products },
       });
     }
   );
@@ -71,6 +95,7 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     '/products',
     {
+      preHandler: [requireBodyOrQueryBranch],
       schema: {
         tags: ['Inventory'],
         summary: 'Create a new inventory product',
@@ -164,6 +189,7 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     '/products/seed-samples',
     {
+      preHandler: [requireBodyOrQueryBranch],
       schema: {
         tags: ['Inventory'],
         summary: 'Seed a pre-populated product catalog for testing and quick onboarding',
@@ -383,6 +409,14 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       try {
+        const catalogScope = await catalogScopeFor(request);
+        if (catalogScope) {
+          const products = await dataService.getInventoryProducts(request.workspace!.id);
+          const restricted = products.filter((product: any) => parsed.data.items.some((item: any) => item.productId === product._id || item.productId === product.id) && !catalogScope.includes(product.category));
+          if (restricted.length) {
+            return reply.status(403).send({ success: false, error: { code: 'CATALOG_ACCESS_DENIED', message: 'You are not authorized to sell products outside your assigned categories.' } });
+          }
+        }
         const sale = (await dataService.recordInventorySale({
           workspaceId: request.workspace!.id,
           items: parsed.data.items,
@@ -437,13 +471,207 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
         tags: ['Inventory'],
         summary: 'Get live inventory telemetry metrics and recent sales stream',
         security: [{ bearerAuth: [] }],
+        querystring: { type: 'object', properties: { branchId: { type: 'string' } } },
       },
     },
     async (request, reply) => {
-      const metrics = await dataService.getInventoryDashboardMetrics(request.workspace!.id);
+      const branchId = (request.query as any)?.branchId;
+      if (branchId) await fastify.requireBranchAccess('inventory')(request, reply);
+      if (reply.sent) return;
+      const scope = await inventoryBranchScope(request);
+      const metrics = await dataService.getInventoryDashboardMetrics(request.workspace!.id, branchId, scope.type === 'explicit' ? scope.branchIds : undefined);
       return reply.send({
         success: true,
         data: { metrics },
+      });
+    }
+  );
+
+  // POST /api/v1/inventory/opening-stock (Standalone Opening Stock Entry)
+  fastify.post(
+    '/opening-stock',
+    {
+      preHandler: [requireBodyOrQueryBranch],
+      schema: {
+        tags: ['Inventory'],
+        summary: 'Record standalone opening stock quantities and cost valuations in stock movement ledger',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['entries'],
+          properties: {
+            branchId: { type: 'string' },
+            entries: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['productId', 'quantity'],
+                properties: {
+                  productId: { type: 'string' },
+                  quantity: { type: 'number' },
+                  unitCost: { type: 'number' },
+                  totalCost: { type: 'number' },
+                  notes: { type: 'string' },
+                },
+              },
+            },
+            notes: { type: 'string' },
+            flowId: { type: 'string' },
+            referenceId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = request.body as {
+        branchId?: string;
+        entries: Array<{
+          productId: string;
+          quantity: number;
+          unitCost?: number;
+          totalCost?: number;
+          notes?: string;
+        }>;
+        notes?: string;
+        flowId?: string;
+        referenceId?: string;
+      };
+
+      if (!Array.isArray(body?.entries) || body.entries.length === 0) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: 'At least one product opening stock entry is required.',
+          },
+        });
+      }
+
+      const workspaceId = request.workspace!.id;
+      const result = await dataService.recordOpeningStock({
+        workspaceId,
+        branchId: body.branchId,
+        entries: body.entries,
+        notes: body.notes,
+        referenceType: 'onboarding',
+        referenceId: body.referenceId || body.flowId,
+        actorUserId: request.user.id,
+      }) as any;
+
+      // Audit Log
+      await dataService.logAudit({
+        actorUserId: request.user.id,
+        workspaceId,
+        productKey: 'inventory',
+        eventType: 'inventory.opening_stock_recorded',
+        resource: 'stockMovements',
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'],
+        metadata: {
+          productsCount: result?.recordedCount || body.entries.length,
+          totalQuantity: result?.totalQuantity,
+          totalValuation: result?.totalValuation,
+          branchId: body.branchId,
+        },
+      }).catch(() => {});
+
+      // Onboarding Flow Synchronization
+      try {
+        const flow = await dataService.getOnboardingFlow(request.user.id, workspaceId, 'inventory');
+        if (flow) {
+          await dataService.completeOnboardingStep(
+            (flow as any)._id || (flow as any).id,
+            'opening_stock_entry',
+            'staff_invitation',
+            {
+              productsCount: result?.recordedCount || body.entries.length,
+              totalQuantity: result?.totalQuantity,
+              totalValuation: result?.totalValuation,
+              branchId: body.branchId,
+            }
+          ).catch(() => {});
+        }
+      } catch {}
+
+      return reply.status(201).send({
+        success: true,
+        data: result,
+        message: `Successfully recorded opening stock for ${result?.recordedCount || body.entries.length} products.`,
+      });
+    }
+  );
+
+  // GET /api/v1/inventory/opening-stock (Get Opening Stock status and prefill data)
+  fastify.get(
+    '/opening-stock',
+    {
+      preHandler: [requireBodyOrQueryBranch],
+      schema: {
+        tags: ['Inventory'],
+        summary: 'Get products and current opening stock status for active workspace/branch',
+        security: [{ bearerAuth: [] }],
+        querystring: {
+          type: 'object',
+          properties: {
+            branchId: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const workspaceId = request.workspace!.id;
+      const branchId = (request.query as any)?.branchId;
+      const scope = await inventoryBranchScope(request);
+      const data = await dataService.getOpeningStock(workspaceId, branchId, scope.type === 'explicit' ? scope.branchIds : undefined);
+      return reply.send({
+        success: true,
+        data,
+      });
+    }
+  );
+
+  // GET /api/v1/inventory/stock-movements (List stock movements with filters)
+  fastify.get(
+    '/stock-movements',
+    {
+      preHandler: [requireBodyOrQueryBranch],
+      schema: {
+        tags: ['Inventory'],
+        summary: 'List stock movements filtered by branch, product, or movement type',
+        security: [{ bearerAuth: [] }],
+        querystring: {
+          type: 'object',
+          properties: {
+            branchId: { type: 'string' },
+            productId: { type: 'string' },
+            movementType: { type: 'string' },
+            limit: { type: 'number' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const workspaceId = request.workspace!.id;
+      const query = (request.query || {}) as {
+        branchId?: string;
+        productId?: string;
+        movementType?: string;
+        limit?: number;
+      };
+
+      const scope = await inventoryBranchScope(request);
+      const movements = await dataService.getStockMovements({
+        workspaceId,
+        branchId: query.branchId,
+        productId: query.productId,
+        movementType: query.movementType,
+        limit: query.limit ? Number(query.limit) : undefined,
+        allowedBranchIds: scope.type === 'explicit' ? scope.branchIds : undefined,
+      });
+
+      return reply.send({
+        success: true,
+        data: { movements },
       });
     }
   );

@@ -93,18 +93,6 @@ export const InventoryAppOnboarding: React.FC = () => {
             await selectWorkspace(resolvedOrg).catch(() => {});
           }
 
-          // Verify that application is activated for this organization
-          const appStatus = await api
-            .get<{ success: boolean; data?: { active: boolean } }>(
-              `/organizations/${resolvedOrg}/applications/inventory/status`
-            )
-            .catch(() => null);
-
-          if (appStatus?.data && appStatus.data.active === false) {
-            navigate(`/onboard/activate?org=${resolvedOrg}`, { replace: true });
-            return;
-          }
-
           // Check if onboarding responses already recorded
           const statusRes = await api
             .get<{ completed: boolean; responses?: any }>(`/organizations/${resolvedOrg}/inventory-onboarding`)

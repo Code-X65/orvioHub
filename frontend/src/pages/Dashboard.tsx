@@ -109,7 +109,7 @@ export const Dashboard: React.FC = () => {
     try {
       // 1. Fetch workspaces
       const res = await api.get<{ data?: { workspaces: WorkspaceItem[] }; workspaces?: WorkspaceItem[] }>('/workspaces');
-      const list = res.data?.workspaces || res.workspaces || [];
+      const list = res.workspaces || [];
       setWorkspaces(list);
 
       // Set active organization context if none is active yet
@@ -137,7 +137,7 @@ export const Dashboard: React.FC = () => {
         try {
           const usageRes = await api.get<any>(`/workspaces/${primaryId}/usage`);
           if (usageRes?.data || usageRes?.summary) {
-            const sum = usageRes.data || usageRes.summary;
+            const sum = usageRes.summary || usageRes;
             setUsageSummary(sum);
           }
         } catch {}
@@ -162,10 +162,10 @@ export const Dashboard: React.FC = () => {
 
       try {
         const obRes = await api.get<any>('/onboarding/status');
-        if (obRes?.data && obRes.data.status !== 'COMPLETED') {
+        if (obRes && obRes.status !== 'COMPLETED') {
           activeProgress = {
             ...activeProgress,
-            ...obRes.data,
+            ...obRes,
           };
         }
       } catch {}

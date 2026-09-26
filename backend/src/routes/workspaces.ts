@@ -7,6 +7,8 @@ import { smsService } from '../services/smsService.js';
 import { validateNigerianPhone } from '../utils/phoneValidation.js';
 import { ERROR_CODES, AUDIT_EVENTS } from '../config/constants.js';
 import { getPlanLimits } from '../config/planLimits.js';
+import { requireWorkspaceAccess } from '../middleware/workspaceAccess.js';
+import { realtimeHub, realtimeRooms } from '../services/realtimeHub.js';
 
 const createWorkspaceSchema = z.object({
   name: z.string().min(2, 'Workspace name must be at least 2 characters'),
@@ -15,6 +17,8 @@ const createWorkspaceSchema = z.object({
   typeConfig: z.record(z.any()).optional(),
   country: z.string().optional(),
   state: z.string().optional(),
+  stateCode: z.string().optional(),
+  lga: z.string().optional(),
   city: z.string().optional(),
   timezone: z.string().optional(),
   currency: z.string().optional(),
@@ -28,6 +32,8 @@ const updateWorkspaceSchema = z.object({
   type: z.string().optional(),
   country: z.string().optional(),
   state: z.string().optional(),
+  stateCode: z.string().optional(),
+  lga: z.string().optional(),
   city: z.string().optional(),
   timezone: z.string().optional(),
   currency: z.string().optional(),
@@ -38,8 +44,26 @@ const updateWorkspaceSchema = z.object({
 });
 
 export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
-  // All workspace routes require authentication
-  fastify.addHook('preHandler', fastify.authenticate);
+  // All workspace routes require authentication and workspace authorization
+  fastify.addHook('preHandler', async (request, reply) => {
+    await fastify.authenticate(request, reply);
+    if (reply.sent) return;
+    await requireWorkspaceAccess(request, reply);
+  });
+
+  // Synchronizes workspace / branch / product selection across a user's tabs.
+  fastify.get('/:workspaceId/context/stream', { websocket: true }, (socket, request: any) => {
+    const room = realtimeRooms.context(request.params.workspaceId);
+    realtimeHub.join(room, socket as any);
+    socket.on('message', (raw: Buffer) => {
+      try {
+        const message = JSON.parse(raw.toString());
+        if (['context.switched', 'branch.changed', 'product.activated'].includes(message.type)) {
+          realtimeHub.publish(room, { type: message.type, workspaceId: request.params.workspaceId, userId: request.user.id, data: message.data || {} });
+        }
+      } catch { /* Ignore invalid client frames. */ }
+    });
+  });
 
   // GET /api/v1/workspaces
   fastify.get(
@@ -145,6 +169,8 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
           ownerId: request.user.id,
           country: parsed.data.country || request.user.country || 'NG',
           state: parsed.data.state,
+          stateCode: parsed.data.stateCode,
+          lga: parsed.data.lga,
           city: parsed.data.city,
           timezone: parsed.data.timezone || request.user.timezone || 'Africa/Lagos',
           currency: parsed.data.currency || 'NGN',

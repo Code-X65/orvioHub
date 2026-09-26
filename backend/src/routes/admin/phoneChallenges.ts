@@ -16,6 +16,9 @@ export const adminPhoneChallengeRoutes: FastifyPluginAsync = async (fastify) => 
   fastify.get(
     '/phone-challenges',
     {
+      config: {
+        rateLimit: { max: 30, timeWindow: '1 minute' },
+      },
       schema: {
         tags: ['Superadmin Phone Challenges'],
         summary: 'List phone verification challenges, deliverability metrics, and error rates',

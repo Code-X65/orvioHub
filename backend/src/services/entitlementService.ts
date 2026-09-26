@@ -119,9 +119,23 @@ export class EntitlementService {
     if (planKey === ('free_trial' as any)) planKey = 'free';
     const limits = getPlanLimits(planKey);
 
-    // 1. Check if app is in allowed apps for plan
+    // 1. Resolve the canonical product record before evaluating plan limits.
+    // Unknown or globally disabled keys can never become workspace products.
     if (productKey) {
       const targetNorm = productKey.toLowerCase();
+      let product: any;
+      try {
+        product = await dataService.getProductByKey(targetNorm);
+      } catch {
+        return { allowed: false, current: 0, limit: limits.maxAppsPerOrganization, planKey, error: 'Product not found or inactive' };
+      }
+      const planRank: Record<string, number> = { free: 0, free_trial: 0, standard: 1, premium: 2 };
+      if (product.requiredPlan && (planRank[planKey] ?? 0) < (planRank[String(product.requiredPlan).toLowerCase()] ?? Number.MAX_SAFE_INTEGER)) {
+        return { allowed: false, current: 0, limit: limits.maxAppsPerOrganization, planKey, error: `Requires ${product.requiredPlan} plan` };
+      }
+
+      // Keep plan allowed-app lists as an additional billing constraint, but
+      // only after the canonical registry has accepted the key.
       const isAllowed = limits.allowedApps.some((app) => {
         const norm = app.toLowerCase();
         return (

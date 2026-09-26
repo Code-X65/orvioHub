@@ -31,6 +31,7 @@
     "@fastify/sensible": "^6.0.2",
     "@fastify/swagger": "^9.8.1",
     "@fastify/swagger-ui": "^6.1.1",
+    "@fastify/websocket": "^11.3.1",
     "@logtail/node": "^0.5.8",
     "@orviohub/shared": "workspace:*",
     "@sentry/node": "^10.70.0",

@@ -46,11 +46,12 @@ export const PhoneVerificationCard: React.FC = () => {
   // Fetch current phone contact details
   const fetchContact = async () => {
     try {
-      const res = await api.get<{ data: PhoneContactData }>('/users/me/contact');
-      if (res.data) {
-        setContact(res.data);
-        if (res.data.phone) {
-          setPhoneInput(res.data.phone);
+      const res = await api.get<any>('/users/me/contact');
+      if (res) {
+        const contactData = res?.data || res;
+        setContact(contactData);
+        if (contactData?.phone) {
+          setPhoneInput(contactData.phone);
         }
       }
     } catch {

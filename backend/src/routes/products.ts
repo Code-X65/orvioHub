@@ -132,9 +132,13 @@ export const productsRoutes: FastifyPluginAsync = async (fastify) => {
       const { workspaceId } = request.params as { workspaceId: string };
       try {
         const products = await dataService.getAvailableProductsForWorkspace(workspaceId);
+        const withEntitlements = await Promise.all((products || []).map(async (product: any) => {
+          const entitlement = await entitlementService.checkAppActivationEntitlement(workspaceId, product.key);
+          return { ...product, isActivable: entitlement.allowed, reason: entitlement.allowed ? null : entitlement.error || 'plan_not_allowed' };
+        }));
         return reply.send({
           success: true,
-          data: { products: products || [] },
+          data: { products: withEntitlements },
         });
       } catch (err: any) {
         return reply.status(400).send({
@@ -180,20 +184,9 @@ export const productsRoutes: FastifyPluginAsync = async (fastify) => {
       };
       const body = (request.body as { planId?: string }) || {};
 
-      if (productKey.toLowerCase() !== 'inventory') {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: 'APPLICATION_NOT_AVAILABLE',
-            message: 'This application is not available yet.',
-          },
-        });
-      }
-
       try {
         const product: any = await dataService.getProductByKey(productKey);
-        const s = (product?.status || '').toLowerCase();
-        if (s !== 'active' && s !== 'available') {
+        if (product?.isActive !== true) {
           return reply.status(400).send({
             success: false,
             error: {
@@ -241,6 +234,24 @@ export const productsRoutes: FastifyPluginAsync = async (fastify) => {
       }
     }
   );
+
+  // Canonical onboarding/launcher endpoint. The legacy available-products
+  // endpoint above remains for existing clients.
+  fastify.get('/workspaces/:workspaceId/products/available', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    const { workspaceId } = request.params as { workspaceId: string };
+    const products = await dataService.getAvailableProductsForWorkspace(workspaceId);
+    const available = await Promise.all((products || []).map(async (product: any) => {
+      const entitlement = await entitlementService.checkAppActivationEntitlement(workspaceId, product.key);
+      return { ...product, isActivable: entitlement.allowed, reason: entitlement.allowed ? null : entitlement.error || 'plan_not_allowed' };
+    }));
+    return reply.send({ success: true, data: { products: available } });
+  });
+
+  fastify.get('/workspaces/:workspaceId/products/activated', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    const { workspaceId } = request.params as { workspaceId: string };
+    const products = await dataService.getAvailableProductsForWorkspace(workspaceId);
+    return reply.send({ success: true, data: { products: (products || []).filter((product: any) => product.isActivated) } });
+  });
 
   // GET /api/v1/workspaces/:workspaceId/products/:productKey/is-active
   fastify.get(
@@ -300,15 +311,6 @@ export const productsRoutes: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       const { productKey } = request.params as { productKey: string };
-      if (productKey.toLowerCase() !== 'inventory') {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: 'APPLICATION_NOT_AVAILABLE',
-            message: 'This application is not available yet.',
-          },
-        });
-      }
       try {
         const product = await dataService.getProductByKey(productKey);
         return reply.send({

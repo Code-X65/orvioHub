@@ -1,5 +1,5 @@
-import React, { useEffect } from 'react';
-import { useLocationStore, type NigerianState } from '@/stores/useLocationStore';
+import React from 'react';
+import { useNigerianStates, type NigerianState } from '@/hooks/useLocations';
 import { CustomSelect, type SelectOption } from '@/components/ui/custom-select';
 import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
@@ -26,11 +26,7 @@ export const StateSelector: React.FC<StateSelectorProps> = ({
   className = '',
   placeholder = 'Select Nigerian State',
 }) => {
-  const { states, isLoadingStates, fetchStates } = useLocationStore();
-
-  useEffect(() => {
-    fetchStates();
-  }, [fetchStates]);
+  const { states, isLoading: isLoadingStates } = useNigerianStates();
 
   const options: SelectOption[] = states.map((s: NigerianState) => {
     const code = s.code || s.stateCode || '';

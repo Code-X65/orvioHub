@@ -92,6 +92,17 @@ const inviteTeamSchema = z.union([
 ]);
 
 export const organizationRoutes: FastifyPluginAsync = async (fastify) => {
+  // ARCH-02 compatibility surface. New clients must use /workspaces; this
+  // header makes remaining legacy callers observable before removal.
+  // Add deprecation headers to legacy /orgs alias routes
+  fastify.addHook('onSend', async (request, reply, payload) => {
+    const routePath = request.routeOptions?.url || (request as any).routerPath || request.url;
+    if (routePath?.includes('/orgs')) {
+      reply.header('Deprecation', 'true');
+      reply.header('Link', '</api/v1/organizations>; rel="successor-version"');
+    }
+    return payload;
+  });
   // All org routes require authentication
   fastify.addHook('preHandler', fastify.authenticate);
 

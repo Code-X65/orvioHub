@@ -707,6 +707,7 @@ export const saveInventoryOnboarding = mutation({
         organizationId: resolvedOrgId,
         applicationId: inventoryApp._id,
         enabled: true,
+        status: "active",
         config: { onboardingCompleted: true },
         createdAt: now,
         updatedAt: now,
@@ -714,6 +715,7 @@ export const saveInventoryOnboarding = mutation({
     } else {
       await ctx.db.patch(existingOrgApp._id, {
         enabled: true,
+        status: existingOrgApp.status || "active",
         config: { ...(existingOrgApp.config || {}), onboardingCompleted: true },
         updatedAt: now,
       });

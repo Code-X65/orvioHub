@@ -23,8 +23,7 @@ export const PrivacySettings: React.FC = () => {
   const handleExportData = async () => {
     setIsExporting(true);
     try {
-      const res = await api.post<{ data: any }>('/users/me/data-export', {});
-      const exportData = res.data?.data || res.data;
+      const exportData = await api.post<Record<string, unknown>>('/users/me/data-export', {});
       const dataStr =
         'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(exportData, null, 2));
       const downloadAnchor = document.createElement('a');

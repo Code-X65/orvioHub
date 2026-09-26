@@ -1,7 +1,8 @@
 import { query, mutation } from "./_generated/server.js";
 import { v } from "convex/values";
 
-const DEFAULT_PRODUCTS = [
+// Seed-only migration data. It is never used as a runtime product registry.
+const PRODUCT_REGISTRY_SEED = [
   {
     key: "inventory",
     name: "Inventory",
@@ -73,10 +74,7 @@ export const listAll = query({
   args: {},
   handler: async (ctx) => {
     const products = await ctx.db.query("products").collect();
-    if (products.length === 0) {
-      return DEFAULT_PRODUCTS;
-    }
-    return products.sort((a, b) => (a.displayOrder ?? 99) - (b.displayOrder ?? 99));
+    return products.sort((a, b) => (a.orderIndex ?? a.displayOrder ?? 99) - (b.orderIndex ?? b.displayOrder ?? 99));
   },
 });
 
@@ -84,14 +82,9 @@ export const listVisible = query({
   args: {},
   handler: async (ctx) => {
     const all = await ctx.db.query("products").collect();
-    const source = all.length > 0 ? all : DEFAULT_PRODUCTS;
-    const visible = source.filter((p) => {
-      if (p.isVisibleToUsers !== undefined) {
-        return p.isVisibleToUsers === true;
-      }
-      return p.key === "inventory";
-    });
-    return visible.sort((a, b) => (a.displayOrder ?? 99) - (b.displayOrder ?? 99));
+    return all
+      .filter((p) => p.isActive === true && p.isListed === true)
+      .sort((a, b) => (a.orderIndex ?? a.displayOrder ?? 99) - (b.orderIndex ?? b.displayOrder ?? 99));
   },
 });
 
@@ -101,21 +94,10 @@ export const getByKey = query({
     const normKey = args.productKey.toLowerCase();
     const product = await ctx.db
       .query("products")
-      .withIndex("by_key", (q) => q.eq("key", args.productKey))
+      .withIndex("by_key", (q) => q.eq("key", normKey))
       .first();
 
-    if (!product) {
-      const fallback = DEFAULT_PRODUCTS.find((p) => p.key === args.productKey);
-      if (fallback) {
-        if (fallback.isVisibleToUsers === false) {
-          throw new Error("PRODUCT_NOT_AVAILABLE");
-        }
-        return fallback;
-      }
-      throw new Error(`Product '${args.productKey}' not found`);
-    }
-
-    if (product.isVisibleToUsers === false) {
+    if (!product || product.isActive !== true) {
       throw new Error("PRODUCT_NOT_AVAILABLE");
     }
 
@@ -154,14 +136,8 @@ export const getUsageStats = query({
 export const getAvailableForWorkspace = query({
   args: { workspaceId: v.id("workspaces") },
   handler: async (ctx, args) => {
-    const allProducts = await ctx.db.query("products").collect();
-    const source = allProducts.length > 0 ? allProducts : DEFAULT_PRODUCTS;
-    const visible = source.filter((p) => {
-      if (p.isVisibleToUsers !== undefined) {
-        return p.isVisibleToUsers === true;
-      }
-      return p.key === "inventory";
-    });
+    const visible = (await ctx.db.query("products").collect())
+      .filter((p) => p.isActive === true && p.isListed === true);
 
     const workspaceProducts = await ctx.db
       .query("workspaceProducts")
@@ -178,7 +154,7 @@ export const getAvailableForWorkspace = query({
     );
 
     return visible
-      .sort((a, b) => (a.displayOrder ?? 99) - (b.displayOrder ?? 99))
+      .sort((a, b) => (a.orderIndex ?? a.displayOrder ?? 99) - (b.orderIndex ?? b.displayOrder ?? 99))
       .map((product) => ({
         ...product,
         isActivated: activatedKeys.has(product.key),
@@ -195,6 +171,11 @@ export const create = mutation({
     isBeta: v.optional(v.boolean()),
     isFeatured: v.optional(v.boolean()),
     iconUrl: v.optional(v.string()),
+    requiredPlan: v.optional(v.string()),
+    isActive: v.optional(v.boolean()),
+    isListed: v.optional(v.boolean()),
+    orderIndex: v.optional(v.number()),
+    metadata: v.optional(v.any()),
     documentationUrl: v.optional(v.string()),
     supportEmail: v.optional(v.string()),
     key: v.optional(v.string()),
@@ -223,11 +204,24 @@ export const create = mutation({
       isBeta: args.isBeta ?? false,
       isFeatured: args.isFeatured ?? false,
       iconUrl: args.iconUrl,
+      requiredPlan: args.requiredPlan,
+      isActive: args.isActive ?? args.status === "active",
+      isListed: args.isListed ?? args.status === "active",
+      orderIndex: args.orderIndex ?? args.displayOrder,
+      metadata: args.metadata,
       subdomain,
       documentationUrl: args.documentationUrl,
       supportEmail: args.supportEmail,
       createdAt: now,
       updatedAt: now,
+    });
+
+    await ctx.db.insert("adminAuditLogs", {
+      action: "admin.product_created",
+      resourceType: "products",
+      resourceId: key,
+      details: { key, name: args.name },
+      createdAt: now,
     });
 
     return await ctx.db.get(productId);
@@ -237,6 +231,7 @@ export const create = mutation({
 export const update = mutation({
   args: {
     productKey: v.string(),
+    auditAction: v.optional(v.string()),
     updates: v.object({
       name: v.optional(v.string()),
       description: v.optional(v.string()),
@@ -257,6 +252,11 @@ export const update = mutation({
       documentationUrl: v.optional(v.string()),
       supportEmail: v.optional(v.string()),
       subdomain: v.optional(v.string()),
+      requiredPlan: v.optional(v.string()),
+      isActive: v.optional(v.boolean()),
+      isListed: v.optional(v.boolean()),
+      orderIndex: v.optional(v.number()),
+      metadata: v.optional(v.any()),
     }),
   },
   handler: async (ctx, args) => {
@@ -267,32 +267,18 @@ export const update = mutation({
 
     const now = Date.now();
 
-    if (!product) {
-      // Auto-upsert default product with updates
-      const defaultProd = DEFAULT_PRODUCTS.find((p) => p.key === args.productKey) || {
-        key: args.productKey,
-        name: args.productKey.charAt(0).toUpperCase() + args.productKey.slice(1),
-        description: `Product application for ${args.productKey}`,
-        subdomain: `${args.productKey}.orviohub.com`,
-        status: "active" as const,
-        isBeta: false,
-        isFeatured: false,
-        displayOrder: 99,
-      };
-
-      const newId = await ctx.db.insert("products", {
-        ...defaultProd,
-        ...args.updates,
-        createdAt: now,
-        updatedAt: now,
-      });
-
-      return await ctx.db.get(newId);
-    }
+    if (!product) throw new Error("Product not found");
 
     await ctx.db.patch(product._id, {
       ...args.updates,
       updatedAt: now,
+    });
+    await ctx.db.insert("adminAuditLogs", {
+      action: args.auditAction || "admin.product_updated",
+      resourceType: "products",
+      resourceId: product.key,
+      details: { before: product, after: args.updates },
+      createdAt: now,
     });
 
     return await ctx.db.get(product._id);
@@ -313,6 +299,8 @@ export const archive = mutation({
 
     await ctx.db.patch(product._id, {
       status: "draft",
+      isActive: false,
+      isListed: false,
       updatedAt: Date.now(),
     });
 
@@ -337,6 +325,12 @@ export const deleteProduct = mutation({
       throw new Error("Only draft products can be deleted");
     }
 
+    const inUse = await ctx.db
+      .query("workspaceProducts")
+      .withIndex("by_product_status", (q) => q.eq("productKey", product.key))
+      .first();
+    if (inUse) throw new Error("Products with workspace activations cannot be deleted; deactivate them instead");
+
     await ctx.db.delete(product._id);
     return { success: true };
   },
@@ -345,63 +339,13 @@ export const deleteProduct = mutation({
 export const seedDefaultProducts = mutation({
   args: {},
   handler: async (ctx) => {
-    const defaults = [
-      {
-        key: "inventory",
-        name: "Inventory & POS",
-        description: "Multi-branch warehouse stock, barcode POS checkout, receipts, sales history & telemetry.",
-        subdomain: "inventory.orviohub.com",
-        status: "active" as const,
-        isBeta: false,
-        isFeatured: true,
-        displayOrder: 1,
-        iconUrl: "/icons/inventory.svg",
-      },
-      {
-        key: "taskmanagement",
-        name: "Task & Project Management",
-        description: "Agile sprints, interactive kanban boards, team workflows & milestone tracking.",
-        subdomain: "tasks.orviohub.com",
-        status: "active" as const,
-        isBeta: false,
-        isFeatured: true,
-        displayOrder: 2,
-        iconUrl: "/icons/tasks.svg",
-      },
-      {
-        key: "crm",
-        name: "Customer CRM",
-        description: "Client contact directories, communication history, pipelines, and deal conversions.",
-        subdomain: "crm.orviohub.com",
-        status: "coming_soon" as const,
-        isBeta: true,
-        isFeatured: false,
-        displayOrder: 3,
-        iconUrl: "/icons/crm.svg",
-      },
-      {
-        key: "booking",
-        name: "Appointments & Booking",
-        description: "Online calendar reservations, service scheduling, reminders, and client appointments.",
-        subdomain: "booking.orviohub.com",
-        status: "coming_soon" as const,
-        isBeta: false,
-        isFeatured: false,
-        displayOrder: 4,
-        iconUrl: "/icons/booking.svg",
-      },
-      {
-        key: "gym",
-        name: "Gym & Fitness Membership",
-        description: "Member passes, attendance tracking, trainer schedules, and class subscriptions.",
-        subdomain: "gym.orviohub.com",
-        status: "coming_soon" as const,
-        isBeta: false,
-        isFeatured: false,
-        displayOrder: 5,
-        iconUrl: "/icons/gym.svg",
-      },
-    ];
+    const defaults = PRODUCT_REGISTRY_SEED.map((product) => ({
+      ...product,
+      requiredPlan: product.key === "booking" || product.key === "gym" ? "standard" : product.key === "crm" ? "premium" : undefined,
+      isActive: product.key !== "crm",
+      isListed: product.key !== "crm",
+      orderIndex: product.displayOrder,
+    }));
 
     const now = Date.now();
     const created = [];
@@ -418,6 +362,14 @@ export const seedDefaultProducts = mutation({
           updatedAt: now,
         });
         created.push(id);
+      } else {
+        await ctx.db.patch(existing._id, {
+          isActive: def.isActive,
+          isListed: def.isListed,
+          requiredPlan: def.requiredPlan,
+          orderIndex: def.orderIndex,
+          updatedAt: now,
+        });
       }
     }
 

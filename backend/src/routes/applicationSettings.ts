@@ -8,6 +8,11 @@ const updateAppSettingSchema = z.object({
   settings: z.record(z.any()),
 });
 
+const orgAppParamSchema = z.object({
+  organizationId: z.string().min(1, 'Organization ID is required'),
+  productKey: z.string().min(1, 'Product key is required'),
+});
+
 export const applicationSettingsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.addHook('preHandler', fastify.authenticate);
 
@@ -71,61 +76,119 @@ export const applicationSettingsRoutes: FastifyPluginAsync = async (fastify) => 
     }
   });
 
-  // 4. Activate Application
-  fastify.post('/workspaces/:workspaceId/applications/:productKey/activate', async (request, reply) => {
-    const { workspaceId, productKey } = request.params as { workspaceId: string; productKey: string };
-    try {
-      const result = await dataService.setApplicationStatus(workspaceId, productKey, 'activate', request.user.id);
-      return reply.send({ success: true, data: result, message: `${productKey} activated successfully.` });
-    } catch (err: any) {
-      return reply.status(400).send({ success: false, error: { code: 'ACTION_FAILED', message: err.message } });
-    }
-  });
-
-  // 5. Deactivate Application
-  fastify.post('/workspaces/:workspaceId/applications/:productKey/deactivate', async (request, reply) => {
-    const { workspaceId, productKey } = request.params as { workspaceId: string; productKey: string };
-    try {
-      const result = await dataService.setApplicationStatus(workspaceId, productKey, 'deactivate', request.user.id);
-      return reply.send({ success: true, data: result, message: `${productKey} deactivated.` });
-    } catch (err: any) {
-      return reply.status(400).send({ success: false, error: { code: 'ACTION_FAILED', message: err.message } });
-    }
-  });
-
-  // 6. Suspend Application
-  fastify.post('/workspaces/:workspaceId/applications/:productKey/suspend', async (request, reply) => {
-    const { workspaceId, productKey } = request.params as { workspaceId: string; productKey: string };
-    try {
-      const result = await dataService.setApplicationStatus(workspaceId, productKey, 'suspend', request.user.id);
-      return reply.send({ success: true, data: result, message: `${productKey} access suspended.` });
-    } catch (err: any) {
-      return reply.status(400).send({ success: false, error: { code: 'ACTION_FAILED', message: err.message } });
-    }
-  });
-
-  // 7. Restore Application
-  fastify.post('/workspaces/:workspaceId/applications/:productKey/restore', async (request, reply) => {
-    const { workspaceId, productKey } = request.params as { workspaceId: string; productKey: string };
-    try {
-      const result = await dataService.setApplicationStatus(workspaceId, productKey, 'restore', request.user.id);
-      return reply.send({ success: true, data: result, message: `${productKey} access restored.` });
-    } catch (err: any) {
-      return reply.status(400).send({ success: false, error: { code: 'ACTION_FAILED', message: err.message } });
-    }
-  });
-
   // Organization Aliases
-  fastify.get('/organizations/:organizationId/applications/:productKey/settings', async (request, reply) => {
-    const { organizationId, productKey } = request.params as { organizationId: string; productKey: string };
-    const appSettings = await dataService.getApplicationSettings(organizationId, productKey);
-    return reply.send({ success: true, data: { application: appSettings } });
-  });
+  fastify.get(
+    '/organizations/:organizationId/applications/:productKey/settings',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        params: {
+          type: 'object',
+          required: ['organizationId', 'productKey'],
+          properties: {
+            organizationId: { type: 'string' },
+            productKey: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const parsedParams = orgAppParamSchema.safeParse(request.params);
+      if (!parsedParams.success) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: parsedParams.error.errors[0]?.message || 'Invalid parameters',
+          },
+        });
+      }
+      const { organizationId, productKey } = parsedParams.data;
 
-  fastify.patch('/organizations/:organizationId/applications/:productKey/settings', async (request, reply) => {
-    const { organizationId, productKey } = request.params as { organizationId: string; productKey: string };
-    await dataService.updateApplicationSettings(organizationId, productKey, (request.body as any)?.settings, request.user.id);
-    const updated = await dataService.getApplicationSettings(organizationId, productKey);
-    return reply.send({ success: true, data: { application: updated } });
-  });
+      // Verify caller belongs to this organization
+      const belongs = await dataService.userBelongsToOrganization(request.user.id, organizationId);
+      if (!belongs) {
+        return reply.status(403).send({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'Access denied: You do not belong to this organization.' },
+        });
+      }
+
+      try {
+        const appSettings = await dataService.getApplicationSettings(organizationId, productKey);
+        return reply.send({ success: true, data: { application: appSettings } });
+      } catch (err: any) {
+        return reply.status(500).send({
+          success: false,
+          error: { code: ERROR_CODES.INTERNAL_SERVER_ERROR, message: err.message },
+        });
+      }
+    }
+  );
+
+  fastify.patch(
+    '/organizations/:organizationId/applications/:productKey/settings',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        params: {
+          type: 'object',
+          required: ['organizationId', 'productKey'],
+          properties: {
+            organizationId: { type: 'string' },
+            productKey: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const parsedParams = orgAppParamSchema.safeParse(request.params);
+      if (!parsedParams.success) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: parsedParams.error.errors[0]?.message || 'Invalid parameters',
+          },
+        });
+      }
+      const { organizationId, productKey } = parsedParams.data;
+
+      // Verify caller belongs to this organization
+      const belongs = await dataService.userBelongsToOrganization(request.user.id, organizationId);
+      if (!belongs) {
+        return reply.status(403).send({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'Access denied: You do not belong to this organization.' },
+        });
+      }
+
+      const parsedBody = updateAppSettingSchema.safeParse(request.body);
+      if (!parsedBody.success) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: parsedBody.error.errors[0]?.message || 'Invalid settings payload',
+          },
+        });
+      }
+
+      try {
+        await dataService.updateApplicationSettings(
+          organizationId,
+          productKey,
+          parsedBody.data.settings,
+          request.user.id
+        );
+        const updated = await dataService.getApplicationSettings(organizationId, productKey);
+        return reply.send({ success: true, data: { application: updated } });
+      } catch (err: any) {
+        return reply.status(500).send({
+          success: false,
+          error: { code: ERROR_CODES.INTERNAL_SERVER_ERROR, message: err.message },
+        });
+      }
+    }
+  );
 };

@@ -114,6 +114,11 @@ export const adminProductsRoutes: FastifyPluginAsync = async (fastify) => {
             supportEmail: { type: 'string' },
             key: { type: 'string' },
             subdomain: { type: 'string' },
+            requiredPlan: { type: 'string', enum: ['standard', 'premium'] },
+            isActive: { type: 'boolean' },
+            isListed: { type: 'boolean' },
+            orderIndex: { type: 'number' },
+            metadata: {},
           },
         },
       },
@@ -131,6 +136,11 @@ export const adminProductsRoutes: FastifyPluginAsync = async (fastify) => {
         supportEmail?: string;
         key?: string;
         subdomain?: string;
+        requiredPlan?: string;
+        isActive?: boolean;
+        isListed?: boolean;
+        orderIndex?: number;
+        metadata?: any;
       };
 
       try {
@@ -181,6 +191,11 @@ export const adminProductsRoutes: FastifyPluginAsync = async (fastify) => {
             documentationUrl: { type: 'string' },
             supportEmail: { type: 'string' },
             subdomain: { type: 'string' },
+            requiredPlan: { type: 'string', enum: ['standard', 'premium'] },
+            isActive: { type: 'boolean' },
+            isListed: { type: 'boolean' },
+            orderIndex: { type: 'number' },
+            metadata: {},
           },
         },
       },
@@ -207,6 +222,25 @@ export const adminProductsRoutes: FastifyPluginAsync = async (fastify) => {
       }
     }
   );
+
+  fastify.post('/:productKey/toggle-active', { preHandler: [requireSingleAdmin] }, async (request, reply) => {
+    const { productKey } = request.params as { productKey: string };
+    const body = (request.body || {}) as { isActive?: boolean };
+    const current: any = await dataService.getProductByKey(productKey).catch(() => null);
+    if (!current) return reply.status(404).send({ success: false, error: { code: ERROR_CODES.NOT_FOUND, message: 'Product not found.' } });
+    const product = await dataService.updateProduct(productKey, { isActive: body.isActive ?? !current.isActive }, 'admin.product_toggled_active');
+    return reply.send({ success: true, message: 'Product active state updated.', data: { product } });
+  });
+
+  fastify.post('/:productKey/toggle-listed', { preHandler: [requireSingleAdmin] }, async (request, reply) => {
+    const { productKey } = request.params as { productKey: string };
+    const body = (request.body || {}) as { isListed?: boolean };
+    // listAll includes inactive products, unlike getProductByKey.
+    const current: any = (await dataService.listAllProducts()).find((product: any) => product.key === productKey.toLowerCase());
+    if (!current) return reply.status(404).send({ success: false, error: { code: ERROR_CODES.NOT_FOUND, message: 'Product not found.' } });
+    const product = await dataService.updateProduct(productKey, { isListed: body.isListed ?? !current.isListed }, 'admin.product_toggled_listed');
+    return reply.send({ success: true, message: 'Product listing state updated.', data: { product } });
+  });
 
   // POST /api/v1/admin/products/:productKey/archive - Archive product
   fastify.post(

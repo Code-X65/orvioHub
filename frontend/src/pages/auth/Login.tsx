@@ -51,12 +51,17 @@ export const Login: React.FC = () => {
   const [twoFactorCode, setTwoFactorCode] = useState('');
   const [isBackupMode, setIsBackupMode] = useState(false);
 
-  // If user arrives via logout handoff, ensure local store is wiped
+  // A logout handoff is already completed by the originating surface. Consume
+  // its marker so it cannot revoke a session created from this login page.
   React.useEffect(() => {
     if (searchParams.get('logged_out') === 'true' || searchParams.get('logout') === 'true') {
-      useAuthStore.getState().logout();
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('logged_out');
+      nextParams.delete('logout');
+      const search = nextParams.toString();
+      navigate({ pathname: location.pathname, search: search ? `?${search}` : '' }, { replace: true });
     }
-  }, [searchParams]);
+  }, [location.pathname, navigate, searchParams]);
 
   const {
     register,
@@ -120,6 +125,7 @@ export const Login: React.FC = () => {
         email: data.email,
         password: data.password,
         deviceId,
+        rememberMe,
       });
 
       if (response.twoFactorRequired && response.tempToken) {
@@ -159,6 +165,7 @@ export const Login: React.FC = () => {
         code: twoFactorCode.trim(),
         isBackupCode: isBackupMode,
         deviceId,
+        rememberMe,
       });
 
       setAuthData(response, rememberMe);

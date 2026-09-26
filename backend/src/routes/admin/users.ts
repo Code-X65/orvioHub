@@ -16,6 +16,9 @@ export const adminUserRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     '/users/:userId/suspend',
     {
+      config: {
+        rateLimit: { max: 30, timeWindow: '1 minute' },
+      },
       schema: {
         tags: ['Superadmin Users'],
         summary: 'Suspend a user account and immediately revoke sessions',
@@ -78,6 +81,9 @@ export const adminUserRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     '/users/:userId/restore',
     {
+      config: {
+        rateLimit: { max: 30, timeWindow: '1 minute' },
+      },
       schema: {
         tags: ['Superadmin Users'],
         summary: 'Restore a suspended user account',
@@ -117,6 +123,9 @@ export const adminUserRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get(
     '/users/:userId/suspension-history',
     {
+      config: {
+        rateLimit: { max: 30, timeWindow: '1 minute' },
+      },
       schema: {
         tags: ['Superadmin Users'],
         summary: 'Get historical audit logs of user suspension and restoration',
@@ -155,6 +164,9 @@ export const adminUserRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     '/users/:userId/delete',
     {
+      config: {
+        rateLimit: { max: 30, timeWindow: '1 minute' },
+      },
       schema: {
         tags: ['Superadmin Users'],
         summary: 'Delete user account with pre-checks and optional 7-day grace period',
@@ -216,6 +228,9 @@ export const adminUserRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     '/users/:userId/delete/force',
     {
+      config: {
+        rateLimit: { max: 30, timeWindow: '1 minute' },
+      },
       schema: {
         tags: ['Superadmin Users'],
         summary: 'Immediately force-delete user account (bypasses grace period)',
@@ -274,6 +289,9 @@ export const adminUserRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     '/users/:userId/phone/unlink',
     {
+      config: {
+        rateLimit: { max: 30, timeWindow: '1 minute' },
+      },
       schema: {
         tags: ['Superadmin Users'],
         summary: 'Administratively unlink/reset user phone number',
@@ -321,6 +339,9 @@ export const adminUserRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     '/users/:userId/phone/mark-verified',
     {
+      config: {
+        rateLimit: { max: 30, timeWindow: '1 minute' },
+      },
       schema: {
         tags: ['Superadmin Users'],
         summary: 'Administratively mark a user phone as verified',

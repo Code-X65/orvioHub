@@ -72,7 +72,7 @@ export const TeamInvite: React.FC = () => {
       }
 
       const res: any = await api.post('/onboarding/share-link', { role: 'MEMBER' });
-      const link = res.data?.inviteUrl || `${window.location.origin}/invitations/${res.data?.token}`;
+      const link = res.inviteUrl || `${window.location.origin}/invitations/${res.token}`;
       setShareableLink(link);
       await navigator.clipboard.writeText(link);
       setCopiedLink(true);

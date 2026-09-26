@@ -22,7 +22,7 @@ export const adminDeletionRoutes: FastifyPluginAsync = async (fastify) => {
   };
 
   // 1. GET /api/v1/admin/deletions/pending
-  fastify.get('/deletions/pending', async (request, reply) => {
+  fastify.get('/deletions/pending', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
     try {
       const sessionToken = getAdminToken(request);
       const pending = await dataService.query('adminDeletions:listPendingOrganizationDeletions', {
@@ -38,7 +38,7 @@ export const adminDeletionRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   // 2. POST /api/v1/admin/deletions/:workspaceId/cancel
-  fastify.post('/deletions/:workspaceId/cancel', async (request, reply) => {
+  fastify.post('/deletions/:workspaceId/cancel', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { workspaceId } = request.params as { workspaceId: string };
     const parsed = cancelDeletionSchema.safeParse(request.body || {});
     try {
@@ -58,7 +58,7 @@ export const adminDeletionRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   // 3. POST /api/v1/admin/deletions/:workspaceId/purge
-  fastify.post('/deletions/:workspaceId/purge', async (request, reply) => {
+  fastify.post('/deletions/:workspaceId/purge', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { workspaceId } = request.params as { workspaceId: string };
     const parsed = purgeImmediateSchema.safeParse(request.body);
     if (!parsed.success) {

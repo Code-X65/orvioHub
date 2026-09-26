@@ -238,12 +238,12 @@ export const WorkspaceMembers: React.FC = () => {
     setEditMember(m);
     setIsLoadingAccess(true);
     try {
-      const res = await api.get<{ data: any }>(
-        `/workspaces/${currentWorkspace.id}/members/${m.userId}/access`
+      const res = await api.get<any>(
+        `/workspaces/${currentWorkspace.id}/members/${m.userId}/access`, { workspaceId: currentWorkspace.id }
       );
       setEditAccessData({
-        organizationRole: res.data.organizationRole || m.role,
-        apps: res.data.apps || [],
+        organizationRole: res.organizationRole || m.role,
+        apps: res.apps || [],
       });
     } catch (err: any) {
       toast.error(err.message || 'Failed to load member access');

@@ -49,9 +49,9 @@ let cachedConfig: PaymentGatewayConfig | null = null;
 export async function getPaymentConfig(): Promise<PaymentGatewayConfig> {
   if (cachedConfig) return cachedConfig;
   try {
-    const res = await api.get<{ data?: PaymentGatewayConfig; success: boolean }>('/billing/config');
-    if (res.data) {
-      cachedConfig = res.data;
+    const res = await api.get<PaymentGatewayConfig>('/billing/config');
+    if (res) {
+      cachedConfig = res;
       return cachedConfig;
     }
   } catch {

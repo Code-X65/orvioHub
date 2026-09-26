@@ -37,16 +37,8 @@ export const ONBOARDING_STATUS = {
 
 export type OnboardingStatus = (typeof ONBOARDING_STATUS)[keyof typeof ONBOARDING_STATUS];
 
-export const AVAILABLE_MODULES = [
-  'customers',
-  'sales',
-  'inventory',
-  'finance',
-  'hr',
-  'projects',
-] as const;
-
-export type ModuleId = (typeof AVAILABLE_MODULES)[number];
+// Internal feature-module identifiers, distinct from database-backed products.
+export type ModuleId = 'customers' | 'sales' | 'inventory' | 'finance' | 'hr' | 'projects';
 
 export const MODULE_METADATA: Record<
   ModuleId,
@@ -297,53 +289,6 @@ export const AUDIT_EVENTS = {
 } as const;
 
 export type AuditEventType = (typeof AUDIT_EVENTS)[keyof typeof AUDIT_EVENTS];
-
-export const PRODUCT_CATALOG = {
-  inventory: {
-    key: 'inventory',
-    name: 'Inventory Management',
-    tagline: 'Multi-location inventory, stock control and point of sale',
-    color: '#D97706',
-    allowedRedirectUris: ['http://localhost:5173', 'https://inventory.orviohub.com'],
-  },
-  taskmanagement: {
-    key: 'taskmanagement',
-    name: 'Task Management',
-    tagline: 'Projects, tasks and team collaboration',
-    color: '#4F46E5',
-    allowedRedirectUris: ['http://localhost:5173', 'https://taskmanagement.orviohub.com'],
-  },
-  hub: {
-    key: 'hub',
-    name: 'orvioHub',
-    tagline: 'Unified Business Operations Platform',
-    color: '#4F46E5',
-    allowedRedirectUris: ['http://localhost:5173', 'http://localhost:3000', 'https://hub.orvio.com', 'https://app.orviohub.com'],
-  },
-  finance: {
-    key: 'finance',
-    name: 'orvioFinance',
-    tagline: 'Invoicing, Payments & Financial Accounting',
-    color: '#059669',
-    allowedRedirectUris: ['http://localhost:5173', 'https://finance.orvio.com'],
-  },
-  retail: {
-    key: 'retail',
-    name: 'orvioRetail',
-    tagline: 'Point of Sale & Real-time Inventory',
-    color: '#D97706',
-    allowedRedirectUris: ['http://localhost:5173', 'https://pos.orvio.com', 'https://retail.orvio.com'],
-  },
-  people: {
-    key: 'people',
-    name: 'orvioPeople',
-    tagline: 'Payroll, HR & Employee Directory',
-    color: '#7C3AED',
-    allowedRedirectUris: ['http://localhost:5173', 'https://people.orvio.com', 'https://hr.orvio.com'],
-  },
-} as const;
-
-export type ProductKey = keyof typeof PRODUCT_CATALOG;
 
 export const INVITATION_EXPIRY_DAYS = 7;
 

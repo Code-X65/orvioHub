@@ -164,11 +164,6 @@ describe('Password Strength & 2FA (TOTP) Test Suite', () => {
           updatedAt: Date.now(),
         },
       });
-      dataService.createSession = async () => ({
-        refreshToken: 'refresh_strong_1',
-        expiresAt: Date.now() + 604800000,
-      });
-
       const res = await app.inject({
         method: 'POST',
         url: '/api/v1/auth/signup',
@@ -182,8 +177,8 @@ describe('Password Strength & 2FA (TOTP) Test Suite', () => {
       assert.equal(res.statusCode, 201);
       const body = JSON.parse(res.payload);
       assert.equal(body.success, true);
-      assert.equal(body.data.user.email, 'strong@example.com');
-      assert.ok(body.data.token);
+      assert.equal(body.message, 'A link to activate your account has been emailed to the address provided.');
+      assert.equal(body.data, undefined);
     });
   });
 
@@ -381,7 +376,7 @@ describe('Password Strength & 2FA (TOTP) Test Suite', () => {
       assert.equal(body.success, true);
       assert.equal(body.data.user.email, 'active2fa@example.com');
       assert.ok(body.data.token);
-      assert.equal(body.data.refreshToken, 'refresh_after_2fa');
+      assert.equal(body.data.refreshToken, undefined);
       assert.equal(body.data.usedBackupCode, false);
     });
 

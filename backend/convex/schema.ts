@@ -19,13 +19,19 @@ export default defineSchema({
     emailVerified: v.boolean(),
     emailVerifiedAt: v.optional(v.number()),
     emailVerificationToken: v.optional(v.string()),
+    emailVerificationTokenHash: v.optional(v.string()),
+    emailVerificationTokenUsed: v.optional(v.boolean()),
     emailVerificationExpiresAt: v.optional(v.number()),
     emailVerificationCode: v.optional(v.string()),
     emailVerificationCodeExpiresAt: v.optional(v.number()),
+    failedEmailVerificationAttempts: v.optional(v.number()),
     passwordResetToken: v.optional(v.string()),
     passwordResetExpiresAt: v.optional(v.number()),
     status: v.optional(
       v.union(
+        v.literal("pending_email_verification"),
+        v.literal("pending_profile_setup"),
+        v.literal("pending"),
         v.literal("ACTIVE"),
         v.literal("INACTIVE"),
         v.literal("SUSPENDED"),
@@ -101,6 +107,7 @@ export default defineSchema({
     personalOnboardingCompleted: v.optional(v.boolean()),
     lastLoginIp: v.optional(v.string()),
     totalLoginCount: v.optional(v.number()),
+    welcomeEmailSent: v.optional(v.boolean()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -162,19 +169,27 @@ export default defineSchema({
 
   sessions: defineTable({
     userId: v.id("users"),
+    // Hashes are deliberately the only persisted representation of bearer
+    // credentials. A database read must never be enough to impersonate a user.
     sessionHash: v.optional(v.string()),
     refreshToken: v.optional(v.string()),
+    replacedByToken: v.optional(v.string()),
     deviceId: v.optional(v.string()),
     deviceName: v.optional(v.string()),
     authenticationMethod: v.optional(v.string()),
     mfaVerified: v.optional(v.boolean()),
+    rememberMe: v.optional(v.boolean()),
     tokenVersion: v.number(),
     userAgent: v.optional(v.string()),
     ipAddress: v.optional(v.string()),
     lastActiveAt: v.optional(v.number()),
     expiresAt: v.number(),
+    absoluteExpiresAt: v.optional(v.number()),
     revokedAt: v.optional(v.number()),
-    replacedByToken: v.optional(v.string()),
+    revocationReason: v.optional(v.string()),
+    replacedBySessionHash: v.optional(v.string()),
+    replacedBySessionId: v.optional(v.id("sessions")),
+    replacedSessionId: v.optional(v.id("sessions")),
     lastVisitedUrl: v.optional(v.string()),
     lastVisitedSubdomain: v.optional(v.string()),
     lastVisitedAt: v.optional(v.number()),
@@ -182,7 +197,6 @@ export default defineSchema({
     updatedAt: v.number(),
   })
     .index("by_sessionHash", ["sessionHash"])
-    .index("by_refreshToken", ["refreshToken"])
     .index("by_userId", ["userId"])
     .index("by_expiresAt", ["expiresAt"]),
 
@@ -311,6 +325,9 @@ export default defineSchema({
 
   workspaces: defineTable({
     organizationId: v.optional(v.id("organizations")),
+    // Transitional provenance only. New code must never use this as a parent
+    // relationship; it allows one-time organization → workspace reconciliation.
+    legacyOrganizationId: v.optional(v.string()),
     name: v.string(),
     displayName: v.optional(v.string()),
     slug: v.string(),
@@ -334,6 +351,8 @@ export default defineSchema({
     phoneVerificationPurpose: v.optional(v.string()),
     country: v.optional(v.string()),
     state: v.optional(v.string()),
+    stateCode: v.optional(v.string()),
+    lga: v.optional(v.string()),
     city: v.optional(v.string()),
     addressLine1: v.optional(v.string()),
     addressLine2: v.optional(v.string()),
@@ -349,6 +368,12 @@ export default defineSchema({
     suspendedBy: v.optional(v.string()),
     suspensionReason: v.optional(v.string()),
     suspensionNotes: v.optional(v.string()),
+    archivedAt: v.optional(v.number()),
+    archivedBy: v.optional(v.string()),
+    restoredAt: v.optional(v.number()),
+    restoredBy: v.optional(v.string()),
+    deletionCancelledAt: v.optional(v.number()),
+    deletionReason: v.optional(v.string()),
     deletionRequestedAt: v.optional(v.number()),
     deletionScheduledAt: v.optional(v.number()),
     deletedAt: v.optional(v.number()),
@@ -388,6 +413,16 @@ export default defineSchema({
     updatedAt: v.number(),
   }).index("by_workspace", ["workspaceId"]),
 
+  workspaceMigrationRecords: defineTable({
+    legacyOrganizationId: v.id("organizations"),
+    workspaceId: v.optional(v.id("workspaces")),
+    status: v.string(), // "promoted" | "needs_resolution"
+    details: v.optional(v.any()),
+    migratedAt: v.number(),
+  })
+    .index("by_legacy_organization", ["legacyOrganizationId"])
+    .index("by_status", ["status"]),
+
   workspaceBranding: defineTable({
     workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
     logoUrl: v.optional(v.string()),
@@ -407,6 +442,7 @@ export default defineSchema({
     status: v.string(),
     defaultRole: v.optional(v.string()),
     role: v.string(),
+    branchIds: v.optional(v.array(v.id("branches"))),
     invitedBy: v.optional(v.id("users")),
     invitedAt: v.optional(v.number()),
     acceptedAt: v.optional(v.number()),
@@ -437,6 +473,13 @@ export default defineSchema({
     ),
     isVisibleToUsers: v.optional(v.boolean()),
     isActivatable: v.optional(v.boolean()),
+    // Canonical registry controls. Legacy visibility/status fields remain while
+    // existing rows are migrated by seedDefaultProducts.
+    isActive: v.optional(v.boolean()),
+    isListed: v.optional(v.boolean()),
+    requiredPlan: v.optional(v.string()),
+    orderIndex: v.optional(v.number()),
+    metadata: v.optional(v.any()),
     isBeta: v.optional(v.boolean()),
     isFeatured: v.optional(v.boolean()),
     displayOrder: v.optional(v.number()),
@@ -449,7 +492,8 @@ export default defineSchema({
     .index("by_key", ["key"])
     .index("by_status", ["status"])
     .index("by_order", ["displayOrder"])
-    .index("by_visible_status", ["isVisibleToUsers", "status"]),
+    .index("by_visible_status", ["isVisibleToUsers", "status"])
+    .index("by_active_listed", ["isActive", "isListed"]),
 
   productNotifyList: defineTable({
     productKey: v.string(),
@@ -531,6 +575,8 @@ export default defineSchema({
   workspaceEntitlements: defineTable({
     workspaceId: v.union(v.id("workspaces"), v.id("organizations"), v.string()),
     planId: v.string(),
+    planKey: v.optional(v.string()),
+    source: v.optional(v.string()),
     featureKey: v.string(),
     limitValue: v.optional(v.number()),
     limitType: v.union(v.literal("fixed"), v.literal("unlimited"), v.literal("boolean")),
@@ -596,6 +642,8 @@ export default defineSchema({
     trialEnd: v.optional(v.number()),
     trialEndsAt: v.optional(v.number()),
     gracePeriodEnd: v.optional(v.number()),
+    trialConvertedAt: v.optional(v.number()),
+    trialStatus: v.optional(v.string()),
     paymentMethod: v.optional(v.union(v.literal("bank_transfer"), v.literal("paystack"), v.literal("flutterwave"), v.literal("manual"))),
     paystackCustomerCode: v.optional(v.string()),
     paystackSubscriptionCode: v.optional(v.string()),
@@ -609,6 +657,10 @@ export default defineSchema({
     cancelAtPeriodEnd: v.optional(v.boolean()),
     activatedAt: v.optional(v.number()),
     cancelledAt: v.optional(v.number()),
+    cancelReason: v.optional(v.string()),
+    cancellationEffectiveAt: v.optional(v.number()),
+    cancellationRequestedAt: v.optional(v.number()),
+    cancellationRequestedBy: v.optional(v.union(v.id("users"), v.string())),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -658,6 +710,24 @@ export default defineSchema({
     ),
     createdAt: v.number(),
     updatedAt: v.optional(v.number()),
+    amountDue: v.optional(v.number()),
+    amountPaid: v.optional(v.number()),
+    amountSubtotal: v.optional(v.number()),
+    totalAmount: v.optional(v.number()),
+    taxAmount: v.optional(v.number()),
+    discountAmount: v.optional(v.number()),
+    billingInterval: v.optional(v.string()),
+    billingPeriodStart: v.optional(v.number()),
+    billingPeriodEnd: v.optional(v.number()),
+    billingSnapshot: v.optional(v.any()),
+    invoiceType: v.optional(v.string()),
+    issueDate: v.optional(v.number()),
+    lineItems: v.optional(v.any()),
+    pdfGenerationStatus: v.optional(v.string()),
+    planKey: v.optional(v.string()),
+    provider: v.optional(v.string()),
+    providerReference: v.optional(v.string()),
+    providerTransactionId: v.optional(v.string()),
   })
     .index("by_organizationId", ["organizationId"])
     .index("by_workspace", ["workspaceId"])
@@ -699,6 +769,9 @@ export default defineSchema({
     ),
     createdAt: v.number(),
     completedAt: v.optional(v.number()),
+    paidAt: v.optional(v.number()),
+    providerTransactionId: v.optional(v.string()),
+    updatedAt: v.optional(v.number()),
   })
     .index("by_organizationId", ["organizationId"])
     .index("by_userId", ["userId"])
@@ -753,6 +826,9 @@ export default defineSchema({
     role: v.string(), // e.g. "inventory_owner", "sales_attendant", "stock_manager"
     permissions: v.array(v.string()),
     branchIds: v.optional(v.array(v.id("branches"))),
+    // Category keys for the Inventory catalog. Absent and ["all"] both mean
+    // unrestricted access so existing members keep their current access.
+    catalogScope: v.optional(v.array(v.string())),
     status: v.string(),
     createdAt: v.number(),
     updatedAt: v.number(),
@@ -777,10 +853,12 @@ export default defineSchema({
           productKey: v.string(),
           appRole: v.string(),
           branchIds: v.array(v.string()),
+          catalogScope: v.optional(v.array(v.string())),
         })
       )
     ),
     branchIds: v.optional(v.array(v.id("branches"))),
+    catalogScope: v.optional(v.array(v.string())),
     tokenHash: v.string(),
     status: v.string(), // "pending" | "accepted" | "declined" | "expired" | "revoked"
     invitedBy: v.id("users"),
@@ -1003,6 +1081,8 @@ export default defineSchema({
     channel: v.union(v.literal("IN_APP"), v.literal("EMAIL"), v.literal("SMS"), v.literal("WHATSAPP")),
     status: v.union(v.literal("UNREAD"), v.literal("READ"), v.literal("ARCHIVED")),
     readAt: v.optional(v.number()),
+    category: v.optional(v.string()),
+    priority: v.optional(v.string()),
     createdAt: v.number(),
   })
     .index("by_userId", ["userId"])
@@ -1018,6 +1098,33 @@ export default defineSchema({
   })
     .index("by_userId", ["userId"])
     .index("by_user_and_category", ["userId", "category"]),
+
+  // Workspace-scoped outbound integration endpoints. Secrets are returned only
+  // at creation time by the API and are never included in event payloads.
+  webhookEndpoints: defineTable({
+    workspaceId: v.id("workspaces"),
+    url: v.string(),
+    secret: v.string(),
+    eventTypes: v.array(v.string()),
+    status: v.union(v.literal("active"), v.literal("disabled")),
+    createdBy: v.id("users"),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_workspace", ["workspaceId"]),
+
+  webhookDeliveries: defineTable({
+    endpointId: v.id("webhookEndpoints"),
+    workspaceId: v.id("workspaces"),
+    eventId: v.string(),
+    eventType: v.string(),
+    payload: v.any(),
+    status: v.union(v.literal("pending"), v.literal("delivered"), v.literal("failed")),
+    attemptCount: v.number(),
+    responseStatus: v.optional(v.number()),
+    lastError: v.optional(v.string()),
+    createdAt: v.number(),
+    deliveredAt: v.optional(v.number()),
+  }).index("by_endpoint", ["endpointId"]).index("by_workspace", ["workspaceId"]),
 
   onboardingProgress: defineTable({
     userId: v.id("users"),
@@ -1208,6 +1315,7 @@ export default defineSchema({
     discountAmount: v.number(),
     totalAmount: v.number(),
     paymentMethod: v.union(
+      v.literal("USSD"),
       v.literal("CASH"),
       v.literal("CARD"),
       v.literal("TRANSFER"),
@@ -1216,6 +1324,8 @@ export default defineSchema({
     customerName: v.optional(v.string()),
     customerPhone: v.optional(v.string()),
     notes: v.optional(v.string()),
+    status: v.optional(v.string()),
+    receiptSnapshot: v.optional(v.any()),
     createdAt: v.number(),
   })
     .index("by_workspaceId", ["workspaceId"])
@@ -1224,24 +1334,63 @@ export default defineSchema({
 
   inventoryStockMovements: defineTable({
     workspaceId: v.id("workspaces"),
-    productId: v.id("inventoryProducts"),
-    type: v.union(
+    branchId: v.optional(v.union(v.id("branches"), v.string())),
+    productId: v.union(v.id("inventoryProducts"), v.id("products"), v.string()),
+    quantity: v.number(), // positive for in, negative for out
+    unitCost: v.optional(v.number()),
+    totalCost: v.optional(v.number()),
+    balanceBefore: v.optional(v.number()),
+    balanceAfter: v.optional(v.number()),
+    type: v.optional(v.union(
       v.literal("INITIAL"),
       v.literal("SALE"),
       v.literal("RESTOCK"),
       v.literal("ADJUSTMENT"),
-      v.literal("RETURN")
-    ),
-    quantity: v.number(), // Negative for reductions, positive for additions
-    balanceBefore: v.number(),
-    balanceAfter: v.number(),
+      v.literal("RETURN"),
+      v.literal("OPENING_STOCK"),
+      v.literal("opening_stock")
+    )),
+    movementType: v.optional(v.string()), // "opening_stock", "purchase", "sale", "adjustment", etc.
     reason: v.optional(v.string()),
-    referenceId: v.optional(v.string()),
-    actorUserId: v.id("users"),
+    notes: v.optional(v.string()),
+    referenceType: v.optional(v.string()), // "onboarding", "purchase", "sale", "adjustment"
+    referenceId: v.optional(v.string()), // e.g., onboarding flow id, purchase id, sale id
+    actorUserId: v.optional(v.id("users")),
+    userId: v.optional(v.id("users")),
+    deviceId: v.optional(v.string()),
     createdAt: v.number(),
   })
     .index("by_workspaceId", ["workspaceId"])
-    .index("by_workspace_and_product", ["workspaceId", "productId"]),
+    .index("by_workspace_and_product", ["workspaceId", "productId"])
+    .index("by_branch_product", ["branchId", "productId"])
+    .index("by_product", ["productId"])
+    .index("by_movement_type", ["movementType"])
+    .index("by_reference", ["referenceType", "referenceId"]),
+
+  stockMovements: defineTable({
+    workspaceId: v.id("workspaces"),
+    branchId: v.optional(v.union(v.id("branches"), v.string())),
+    productId: v.union(v.id("inventoryProducts"), v.id("products"), v.string()),
+    quantity: v.number(), // positive for in, negative for out
+    unitCost: v.optional(v.number()),
+    totalCost: v.optional(v.number()),
+    balanceBefore: v.optional(v.number()),
+    balanceAfter: v.optional(v.number()),
+    movementType: v.string(), // "opening_stock", "purchase", "sale", "adjustment", etc.
+    reason: v.optional(v.string()),
+    notes: v.optional(v.string()),
+    referenceType: v.optional(v.string()), // "onboarding", "purchase", "sale", "adjustment"
+    referenceId: v.optional(v.string()), // e.g., onboarding flow id, purchase id, sale id
+    userId: v.optional(v.id("users")),
+    actorUserId: v.optional(v.id("users")),
+    deviceId: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_workspaceId", ["workspaceId"])
+    .index("by_branch_product", ["branchId", "productId"])
+    .index("by_product", ["productId"])
+    .index("by_movement_type", ["movementType"])
+    .index("by_reference", ["referenceType", "referenceId"]),
 
   receiptSettings: defineTable({
     workspaceId: v.string(),
@@ -1664,10 +1813,11 @@ export default defineSchema({
     userId: v.id("users"),
     applicationKey: v.string(), // "inventory", "task_management", etc.
     role: v.string(), // "inventory_owner" | "inventory_manager" | "cashier" | "stock_manager" | "accountant" | "inventory_viewer"
-    permissions: v.array(v.string()),
+    appRole: v.optional(v.string()),
+    permissions: v.optional(v.array(v.string())),
     status: v.union(v.literal("active"), v.literal("suspended"), v.literal("removed")),
-    assignedBy: v.id("users"),
-    assignedAt: v.number(),
+    assignedBy: v.optional(v.id("users")),
+    assignedAt: v.optional(v.number()),
     suspendedAt: v.optional(v.number()),
     suspensionReason: v.optional(v.string()),
     removedAt: v.optional(v.number()),

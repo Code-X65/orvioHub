@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams, useParams } from 'react-router-dom';
 import { api } from '@/lib/api';
+import { safeFetch, handleApiError } from '@/lib/error-handler';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { useLocationStore } from '@/stores/useLocationStore';
 import { Spinner } from '@/components/ui/spinner';
@@ -45,13 +46,12 @@ interface OrgInfo {
 
 export const BranchSetupPage: React.FC = () => {
   const navigate = useNavigate();
-  const params = useParams<{ orgId: string; appKey: string }>();
+  const params = useParams<{ workspaceId: string; appKey: string }>();
   const [searchParams] = useSearchParams();
   const { currentWorkspace } = useWorkspaceStore();
   const { states, fetchStates } = useLocationStore();
 
-  const orgId =
-    params.orgId || searchParams.get('orgId') || currentWorkspace?.organizationId || currentWorkspace?.id;
+  const orgId = params.workspaceId || searchParams.get('workspaceId') || currentWorkspace?.id;
   const appKey = params.appKey || searchParams.get('app') || 'inventory';
 
   const [org, setOrg] = useState<OrgInfo | null>(null);
@@ -84,17 +84,31 @@ export const BranchSetupPage: React.FC = () => {
         { value: 'Enugu', label: 'Enugu' },
       ];
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (signal?: AbortSignal) => {
     if (!orgId) return;
     setLoading(true);
     try {
       const [orgRes, subRes, branchesRes] = await Promise.all([
-        api.get<any>(`/organizations/${orgId}`).catch(() => null),
-        api.get<any>(`/organizations/${orgId}/subscription`).catch(() => null),
-        api.get<any>(`/organizations/${orgId}/branches`).catch(() => ({ branches: [] })),
+        safeFetch(api.get<any>(`/workspaces/${orgId}`, { signal }), {
+          context: 'load organization details',
+          fallback: null,
+          showError: false,
+        }),
+        safeFetch(api.get<any>(`/workspaces/${orgId}/subscription`, { signal }), {
+          context: 'load organization subscription',
+          fallback: null,
+          showError: false,
+        }),
+        safeFetch(api.get<any>(`/workspaces/${orgId}/branches`, { signal }), {
+          context: 'load organization branches',
+          fallback: { branches: [] },
+          showError: false,
+        }),
       ]);
 
-      const orgData = orgRes?.organization || orgRes;
+      if (signal?.aborted) return;
+
+      const orgData = orgRes?.workspace || orgRes;
       const planKey = subRes?.subscription?.planKey || subRes?.planKey || 'free_trial';
 
       setOrg({
@@ -107,20 +121,25 @@ export const BranchSetupPage: React.FC = () => {
         ? branchesRes
         : Array.isArray(branchesRes?.branches)
         ? branchesRes.branches
-        : Array.isArray(branchesRes?.data?.branches)
-        ? branchesRes.data.branches
         : [];
 
       setBranches(rawBranches.filter((b) => b.status !== 'deleted' && b.status !== 'archived'));
-    } catch (err) {
-      toast.error('Failed to load branch data.');
+    } catch (err: any) {
+      if (err?.name === 'AbortError' || signal?.aborted) return;
+      handleApiError(err, 'load branch data');
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) {
+        setLoading(false);
+      }
     }
   }, [orgId]);
 
   useEffect(() => {
-    loadData();
+    const controller = new AbortController();
+    loadData(controller.signal);
+    return () => {
+      controller.abort();
+    };
   }, [loadData]);
 
   const isFreeTrialPlan = org?.planKey === 'free_trial' || org?.planKey === 'free';
@@ -145,7 +164,7 @@ export const BranchSetupPage: React.FC = () => {
         .filter(Boolean)
         .join(', ');
 
-      await api.post(`/organizations/${org.id}/branches`, {
+      await api.post(`/workspaces/${org.id}/branches`, {
         name: branchName.trim(),
         phone: branchPhone.trim() || undefined,
         street: branchStreet.trim() || undefined,
@@ -470,7 +489,7 @@ export const BranchSetupPage: React.FC = () => {
         {/* Navigation actions */}
         <div className="flex items-center justify-between pt-4 border-t border-white/5">
           <button
-            onClick={() => navigate(`/orgs/${orgId}/apps`)}
+            onClick={() => navigate(`/workspaces/${orgId}/apps`)}
             className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
           >
             ← Back to Apps

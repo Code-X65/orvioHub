@@ -24,6 +24,9 @@ export const adminPlatformRoutes: FastifyPluginAsync = async (fastify) => {
     '/stats',
     {
       preHandler: [requireAdminAuth],
+      config: {
+        rateLimit: { max: 30, timeWindow: '1 minute' },
+      },
       schema: {
         tags: ['Superadmin'],
         summary: 'Platform-wide statistics and metrics',
@@ -78,6 +81,9 @@ export const adminPlatformRoutes: FastifyPluginAsync = async (fastify) => {
     '/users',
     {
       preHandler: [requireAdminAuth],
+      config: {
+        rateLimit: { max: 30, timeWindow: '1 minute' },
+      },
       schema: {
         tags: ['Superadmin'],
         summary: 'List users with search and pagination',
@@ -124,6 +130,9 @@ export const adminPlatformRoutes: FastifyPluginAsync = async (fastify) => {
     '/users/:userId',
     {
       preHandler: [requireAdminAuth],
+      config: {
+        rateLimit: { max: 30, timeWindow: '1 minute' },
+      },
       schema: {
         tags: ['Superadmin'],
         summary: 'Update user account status or role',
@@ -172,6 +181,9 @@ export const adminPlatformRoutes: FastifyPluginAsync = async (fastify) => {
     '/workspaces',
     {
       preHandler: [requireAdminAuth],
+      config: {
+        rateLimit: { max: 30, timeWindow: '1 minute' },
+      },
       schema: {
         tags: ['Superadmin'],
         summary: 'List workspaces across the platform',

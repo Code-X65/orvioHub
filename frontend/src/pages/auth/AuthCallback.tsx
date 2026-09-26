@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '@/stores/useAuthStore';
-import { api } from '@/lib/api';
+import { authManager } from '@/lib/auth-manager';
 import { AuthResponse } from '@/lib/types';
 import { useHost } from '@/host/useHost';
 import { Loader2 } from 'lucide-react';
@@ -23,14 +23,12 @@ export const AuthCallback: React.FC = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const host = useHost();
-  const { setAuthData, refreshSession } = useAuthStore();
+  const { setAuthData } = useAuthStore();
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
     const processCallback = async () => {
       const errorParam = searchParams.get('error');
-      const tokenParam = searchParams.get('token');
-      const refreshTokenParam = searchParams.get('refreshToken');
 
       if (errorParam) {
         const friendlyMessage = ERROR_MESSAGES[errorParam] || 'Social authentication failed. Please try again.';
@@ -40,31 +38,21 @@ export const AuthCallback: React.FC = () => {
         return;
       }
 
-      if (tokenParam) {
+      if (!errorParam) {
         try {
-          // Set access & refresh tokens for initial hydration
-          localStorage.setItem('orvio_auth_token', tokenParam);
-          if (refreshTokenParam) {
-            localStorage.setItem('orvio_refresh_token', refreshTokenParam);
+          const meResponse = await authManager.validateSession();
+          if (!meResponse || !meResponse.user) {
+            throw new Error('Failed to validate session');
           }
-
-          // Hydrate user session from /me
-          const meResponse = await api.get<{
-            user: any;
-            onboarding: any;
-            memberships?: any[];
-          }>('/auth/me');
 
           const authResponse: AuthResponse = {
             user: meResponse.user,
-            token: tokenParam,
-            refreshToken: refreshTokenParam || undefined,
+            token: authManager.getAccessToken() || '',
             onboarding: meResponse.onboarding,
             memberships: meResponse.memberships,
           };
 
           setAuthData(authResponse);
-          await refreshSession();
 
           toast.success(`Welcome back, ${meResponse.user.name || 'there'}!`);
 
@@ -74,7 +62,7 @@ export const AuthCallback: React.FC = () => {
             return;
           } else {
             const step = meResponse.onboarding?.currentStep;
-            if (step === 'ORGANIZATION_CREATION' || step === 'ACCOUNT_CREATED' || step === 'EMAIL_VERIFIED') {
+            if (step === 'ORGANIZATION_CREATION' || step === 'ACCOUNT_CREATED' || step === 'EMAIL_VERIFICATION' || (step as string) === 'EMAIL_VERIFIED') {
               navigate('/onboarding', { replace: true });
             } else if (step === 'ORGANIZATION_CONFIGURED' || step === 'MODULE_SELECTION') {
               navigate('/onboarding/modules', { replace: true });
@@ -95,12 +83,10 @@ export const AuthCallback: React.FC = () => {
         return;
       }
 
-      // No token and no error
-      navigate('/login', { replace: true });
     };
 
     processCallback();
-  }, [searchParams, navigate, setAuthData, refreshSession, host.environment]);
+  }, [searchParams, navigate, setAuthData, host.environment]);
 
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center space-y-4 px-4">

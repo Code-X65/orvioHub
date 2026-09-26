@@ -664,17 +664,27 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       const currentSessionId = request.sessionId || (request.user as any)?.sessionId;
-      const rawSessions = await dataService.getUserSessions(request.user.id);
+      const rawSessions = await dataService.getUserSessions(request.user.id, currentSessionId);
       const sessions = rawSessions.map((s: any) => {
         const id = s.id || s._id;
         const parsedUa = parseUserAgent(s.userAgent, s.ipAddress);
         return {
-          ...s,
           id,
+          deviceId: s.deviceId,
           deviceName: s.deviceName || parsedUa.deviceName,
           browser: parsedUa.browser,
           operatingSystem: parsedUa.operatingSystem,
           approximateLocation: parsedUa.approximateLocation,
+          ipAddress: s.ipAddress,
+          authenticationMethod: s.authenticationMethod,
+          mfaVerified: s.mfaVerified,
+          createdAt: s.createdAt,
+          lastActiveAt: s.lastActiveAt || s.createdAt,
+          expiresAt: s.expiresAt,
+          absoluteExpiresAt: s.absoluteExpiresAt || s.expiresAt,
+          isRevoked: Boolean(s.isRevoked),
+          isExpired: Boolean(s.isExpired),
+          revocationReason: s.revocationReason,
           isCurrent: Boolean(
             currentSessionId &&
               (String(id) === String(currentSessionId) ||
@@ -684,7 +694,10 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
       });
       return reply.send({
         success: true,
-        data: { sessions },
+        data: {
+          sessions,
+          currentSessionId: currentSessionId ? String(currentSessionId) : null,
+        },
       });
     }
   );
@@ -1977,9 +1990,13 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
           type: 'object',
           properties: {
             phone: { type: 'string' },
+            phoneVisibility: { type: 'string', enum: ['private', 'workspace'] },
             country: { type: 'string' },
             state: { type: 'string' },
+            stateCode: { type: 'string' },
+            lga: { type: 'string' },
             city: { type: 'string' },
+            timezone: { type: 'string' },
             phoneUsedForRecovery: { type: 'boolean' },
             phoneUsedForMfa: { type: 'boolean' },
           },
@@ -1991,10 +2008,12 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
         const body = request.body as any;
         await dataService.updateUserContact(request.user.id, body, request.ip, request.headers['user-agent']);
         const updated = await dataService.getUserContact(request.user.id);
+        const freshUser = await dataService.getUserById(request.user.id);
         return reply.send({
           success: true,
           message: 'Contact details updated successfully.',
           data: updated,
+          user: toPublicUser(freshUser),
         });
       } catch (err: any) {
         const status = err.message?.includes('PHONE_NOT_VERIFIED') ? 403 : 400;
@@ -2193,5 +2212,3 @@ export const userRoutes: FastifyPluginAsync = async (fastify) => {
     }
   );
 };
-
-

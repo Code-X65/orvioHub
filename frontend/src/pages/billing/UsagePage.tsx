@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { api } from "@/lib/api";
+import { safeFetch, handleApiError } from "@/lib/error-handler";
 import {
   Building2,
   Layers,
@@ -160,18 +161,33 @@ export const UsagePage: React.FC = () => {
   const effectiveOrgId = currentWorkspace?.id || workspaces[0]?.workspace?.id;
   const effectiveOrgName = currentWorkspace?.name || workspaces[0]?.workspace?.name || "Your Business";
 
-  const fetchUsage = async () => {
+  const fetchUsage = async (signal?: AbortSignal) => {
     if (!effectiveOrgId) return;
     try {
-      const res: any = await api.get(`/usage?workspaceId=${effectiveOrgId}&organizationId=${effectiveOrgId}`).catch(() => null);
+      const res = await safeFetch(
+        api.get<any>(`/usage?workspaceId=${effectiveOrgId}&organizationId=${effectiveOrgId}`, { signal }),
+        {
+          context: 'load organization usage metrics',
+          fallback: null,
+          showError: false,
+        }
+      );
+      if (signal?.aborted) return;
       if (res?.data) {
-        setLiveUsage(res.data);
+        setLiveUsage(res);
       }
-    } catch {}
+    } catch (err: any) {
+      if (err?.name === 'AbortError' || signal?.aborted) return;
+      handleApiError(err, 'load organization usage', { showError: false });
+    }
   };
 
   useEffect(() => {
-    fetchUsage();
+    const controller = new AbortController();
+    fetchUsage(controller.signal);
+    return () => {
+      controller.abort();
+    };
   }, [effectiveOrgId]);
 
   const sub = currentWorkspace?.subscription;

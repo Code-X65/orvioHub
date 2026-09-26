@@ -15,6 +15,7 @@ import {
 
 interface SessionItem {
   id: string;
+  deviceId?: string;
   deviceName?: string;
   browser?: string;
   operatingSystem?: string;
@@ -23,12 +24,15 @@ interface SessionItem {
   authenticationMethod?: string;
   lastActiveAt?: number;
   createdAt: number;
+  expiresAt?: number;
+  absoluteExpiresAt?: number;
   isCurrent?: boolean;
   revokedAt?: number;
 }
 
 export const SessionsSettings: React.FC = () => {
   const [sessions, setSessions] = useState<SessionItem[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [isRevokingAll, setIsRevokingAll] = useState(false);
@@ -36,8 +40,14 @@ export const SessionsSettings: React.FC = () => {
   const fetchSessions = async () => {
     try {
       setIsLoading(true);
-      const res = await api.get<{ sessions: SessionItem[] }>('/users/me/sessions');
-      setSessions(res.sessions || []);
+      const res = await api.get<{ sessions: SessionItem[]; currentSessionId?: string | null }>('/users/me/sessions');
+      const activeCurrentId = res.currentSessionId || null;
+      setCurrentSessionId(activeCurrentId);
+      const items = (res.sessions || []).map((s) => ({
+        ...s,
+        isCurrent: Boolean(s.isCurrent || (activeCurrentId && String(s.id) === String(activeCurrentId))),
+      }));
+      setSessions(items);
     } catch {
       toast.error('Failed to load active sessions.');
     } finally {

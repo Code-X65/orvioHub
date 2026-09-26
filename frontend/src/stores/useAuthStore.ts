@@ -12,86 +12,22 @@ import {
 import { getOrCreateDeviceId } from '../lib/device';
 import { useWorkspaceStore } from './useWorkspaceStore';
 import { getLoginUrl } from '@orviohub/shared';
+import {
+  authManager,
+  saveStoredUser,
+} from '../lib/auth-manager';
 
 const REMEMBERED_ACCOUNTS_KEY = 'orvio_remembered_accounts';
-const STORED_USER_KEY = 'orvio_user';
 
-function getStoredUser(): User | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = localStorage.getItem(STORED_USER_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
 
-function saveStoredUser(user: User | null) {
-  if (typeof window === 'undefined') return;
-  try {
-    if (user) {
-      localStorage.setItem(STORED_USER_KEY, JSON.stringify(user));
-    } else {
-      localStorage.removeItem(STORED_USER_KEY);
-    }
-  } catch {
-    // Ignore quota errors
-  }
-}
-
-// Extract cross-subdomain handoff token from URL if present (e.g. from localhost:5173 to inventory.localhost:5173)
-function extractHandoffTokensFromUrl(): { token: string | null; refreshToken: string | null; user: User | null } {
-  if (typeof window === 'undefined') return { token: null, refreshToken: null, user: null };
-  try {
-    const urlParams = new URLSearchParams(window.location.search);
-    const authToken = urlParams.get('auth_token') || urlParams.get('token');
-    const refreshToken = urlParams.get('refresh_token') || urlParams.get('refreshToken');
-    const authUserRaw = urlParams.get('auth_user');
-
-    let parsedUser: User | null = null;
-    if (authUserRaw) {
-      try {
-        let userJson = authUserRaw;
-        try {
-          userJson = decodeURIComponent(authUserRaw);
-        } catch {}
-        parsedUser = JSON.parse(userJson);
-        if (parsedUser) {
-          saveStoredUser(parsedUser);
-        }
-      } catch {
-        // Ignore parse error
-      }
-      urlParams.delete('auth_user');
-    }
-
-    if (authToken) {
-      localStorage.setItem('orvio_auth_token', authToken);
-      if (refreshToken) {
-        localStorage.setItem('orvio_refresh_token', refreshToken);
-      }
-      urlParams.delete('auth_token');
-      urlParams.delete('token');
-      urlParams.delete('refresh_token');
-      urlParams.delete('refreshToken');
-      const cleanSearch = urlParams.toString() ? `?${urlParams.toString()}` : '';
-      const cleanUrl = `${window.location.pathname}${cleanSearch}${window.location.hash}`;
-      window.history.replaceState({}, document.title, cleanUrl);
-      return { token: authToken, refreshToken: refreshToken || null, user: parsedUser };
-    }
-  } catch {
-    // Ignore URL parse errors
-  }
-  return { token: null, refreshToken: null, user: null };
-}
-
-// Run immediately upon script execution
-extractHandoffTokensFromUrl();
 
 function getStoredRememberedAccounts(): RememberedAccount[] {
   try {
     const raw = localStorage.getItem(REMEMBERED_ACCOUNTS_KEY);
-    return raw ? JSON.parse(raw) : [];
+    const accounts = raw ? JSON.parse(raw) : [];
+    return Array.isArray(accounts)
+      ? accounts.map(({ token: _token, refreshToken: _refreshToken, ...account }) => account)
+      : [];
   } catch {
     return [];
   }
@@ -128,20 +64,28 @@ interface AuthState {
   switchAccount: (email: string) => boolean;
   logout: (redirectToLogin?: boolean) => Promise<void>;
   logoutAllAccounts: () => Promise<void>;
+  initializeAuth: () => Promise<void>;
   refreshSession: () => Promise<void>;
   setOnboardingStatus: (status: OnboardingState) => void;
 }
 
 let inFlightRefreshPromise: Promise<void> | null = null;
+// Every login or logout advances this value. A session check captures it before
+// awaiting I/O so an older result cannot overwrite newer authentication state.
+let authSessionGeneration = 0;
 
-const initialToken = typeof window !== 'undefined' ? localStorage.getItem('orvio_auth_token') : null;
-const initialUser = getStoredUser();
+function invalidateInFlightAuthOperations() {
+  authSessionGeneration += 1;
+  return authSessionGeneration;
+}
 
 export const useAuthStore = create<AuthState>((set, get) => ({
-  isInitialized: !!initialUser,
-  isAuthenticated: !!(initialToken && initialUser),
-  user: initialUser,
-  token: initialToken,
+  // Stored identity is presentation-only.  Authentication is established by
+  // the startup /auth/me request, never by localStorage.
+  isInitialized: false,
+  isAuthenticated: false,
+  user: null,
+  token: null,
   onboardingStatus: null,
   memberships: [],
   activeOrganizationId: typeof window !== 'undefined' ? localStorage.getItem('orvio_active_org_id') : null,
@@ -154,27 +98,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   setAuthData: (data, rememberAccount = true) => {
-    let token = get().token;
-    let refreshToken: string | undefined;
-
-    if ('token' in data && data.token) {
-      localStorage.setItem('orvio_auth_token', data.token);
-      token = data.token;
-      set({ token: data.token });
-    }
-
-    if ('refreshToken' in data && data.refreshToken) {
-      localStorage.setItem('orvio_refresh_token', data.refreshToken);
-      refreshToken = data.refreshToken;
-    }
+    // A newly established session is newer than every pending startup/focus
+    // validation. Make those results no-ops when they complete.
+    invalidateInFlightAuthOperations();
+    authManager.setTokens();
 
     const memberships = data.memberships || [];
-    const storedActiveOrgId = localStorage.getItem('orvio_active_org_id');
+    const storedActiveOrgId = typeof window !== 'undefined' ? localStorage.getItem('orvio_active_org_id') : null;
     const validActiveOrgId = memberships.some((m) => m.organization.id === storedActiveOrgId)
       ? storedActiveOrgId
       : memberships[0]?.organization.id || data.onboarding?.organization?.id || null;
 
-    if (validActiveOrgId) {
+    if (validActiveOrgId && typeof window !== 'undefined') {
       localStorage.setItem('orvio_active_org_id', validActiveOrgId);
     }
 
@@ -191,8 +126,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           name: data.user.name,
           displayName: data.user.displayName || data.user.name,
           avatarUrl: data.user.avatarUrl || data.user.avatar,
-          token: token || undefined,
-          refreshToken,
           lastLoginAt: Date.now(),
         },
         ...currentList,
@@ -200,25 +133,43 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       saveRememberedAccounts(updatedList);
       set({ rememberedAccounts: updatedList });
-    } else if (data.user) {
-      saveStoredUser(data.user);
     }
 
     set({
-      isAuthenticated: true,
       user: data.user,
       onboardingStatus: data.onboarding,
       memberships,
       activeOrganizationId: validActiveOrgId,
+      isAuthenticated: true,
       isInitialized: true,
     });
+  },
+
+  updateUser: (updates) => {
+    const currentUser = get().user;
+    if (!currentUser) return;
+    const updatedUser = { ...currentUser, ...updates };
+    saveStoredUser(updatedUser);
+    set({ user: updatedUser });
+  },
+
+  setMemberships: (memberships) => {
+    set({ memberships });
+  },
+
+  setActiveOrganizationId: (orgId) => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('orvio_active_org_id', orgId);
+    }
+    set({ activeOrganizationId: orgId });
   },
 
   addRememberedAccount: (account) => {
     const list = get().rememberedAccounts.filter(
       (a) => a.email.toLowerCase() !== account.email.toLowerCase()
     );
-    const updated = [account, ...list].slice(0, 5);
+    const { token: _token, refreshToken: _refreshToken, ...safeAccount } = account;
+    const updated = [safeAccount, ...list].slice(0, 5);
     saveRememberedAccounts(updated);
     set({ rememberedAccounts: updated });
   },
@@ -231,96 +182,37 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ rememberedAccounts: updated });
   },
 
-  switchAccount: (email) => {
-    const target = get().rememberedAccounts.find(
-      (a) => a.email.toLowerCase() === email.toLowerCase()
-    );
-    if (!target || !target.token) return false;
-
-    localStorage.setItem('orvio_auth_token', target.token);
-    if (target.refreshToken) {
-      localStorage.setItem('orvio_refresh_token', target.refreshToken);
-    }
-
-    const targetUser: User = {
-      id: target.id,
-      email: target.email,
-      name: target.name,
-      displayName: target.displayName,
-      avatarUrl: target.avatarUrl,
-      emailVerified: true,
-    };
-    saveStoredUser(targetUser);
-
-    set({
-      token: target.token,
-      isAuthenticated: true,
-      user: targetUser,
-    });
-
-    // Refresh session for full data
-    get().refreshSession();
-    return true;
-  },
-
-  setMemberships: (memberships) => {
-    const currentActiveId = get().activeOrganizationId;
-    const nextActiveId = memberships.some((m) => m.organization.id === currentActiveId)
-      ? currentActiveId
-      : memberships[0]?.organization.id || null;
-
-    if (nextActiveId) {
-      localStorage.setItem('orvio_active_org_id', nextActiveId);
-    }
-    set({ memberships, activeOrganizationId: nextActiveId });
-  },
-
-  setActiveOrganizationId: (orgId) => {
-    localStorage.setItem('orvio_active_org_id', orgId);
-    set({ activeOrganizationId: orgId });
-  },
-
-  updateUser: (updates) => {
-    const { user } = get();
-    if (user) {
-      const updatedUser = { ...user, ...updates };
-      saveStoredUser(updatedUser);
-      set({ user: updatedUser });
-
-      // Update remembered account info as well
-      const updatedAccounts = get().rememberedAccounts.map((acc) =>
-        acc.email.toLowerCase() === user.email.toLowerCase()
-          ? {
-              ...acc,
-              name: updatedUser.name || acc.name,
-              displayName: updatedUser.displayName || acc.displayName,
-              avatarUrl: updatedUser.avatarUrl || acc.avatarUrl,
-            }
-          : acc
-      );
-      saveRememberedAccounts(updatedAccounts);
-      set({ rememberedAccounts: updatedAccounts });
-    }
+  switchAccount: (_email) => {
+    // Credentials are never persisted for remembered profiles. Selecting one
+    // must go through the normal login flow rather than restoring a token.
+    return false;
   },
 
   logout: async (redirectToLogin: boolean = false) => {
+    // Invalidate before awaiting the backend so an older refresh cannot restore
+    // auth state while logout is in progress.
+    invalidateInFlightAuthOperations();
     const currentUser = get().user;
     try {
-      const refreshToken = localStorage.getItem('orvio_refresh_token');
       // Always invoke /auth/logout so the backend invalidates Convex session and sends Set-Cookie clearing headers
-      await api.post('/auth/logout', { refreshToken: refreshToken || undefined });
+      await api.post('/auth/logout', {});
     } catch {
       // Ignore network / token expiration errors during logout
     } finally {
-      localStorage.removeItem('orvio_auth_token');
-      localStorage.removeItem('orvio_refresh_token');
-      localStorage.removeItem('orvio_active_org_id');
-      localStorage.removeItem('orvio_active_workspace_id');
+      authManager.clearTokens();
+      api.invalidateCache();
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('orvio_active_org_id');
+        localStorage.removeItem('orvio_active_workspace_id');
+      }
       saveStoredUser(null);
 
       // Trigger cross-tab logout synchronization via localStorage event
       try {
-        localStorage.setItem('orvio_logout_sync', String(Date.now()));
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('orvio_logout_sync', String(Date.now()));
+          new BroadcastChannel('orvio-auth').postMessage({ type: 'logout' });
+        }
       } catch {
         // Safe fallback
       }
@@ -361,18 +253,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logoutAllAccounts: async () => {
+    invalidateInFlightAuthOperations();
     try {
-      if (localStorage.getItem('orvio_auth_token')) {
-        await api.post('/auth/logout-all');
-      }
+      await api.post('/auth/logout-all');
     } catch {
       // Ignore errors
     } finally {
-      localStorage.removeItem('orvio_auth_token');
-      localStorage.removeItem('orvio_refresh_token');
-      localStorage.removeItem('orvio_active_org_id');
-      localStorage.removeItem('orvio_active_workspace_id');
-      localStorage.removeItem(REMEMBERED_ACCOUNTS_KEY);
+      authManager.clearTokens();
+      api.invalidateCache();
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('orvio_active_org_id');
+        localStorage.removeItem('orvio_active_workspace_id');
+        localStorage.removeItem(REMEMBERED_ACCOUNTS_KEY);
+        localStorage.setItem('orvio_logout_sync', String(Date.now()));
+        new BroadcastChannel('orvio-auth').postMessage({ type: 'logout' });
+      }
       saveStoredUser(null);
 
       try {
@@ -394,57 +289,64 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
+  initializeAuth: async () => {
+    return get().refreshSession();
+  },
+
   refreshSession: async () => {
     if (inFlightRefreshPromise) {
       return inFlightRefreshPromise;
     }
 
-    inFlightRefreshPromise = (async () => {
-      extractHandoffTokensFromUrl();
-      const token = localStorage.getItem('orvio_auth_token');
-      const refreshToken = localStorage.getItem('orvio_refresh_token');
+    const requestGeneration = authSessionGeneration;
+    const isCurrentRequest = () => requestGeneration === authSessionGeneration;
 
+    inFlightRefreshPromise = (async () => {
       try {
-        const meData = await api.get<MeResponse>('/auth/me');
-        get().setAuthData(meData, true);
-      } catch (err: any) {
-        // /auth/me failed — try a silent token refresh before giving up.
-        // This handles cross-subdomain visits where localStorage is empty but the
-        // orvio_refresh_token cookie is still valid (e.g. landing on marketing
-        // surface after 15+ min with no localStorage token on that origin).
-        const storedRefresh = refreshToken || null;
-        if (storedRefresh || (!token && !refreshToken)) {
-          try {
-            const refreshRes = await fetch(`${(await import('../lib/api')).API_ORIGIN}/api/v1/auth/refresh`, {
-              method: 'POST',
-              credentials: 'include', // sends orvio_refresh_token cookie
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ refreshToken: storedRefresh || '' }),
-            });
-            if (refreshRes.ok) {
-              const json = await refreshRes.json();
-              if (json.success && json.data?.token) {
-                localStorage.setItem('orvio_auth_token', json.data.token);
-                if (json.data.refreshToken) {
-                  localStorage.setItem('orvio_refresh_token', json.data.refreshToken);
-                }
-                // Now re-fetch /auth/me with the new token
-                const meData = await api.get<MeResponse>('/auth/me');
-                get().setAuthData(meData, true);
-                return;
-              }
-            }
-          } catch {
-            // Silent refresh also failed — fall through to unauthenticated state
-          }
+        const meData = await authManager.validateSession(isCurrentRequest);
+        if (!isCurrentRequest()) return;
+        if (meData && meData.user) {
+          get().setAuthData(meData, true);
+          return;
         }
 
         // Silent refresh and /auth/me both failed — session is invalidated/logged out.
         // Purge all stale local tokens on this subdomain
-        localStorage.removeItem('orvio_auth_token');
-        localStorage.removeItem('orvio_refresh_token');
-        localStorage.removeItem('orvio_active_org_id');
-        localStorage.removeItem('orvio_active_workspace_id');
+        authManager.clearTokens();
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('orvio_active_org_id');
+          localStorage.removeItem('orvio_active_workspace_id');
+        }
+        saveStoredUser(null);
+        try {
+          useWorkspaceStore.getState().clearWorkspace();
+        } catch {
+          // Safe fallback
+        }
+        set({
+          isInitialized: true,
+          isAuthenticated: false,
+          user: null,
+          token: null,
+          memberships: [],
+          activeOrganizationId: null,
+          onboardingStatus: null,
+        });
+      } catch {
+        if (!isCurrentRequest()) return;
+        // A failed /auth/me or refresh request can be a temporary network,
+        // deployment, or gateway failure. Keep an already authenticated local
+        // session intact; only the explicit null path above represents a
+        // confirmed invalid session.
+        if (get().isAuthenticated && get().user) {
+          set({ isInitialized: true });
+          return;
+        }
+        authManager.clearTokens();
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('orvio_active_org_id');
+          localStorage.removeItem('orvio_active_workspace_id');
+        }
         saveStoredUser(null);
         try {
           useWorkspaceStore.getState().clearWorkspace();
@@ -473,6 +375,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 }));
 
+// Synchronize token changes from AuthTokenManager with useAuthStore
+authManager.subscribeToTokenUpdates((token) => {
+  if (token) {
+    useAuthStore.setState({ token, isAuthenticated: true });
+  } else {
+    useAuthStore.setState({ token: null, isAuthenticated: false });
+  }
+});
+
 // Listen for global unauthorized events and cross-tab logout synchronization
 if (typeof window !== 'undefined') {
   window.addEventListener('auth:unauthorized', () => {
@@ -481,6 +392,7 @@ if (typeof window !== 'undefined') {
 
   window.addEventListener('storage', (event) => {
     if (event.key === 'orvio_logout_sync') {
+      invalidateInFlightAuthOperations();
       useAuthStore.setState({
         isAuthenticated: false,
         user: null,
@@ -495,4 +407,25 @@ if (typeof window !== 'undefined') {
       window.location.href = loginUrl;
     }
   });
+
+  try {
+    const authChannel = new BroadcastChannel('orvio-auth');
+    authChannel.addEventListener('message', (event) => {
+      if (event.data?.type !== 'logout') return;
+      invalidateInFlightAuthOperations();
+      authManager.clearTokens();
+      api.invalidateCache();
+      useAuthStore.setState({
+        isAuthenticated: false,
+        user: null,
+        token: null,
+        onboardingStatus: null,
+        memberships: [],
+        activeOrganizationId: null,
+        isInitialized: true,
+      });
+    });
+  } catch {
+    // BroadcastChannel is optional; server revocation and focus validation remain authoritative.
+  }
 }

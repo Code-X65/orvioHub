@@ -94,7 +94,7 @@ export const AddressForm: React.FC<AddressFormProps> = ({
 
       {/* Nigerian State & LGA Grid */}
       {currentCountry === 'Nigeria' ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
           <StateSelector
             value={value.stateCode || value.state}
             onChange={handleStateChange}
@@ -113,6 +113,14 @@ export const AddressForm: React.FC<AddressFormProps> = ({
             disabled={disabled}
             error={errors.lga}
           />
+          <div className="space-y-1.5">
+            <Label className="text-xs text-slate-300 font-medium">City / Area <span className="text-red-400">*</span></Label>
+            <div className="relative">
+              <Navigation className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <Input value={value.city || ''} onChange={(e) => handleFieldChange('city', e.target.value)} disabled={disabled} placeholder="e.g. Ikeja, Lekki" className={`pl-9 h-10 bg-[#160f14] border-white/10 focus:border-[#714b67] text-xs text-white rounded-xl shadow-inner ${errors.city ? 'border-red-500/80' : ''}`} />
+            </div>
+            {errors.city && <p className="text-[11px] text-red-400">{errors.city}</p>}
+          </div>
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
@@ -148,8 +156,8 @@ export const AddressForm: React.FC<AddressFormProps> = ({
         </div>
       )}
 
-      {/* City & Area / Neighborhood */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+      {/* City is part of the Nigerian State | LGA | City row. */}
+      {currentCountry !== 'Nigeria' && <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
         <div className="space-y-1.5">
           <Label className="text-xs text-slate-300 font-medium">
             City / Town <span className="text-red-400">*</span>
@@ -182,7 +190,7 @@ export const AddressForm: React.FC<AddressFormProps> = ({
             />
           </div>
         </div>
-      </div>
+      </div>}
 
       {/* Street Address & Block / House Number */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
